@@ -18,12 +18,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from api_auth import authorization_header
+
 
 def _request(base_url: str, path: str, token: str, method: str = "GET", payload: Any | None = None) -> Any:
     data = None
     headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Token {token}"
+    headers.update(authorization_header(token))
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"

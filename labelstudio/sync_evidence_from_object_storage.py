@@ -24,6 +24,8 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from api_auth import authorization_header
+
 try:
     import oci
 except ModuleNotFoundError:  # Allows lightweight unit tests without OCI SDK.
@@ -133,7 +135,7 @@ def _label_studio_request(url: str, token: str, project_id: int, label_config: P
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "Authorization": f"Token {token}",
+            **authorization_header(token),
         },
         method="PATCH",
     )
