@@ -111,7 +111,9 @@ esta misma `config.xml`; después ejecuta `import_evidence.py` con
 `--refresh-existing`, por lo que corrige una importación directa anterior sin
 borrar anotaciones.
 
-Instala `oci>=2.0.0` en un entorno virtual de la VM, copia los tres archivos de
+Instala `oci>=2.0.0` en un entorno virtual bajo
+`/opt/mednews-labelstudio-sync/` (no bajo `/home`: una VM con SELinux puede
+impedir que systemd ejecute código desde allí), copia los tres archivos de
 `labelstudio/systemd/` a `/etc/systemd/system/` y crea
 `/etc/mednews-labelstudio-sync.env` desde el ejemplo con un token de API de
 Label Studio. El token nunca debe estar en Git. Finalmente habilita el timer:
