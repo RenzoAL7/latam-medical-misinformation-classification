@@ -100,6 +100,32 @@ complete en una corrida posterior. Los tiempos de las Functions, el drenaje
 horario y los límites de PubMed/Gemini/Embed están en
 [`docs/limits_and_timing.md`](../docs/limits_and_timing.md).
 
+### Sincronización automática en una VM OCI
+
+Para una instancia privada de Label Studio,
+[`sync_evidence_from_object_storage.py`](sync_evidence_from_object_storage.py)
+lee con el *Instance Principal* de la VM únicamente los objetos
+`silver/evidence/evidence_run_*.csv`. Ignora expresamente los CSV históricos
+`evidence_translated_*` y los objetos rechazados. Antes de importar, aplica
+esta misma `config.xml`; después ejecuta `import_evidence.py` con
+`--refresh-existing`, por lo que corrige una importación directa anterior sin
+borrar anotaciones.
+
+Instala `oci>=2.0.0` en un entorno virtual de la VM, copia los tres archivos de
+`labelstudio/systemd/` a `/etc/systemd/system/` y crea
+`/etc/mednews-labelstudio-sync.env` desde el ejemplo con un token de API de
+Label Studio. El token nunca debe estar en Git. Finalmente habilita el timer:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mednews-labelstudio-sync.timer
+sudo systemctl start mednews-labelstudio-sync.service
+sudo journalctl -u mednews-labelstudio-sync.service -n 50 --no-pager
+```
+
+El timer revisa Object Storage cada cinco minutos. No requiere abrir Label
+Studio al exterior ni añadir otro schedule al pipeline OCI.
+
 ## 5. Trabajo entre dos personas
 
 Para colaborar en la misma instancia, el dueño del proyecto invita al otro
