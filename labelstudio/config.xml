@@ -1,10 +1,13 @@
 <View>
   <Style>
+    /* Label Studio inherits white text in Dark mode. These cards keep a
+       light surface, so their descendants need an explicit dark foreground. */
     .meta { background: #f5f7fa; border-radius: 8px; padding: 10px 14px; }
     .claim-card { background: #fff8e6; border-left: 4px solid #d99a00; border-radius: 8px; padding: 12px 16px; }
     .evidence-card { background: #f2f8ff; border-left: 4px solid #3578c6; border-radius: 8px; padding: 12px 16px; }
     .decision-card { background: #fafafa; border: 1px solid #d9dfe8; border-radius: 8px; padding: 12px 16px; }
-    .small-note { color: #596579; font-size: 0.9em; }
+    .meta, .meta *, .claim-card, .claim-card *, .evidence-card, .evidence-card *, .decision-card, .decision-card * { color: #182230 !important; }
+    .small-note, .small-note * { color: #455468 !important; font-size: 0.9em; }
   </Style>
 
   <Header value="Revisión humana de evidencia médica LATAM" />
