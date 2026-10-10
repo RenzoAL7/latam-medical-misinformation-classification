@@ -115,8 +115,10 @@ Instala `oci>=2.0.0` en un entorno virtual bajo
 `/opt/mednews-labelstudio-sync/` (no bajo `/home`: una VM con SELinux puede
 impedir que systemd ejecute código desde allí), copia los tres archivos de
 `labelstudio/systemd/` a `/etc/systemd/system/` y crea
-`/etc/mednews-labelstudio-sync.env` desde el ejemplo con un token de API de
-Label Studio. El token nunca debe estar en Git. Finalmente habilita el timer:
+`/etc/mednews-labelstudio-sync.env` desde el ejemplo con el **JWT refresh
+token** de Label Studio. El sincronizador intercambia ese secreto por un access
+token nuevo en cada ciclo; no guardes un access token de corta vida. El token
+nunca debe estar en Git. Finalmente habilita el timer:
 
 ```bash
 sudo systemctl daemon-reload

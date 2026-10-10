@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -43,3 +44,19 @@ def test_api_auth_uses_bearer_only_for_jwt_tokens() -> None:
     assert auth.authorization_header("header.payload.signature") == {
         "Authorization": "Bearer header.payload.signature"
     }
+
+
+def test_sync_exchanges_refresh_token_for_access_token(monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"access": "header.payload.signature"}).encode("utf-8")
+
+    monkeypatch.setattr(sync.urllib.request, "urlopen", lambda request, timeout: Response())
+
+    assert sync._refresh_access_token("http://label-studio", "refresh.token.value") == "header.payload.signature"

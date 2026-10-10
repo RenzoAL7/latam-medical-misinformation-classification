@@ -147,12 +147,37 @@ def _label_studio_request(url: str, token: str, project_id: int, label_config: P
         raise RuntimeError(f"Unable to update Label Studio project configuration: HTTP {exc.code}: {detail}") from exc
 
 
+def _refresh_access_token(url: str, refresh_token: str) -> str:
+    """Exchange a long-lived Label Studio refresh token for a short-lived access token."""
+
+    request = urllib.request.Request(
+        f"{url.rstrip('/')}/api/token/refresh/",
+        data=json.dumps({"refresh": refresh_token}).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(f"Unable to refresh Label Studio access token: HTTP {exc.code}: {detail}") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Label Studio returned an invalid token-refresh response") from exc
+
+    access_token = payload.get("access") if isinstance(payload, dict) else None
+    if not isinstance(access_token, str) or not access_token.strip():
+        raise RuntimeError("Label Studio token-refresh response did not contain an access token")
+    return access_token.strip()
+
+
 def _run_importer(
     importer: Path,
     csv_path: Path,
     work_dir: Path,
     url: str,
     project_id: int,
+    token: str,
     refresh_existing: bool,
 ) -> None:
     command = [
@@ -171,7 +196,10 @@ def _run_importer(
         command.append("--refresh-existing")
     # ``import_evidence.py`` reads LABEL_STUDIO_TOKEN from its environment.
     # Do not put the token in command arguments, which can be visible in ps.
-    subprocess.run(command, check=True, env=os.environ.copy())
+    environment = os.environ.copy()
+    environment["LABEL_STUDIO_TOKEN"] = token
+    environment.pop("LABEL_STUDIO_REFRESH_TOKEN", None)
+    subprocess.run(command, check=True, env=environment)
 
 
 def main() -> int:
@@ -182,6 +210,7 @@ def main() -> int:
     parser.add_argument("--project-id", type=int, default=int(os.getenv("LABEL_STUDIO_PROJECT_ID", "0") or "0"))
     parser.add_argument("--url", default=os.getenv("LABEL_STUDIO_URL", "http://127.0.0.1:18080"))
     parser.add_argument("--token", default=os.getenv("LABEL_STUDIO_TOKEN", ""))
+    parser.add_argument("--refresh-token", default=os.getenv("LABEL_STUDIO_REFRESH_TOKEN", ""))
     parser.add_argument("--work-dir", type=Path, default=Path(os.getenv("MEDNEWS_SYNC_WORK_DIR", ".mednews-sync")))
     parser.add_argument("--label-config", type=Path, default=Path(__file__).with_name("config.xml"))
     parser.add_argument("--refresh-existing", action=argparse.BooleanOptionalAction, default=True)
@@ -190,13 +219,18 @@ def main() -> int:
 
     namespace = _required(args.namespace, "OBJECT_STORAGE_NAMESPACE / --namespace")
     bucket = _required(args.bucket, "OBJECT_STORAGE_BUCKET / --bucket")
-    token = _required(args.token, "LABEL_STUDIO_TOKEN / --token")
     if args.project_id <= 0:
         raise RuntimeError("LABEL_STUDIO_PROJECT_ID / --project-id must be positive")
     if not args.label_config.is_file():
         raise RuntimeError(f"Label Studio configuration not found: {args.label_config}")
     if not args.url.startswith(("http://", "https://")):
         raise RuntimeError("LABEL_STUDIO_URL / --url must be an HTTP(S) URL")
+
+    token = (
+        _refresh_access_token(args.url, args.refresh_token.strip())
+        if args.refresh_token.strip()
+        else _required(args.token, "LABEL_STUDIO_TOKEN / --token")
+    )
 
     work_dir = args.work_dir.expanduser().resolve()
     cache_dir = work_dir / "evidence-cache"
@@ -235,6 +269,7 @@ def main() -> int:
             work_dir,
             args.url,
             args.project_id,
+            token,
             args.refresh_existing,
         )
         tracked[object_name] = {"etag": etag, "imported_etag": etag, "local_path": local_path.name}
