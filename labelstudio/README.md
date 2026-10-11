@@ -82,6 +82,29 @@ puntuación de embedding.
 
 ## 4. Exportar las etiquetas
 
+El flujo local recomendado no necesita consultar la API de Label Studio. Desde
+la interfaz usa **Export > JSON**, guarda el archivo en
+`labelstudio/artifacts/` y ejecuta:
+
+```bash
+python3 labelstudio/export_annotations.py \
+  --input-json labelstudio/artifacts/labelstudio_export_2026-10-11.json \
+  --output labelstudio/artifacts/gold_labels_2026-10-11.csv \
+  --evidence-input labelstudio/artifacts/evidence/
+```
+
+En este modo no necesitas `--project-id`, `--url` ni un token. El JSON local
+se usa como entrada, y `--evidence-input` permite recuperar `body`, `topic` y
+la metadata que no viaja en el payload liviano de Label Studio. Si omites esa
+carpeta, el script igual genera el CSV, pero reporta `missing_body` y el
+validador no permitirá usar esas filas para entrenamiento.
+
+`labelstudio/artifacts/` está ignorado por Git. Guarda allí el JSON, los CSV y
+los resultados locales, pero no los agregues ni los subas al repositorio.
+
+Si alguna vez necesitas ejecutar la exportación contra la API, conserva este
+modo alternativo:
+
 ```bash
 python3 labelstudio/export_annotations.py \
   --project-id 1 \
@@ -91,13 +114,10 @@ python3 labelstudio/export_annotations.py \
 ```
 
 El exportador toma la anotación completada más reciente por `record_id` y
-produce una fila Gold por noticia. `--evidence-input` puede recibir archivos o
-directorios de Evidence y restaura `body`, `topic` y la metadata técnica. El
-control `final_label` de la interfaz se exporta como la columna canónica
-`label`. Si falta el CSV de Evidence, el exportador informa `missing_body` y
-`validate_gold.py` rechazará las filas binarias incompletas. El CSV resultante
-debe revisarse antes de generar el split 70/15/15. `annotation_id` permite
-volver a la tarea exacta.
+produce una fila Gold por noticia. El control `final_label` de la interfaz se
+exporta como la columna canónica `label`. El CSV resultante debe revisarse
+antes de generar el split 70/15/15. `annotation_id` permite volver a la tarea
+exacta.
 
 ## Cuándo importar y cuánto demora
 
@@ -162,16 +182,15 @@ exporta las anotaciones humanas y luego valida la exportación:
 
 ```bash
 python3 labelstudio/export_annotations.py \
-  --project-id 1 \
-  --evidence-input /ruta/privada/evidence/ \
-  --output labelstudio/artifacts/gold_labels_2026-10-07.csv \
-  --raw-export labelstudio/artifacts/labelstudio_export_2026-10-07.json
+  --input-json labelstudio/artifacts/labelstudio_export_2026-10-11.json \
+  --output labelstudio/artifacts/gold_labels_2026-10-11.csv \
+  --evidence-input labelstudio/artifacts/evidence/
 
 python3 labelstudio/validate_gold.py \
-  --input labelstudio/artifacts/gold_labels_2026-10-07.csv \
-  --reviewed-output labelstudio/artifacts/gold_reviewed_2026-10-07.csv \
-  --training-output labelstudio/artifacts/gold_training_2026-10-07.csv \
-  --rejected-output labelstudio/artifacts/gold_rejected_2026-10-07.csv \
+  --input labelstudio/artifacts/gold_labels_2026-10-11.csv \
+  --reviewed-output labelstudio/artifacts/gold_reviewed_2026-10-11.csv \
+  --training-output labelstudio/artifacts/gold_training_2026-10-11.csv \
+  --rejected-output labelstudio/artifacts/gold_rejected_2026-10-11.csv \
   --fail-on-reject
 ```
 

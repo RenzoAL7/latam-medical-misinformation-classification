@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Export one latest human annotation per record_id as a Gold-ready CSV."""
+"""Export one latest human annotation per record_id as a Gold-ready CSV.
+
+The exporter supports two input modes:
+
+* API mode, which fetches the project export from Label Studio.
+* Offline mode, which reads a JSON export downloaded manually from the
+  Label Studio interface. Offline mode is the recommended local workflow.
+"""
 
 from __future__ import annotations
 
@@ -62,6 +69,19 @@ def _task_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _read_json_export(path: Path) -> Any:
+    """Read a JSON export downloaded from the Label Studio interface."""
+
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except OSError as exc:
+        raise RuntimeError(f"Could not read Label Studio JSON export: {path}") from exc
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Label Studio export is not valid JSON: {path}") from exc
+
+
 def _evidence_rows(paths: list[str]) -> dict[str, dict[str, str]]:
     """Load one latest Evidence row per record for the Gold text join."""
 
@@ -94,25 +114,38 @@ def _evidence_rows(paths: list[str]) -> dict[str, dict[str, str]]:
     return rows_by_id
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default=os.getenv("LABEL_STUDIO_URL", "http://localhost:8080"))
-    parser.add_argument("--project-id", type=int, required=True)
-    parser.add_argument("--token", default=os.getenv("LABEL_STUDIO_TOKEN", ""))
-    parser.add_argument("--output", default="gold_labels.csv")
-    parser.add_argument("--raw-export", default="")
-    parser.add_argument(
-        "--evidence-input",
-        nargs="*",
-        default=[],
-        help="Evidence CSV file(s) or directories used to restore body/topic metadata by record_id",
-    )
-    args = parser.parse_args()
+GOLD_FIELDS = [
+    "record_id",
+    "country",
+    "source_name",
+    "topic",
+    "canonical_url",
+    "published_at",
+    "title",
+    "body",
+    "claim_text",
+    "best_pmid",
+    "best_cosine_similarity",
+    "best_embedding_similarity",
+    "best_tfidf_similarity",
+    "ranking_method",
+    "embedding_model",
+    "evidence_status",
+    "evidence_run_id",
+    "evidence_relation",
+    "label",
+    "verification_note",
+    "annotation_id",
+    "annotator",
+    "annotated_at",
+]
 
-    payload = _request(args.url, f"/api/projects/{args.project_id}/export?exportType=JSON", args.token)
-    evidence_rows = _evidence_rows(args.evidence_input)
-    if args.raw_export:
-        Path(args.raw_export).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _gold_rows(
+    payload: Any,
+    evidence_rows: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Build one Gold row from the latest annotation for each record_id."""
 
     rows_by_id: dict[str, dict[str, Any]] = {}
     for task in _task_rows(payload):
@@ -130,7 +163,10 @@ def main() -> int:
             completed = [item for item in annotations if isinstance(item, dict)]
         if not completed:
             continue
-        annotation = sorted(completed, key=lambda item: str(item.get("updated_at", item.get("created_at", ""))))[-1]
+        annotation = sorted(
+            completed,
+            key=lambda item: str(item.get("updated_at", item.get("created_at", ""))),
+        )[-1]
         results = annotation.get("result", [])
         if not isinstance(results, list):
             results = []
@@ -163,40 +199,71 @@ def main() -> int:
             "annotator": annotation.get("completed_by", annotation.get("created_username", "")),
             "annotated_at": annotation.get("updated_at", annotation.get("created_at", "")),
         }
+    return list(rows_by_id.values())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--url", default=os.getenv("LABEL_STUDIO_URL", "http://localhost:8080"))
+    parser.add_argument(
+        "--project-id",
+        type=int,
+        default=0,
+        help="Label Studio project ID for API mode; not needed with --input-json",
+    )
+    parser.add_argument("--token", default=os.getenv("LABEL_STUDIO_TOKEN", ""))
+    parser.add_argument("--output", default="gold_labels.csv")
+    parser.add_argument("--raw-export", default="")
+    parser.add_argument(
+        "--input-json",
+        type=Path,
+        help="Local JSON export downloaded from Label Studio; skips the API and token",
+    )
+    parser.add_argument(
+        "--evidence-input",
+        nargs="*",
+        default=[],
+        help="Evidence CSV file(s) or directories used to restore body/topic metadata by record_id",
+    )
+    args = parser.parse_args()
+
+    if args.input_json is not None:
+        payload = _read_json_export(args.input_json)
+    else:
+        if args.project_id <= 0:
+            parser.error("--project-id must be positive unless --input-json is used")
+        payload = _request(args.url, f"/api/projects/{args.project_id}/export?exportType=JSON", args.token)
+
+    evidence_rows = _evidence_rows(args.evidence_input)
+    if args.raw_export:
+        raw_path = Path(args.raw_export)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        if args.input_json is None or raw_path.resolve() != args.input_json.resolve():
+            raw_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    rows = _gold_rows(payload, evidence_rows)
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fields = [
-        "record_id",
-        "country",
-        "source_name",
-        "topic",
-        "canonical_url",
-        "published_at",
-        "title",
-        "body",
-        "claim_text",
-        "best_pmid",
-        "best_cosine_similarity",
-        "best_embedding_similarity",
-        "best_tfidf_similarity",
-        "ranking_method",
-        "embedding_model",
-        "evidence_status",
-        "evidence_run_id",
-        "evidence_relation",
-        "label",
-        "verification_note",
-        "annotation_id",
-        "annotator",
-        "annotated_at",
-    ]
     with output.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=GOLD_FIELDS)
         writer.writeheader()
-        writer.writerows(rows_by_id.values())
-    missing_body = sum(1 for row in rows_by_id.values() if not row.get("body", ""))
-    print(json.dumps({"status": "ok", "project_id": args.project_id, "annotated_records": len(rows_by_id), "missing_body": missing_body, "output": str(output), "exported_at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False))
+        writer.writerows(rows)
+    missing_body = sum(1 for row in rows if not row.get("body", ""))
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "source": str(args.input_json) if args.input_json is not None else "api",
+                "project_id": args.project_id or None,
+                "annotated_records": len(rows),
+                "missing_body": missing_body,
+                "output": str(output),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
