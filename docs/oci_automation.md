@@ -14,9 +14,10 @@ exactamente a 50.
 
 Para controlar el consumo de NewsData, la configuración de producción usa
 `NEWSDATA_SIZE=10` y `NEWSDATA_MAX_PAGES=2`. Como hay cuatro grupos de países,
-el recolector puede hacer como máximo ocho solicitudes por corrida y se detiene
-antes cuando alcanza las 50 filas nuevas. Cada solicitud adicional consume un
-crédito de NewsData, por lo que no se dejan ocho páginas por grupo como valor
+el recolector puede hacer como máximo ocho solicitudes por corrida. Después de
+consultar los grupos disponibles, selecciona las filas en round-robin por país
+y conserva hasta 50 filas nuevas. Cada solicitud adicional consume un crédito
+de NewsData, por lo que no se dejan más de dos páginas por grupo como valor
 predeterminado.
 
 Las etapas posteriores se encadenan mediante OCI Events: cada nueva entrada

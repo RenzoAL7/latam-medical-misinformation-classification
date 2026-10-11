@@ -40,9 +40,10 @@ NEWSDATA_QUERY=(salud OR medicina OR médico OR enfermedad OR vacuna OR tratamie
 
 `NEWSDATA_QUERY` and `NEWSDATA_ENDPOINT` remain optional filters. The function
 splits `NEWSDATA_COUNTRY_SEQUENCE` into groups of up to five countries (the
-NewsData limit), requests each group in order, and sorts the resulting rows
-back into the configured country order before writing the CSV. It appends new
-rows until `NEWSDATA_TARGET_ROWS` is reached. Puerto Rico (`pr`) is
+NewsData limit), requests every group that fits within the time budget, and
+selects new rows in a country round-robin before sorting the output back into
+the configured country order. This reserves the first available row for each
+country before filling the batch up to `NEWSDATA_TARGET_ROWS`. Puerto Rico (`pr`) is
 intentionally included as a separate territory. The function rejects a
 configuration containing a non-LATAM code and filters the API response again,
 so an article reported with a country outside the requested group cannot enter
@@ -61,10 +62,11 @@ returning in multiple runs while the API's latest feed covers overlapping
 48-hour windows. If a run finds no new rows, it returns `no_new_rows` and does
 not create an empty Bronze CSV. `NEWSDATA_MAX_PAGES` controls pages per country group. The production value is
 `2`: with `NEWSDATA_COUNTRY_GROUP_SIZE=5`, a full 19-country pass makes at most
-8 NewsData requests (four country groups x two pages), while the function stops
-early as soon as it has 50 new rows. When two Vault keys are configured, groups
-use the keys in round-robin order and fail over to another key if a request
-fails. Each extra page is another API credit. `NEWSDATA_COUNTRY_DELAY` spaces country
+8 NewsData requests (four country groups x two pages). The function queries the
+groups before selecting up to 50 new rows, so a country near the end of the
+sequence cannot be excluded solely because earlier countries filled the batch.
+When two Vault keys are configured, groups use the keys in round-robin order and
+fail over to another key if a request fails. Each extra page is another API credit. `NEWSDATA_COUNTRY_DELAY` spaces country
 group requests, while `NEWSDATA_PAGE_DELAY` spaces pages within a country group
 and `NEWSDATA_MAX_RETRIES` retries temporary HTTP 429 responses. With
 `NEWSDATA_REQUIRE_TARGET_ROWS=0` writes the available new rows even when the

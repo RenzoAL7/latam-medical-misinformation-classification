@@ -116,7 +116,9 @@ Rico se mantiene visible como `pr`.
 
 Cada ejecución intenta hasta 50 noticias nuevas. Usa `size=10` y como máximo dos
 páginas por cada uno de los cuatro grupos de países (ocho solicitudes como tope),
-se detiene al alcanzar el objetivo, ordena el CSV por esa secuencia y deduplica con `record_id` contra todo
+consulta los grupos disponibles y selecciona las filas mediante una ronda por
+país antes de ordenar el CSV. Así cada país con candidatas tiene una oportunidad
+antes de completar el objetivo. Luego deduplica con `record_id` contra todo
 `bronze/`. Si las últimas 48 horas no ofrecen 50 URLs nuevas o la API devuelve
 menos resultados, se guarda el lote real disponible. No se inventan filas ni se
 reutilizan noticias ya almacenadas.

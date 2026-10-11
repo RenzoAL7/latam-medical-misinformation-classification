@@ -608,6 +608,8 @@ def _collect_country_batch(
     seen_record_ids = set(existing_record_ids)
     retrieved_at = datetime.now(timezone.utc).isoformat()
     rows: list[dict[str, str]] = []
+    available_rows: list[dict[str, str]] = []
+    row_group_indexes: dict[str, int] = {}
     country_stats: list[dict[str, Any]] = []
     countries = _country_sequence()
     country_groups = [
@@ -618,8 +620,6 @@ def _collect_country_batch(
     duplicates_skipped = 0
 
     for group_index, country_group in enumerate(country_groups):
-        if len(rows) >= target_rows:
-            break
         if time.monotonic() >= deadline:
             break
 
@@ -637,7 +637,7 @@ def _collect_country_batch(
         candidates = _bronze_rows(payload, retrieved_at, set(country_group))
         country_candidates = len(candidates)
         country_duplicates = 0
-        country_new = 0
+        country_new_candidates = 0
         candidates = sorted(candidates, key=lambda row: _country_rank(row, countries))
 
         for row in candidates:
@@ -647,27 +647,73 @@ def _collect_country_batch(
                 duplicates_skipped += 1
                 continue
             seen_record_ids.add(row["record_id"])
-            rows.append(row)
-            country_new += 1
-            if len(rows) >= target_rows:
-                break
+            available_rows.append(row)
+            row_group_indexes[row["record_id"]] = group_index
+            country_new_candidates += 1
 
         country_stats.append(
             {
                 "countries": country_group,
                 "group_index": group_index,
                 "candidate_rows": country_candidates,
-                "new_rows": country_new,
+                "new_candidates": country_new_candidates,
+                "new_rows": 0,
+                "selected_rows": 0,
                 "duplicates_skipped": country_duplicates,
                 "request": request_meta,
             }
         )
-        if len(rows) >= target_rows:
-            break
         if country_delay and group_index < len(country_groups) - 1:
             remaining = deadline - time.monotonic()
             if remaining > 0:
                 time.sleep(min(country_delay, remaining))
+
+    # Select in country round-robin order only after all available country
+    # groups have been queried. This reserves the first available row for
+    # each country before filling the remaining target slots, so a country
+    # near the end of the configured sequence cannot be starved by earlier
+    # countries in the same NewsData response.
+    country_candidates: dict[str, list[dict[str, str]]] = {
+        country: [] for country in countries
+    }
+    unmapped_candidates: list[dict[str, str]] = []
+    for row in available_rows:
+        country_code = _country_code_from_value(row.get("country", ""))
+        if country_code in country_candidates:
+            country_candidates[country_code].append(row)
+        else:
+            unmapped_candidates.append(row)
+
+    selected_rows: list[dict[str, str]] = []
+    while len(selected_rows) < target_rows:
+        added_this_round = False
+        for country in countries:
+            candidates_for_country = country_candidates[country]
+            if not candidates_for_country:
+                continue
+            selected_rows.append(candidates_for_country.pop(0))
+            added_this_round = True
+            if len(selected_rows) >= target_rows:
+                break
+        if not added_this_round:
+            break
+
+    # A valid row should always have a configured country. Keep this fallback
+    # so a future country-normalization change cannot silently discard data.
+    if len(selected_rows) < target_rows:
+        selected_rows.extend(unmapped_candidates[: target_rows - len(selected_rows)])
+
+    rows = selected_rows
+    selected_country_counts: dict[str, int] = {country: 0 for country in countries}
+    stats_by_group = {item["group_index"]: item for item in country_stats}
+    for row in rows:
+        country_code = _country_code_from_value(row.get("country", ""))
+        if country_code:
+            selected_country_counts[country_code] = selected_country_counts.get(country_code, 0) + 1
+        group_index = row_group_indexes.get(row["record_id"])
+        if group_index is not None and group_index in stats_by_group:
+            stats_by_group[group_index]["selected_rows"] += 1
+            stats_by_group[group_index]["new_rows"] = stats_by_group[group_index]["selected_rows"]
 
     rows.sort(key=lambda row: _country_rank(row, countries))
     countries_attempted = [
@@ -703,6 +749,8 @@ def _collect_country_batch(
         "duplicates_skipped": duplicates_skipped,
         "existing_record_ids": len(existing_record_ids),
         "dedup_enabled": dedup_enabled,
+        "selection_mode": "round_robin_country",
+        "selected_country_counts": selected_country_counts,
         "country_stats": country_stats,
     }
     return rows, request_meta

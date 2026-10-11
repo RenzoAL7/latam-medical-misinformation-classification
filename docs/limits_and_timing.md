@@ -92,7 +92,9 @@ configuración de producción usa `size=10` y `NEWSDATA_MAX_PAGES=2`:
 
 - hay cuatro grupos para los 19 códigos LATAM configurados;
 - el máximo normal es `4 grupos × 2 páginas = 8 solicitudes` por corrida;
-- la Function se detiene antes si obtiene 50 filas nuevas;
+- la Function consulta los grupos disponibles y selecciona hasta 50 filas con
+  una ronda por país para evitar que los países al final de la secuencia sean
+  excluidos por el corte del lote;
 - cada página adicional es otra llamada y puede consumir otro crédito;
 - con dos corridas programadas, el techo normal es 16 solicitudes diarias,
   antes de considerar reintentos o fallos que no lleguen a completar una
