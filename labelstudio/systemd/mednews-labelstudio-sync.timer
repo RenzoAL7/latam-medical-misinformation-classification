@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll OCI Object Storage for MedNews Evidence CSVs
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=mednews-labelstudio-sync.service
+
+[Install]
+WantedBy=timers.target

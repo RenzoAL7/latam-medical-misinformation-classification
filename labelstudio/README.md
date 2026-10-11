@@ -46,12 +46,13 @@ sean `OK`, consulta las tareas que ya existen en el proyecto y solo importa
 registros nuevos. Se puede ejecutar después de cada corrida de evidence. No
 guardes el token, las API keys ni el manifest con datos en Git.
 
-Cada tarea conserva `evidence_text` completo y además crea `evidence_primary`,
-`evidence_additional` y `evidence_count`. La interfaz muestra primero el
-candidato mejor ordenado y deja los demás dentro de un panel desplegable. Si
-ya tienes tareas importadas con la configuración anterior, ejecuta el mismo
-comando con `--refresh-existing` para actualizar solo los datos de las tareas
-correspondientes y conservar sus anotaciones. El importador seguirá
+Cada tarea conserva `evidence_primary`, `evidence_additional` y `evidence_count`.
+No se guarda una segunda copia completa de la evidencia porque aumenta el
+payload de cada tarea sin ser usada por `config.xml`. La interfaz muestra
+primero el candidato mejor ordenado y deja los demás dentro de un panel
+desplegable. Si ya tienes tareas importadas con la configuración anterior,
+ejecuta el mismo comando con `--refresh-existing` para reducir el payload de
+las tareas correspondientes y conservar sus anotaciones. El importador seguirá
 deduplicando por `record_id`.
 
 ```bash
@@ -99,6 +100,36 @@ fila que todavía no esté en estado `OK` se deja fuera hasta que evidence la
 complete en una corrida posterior. Los tiempos de las Functions, el drenaje
 horario y los límites de PubMed/Gemini/Embed están en
 [`docs/limits_and_timing.md`](../docs/limits_and_timing.md).
+
+### Sincronización automática en una VM OCI
+
+Para una instancia privada de Label Studio,
+[`sync_evidence_from_object_storage.py`](sync_evidence_from_object_storage.py)
+lee con el *Instance Principal* de la VM únicamente los objetos
+`silver/evidence/evidence_run_*.csv`. Ignora expresamente los CSV históricos
+`evidence_translated_*` y los objetos rechazados. Antes de importar, aplica
+esta misma `config.xml`; después ejecuta `import_evidence.py` con
+`--refresh-existing`, por lo que corrige una importación directa anterior sin
+borrar anotaciones.
+
+Instala `oci>=2.0.0` en un entorno virtual bajo
+`/opt/mednews-labelstudio-sync/` (no bajo `/home`: una VM con SELinux puede
+impedir que systemd ejecute código desde allí), copia los tres archivos de
+`labelstudio/systemd/` a `/etc/systemd/system/` y crea
+`/etc/mednews-labelstudio-sync.env` desde el ejemplo con el **JWT refresh
+token** de Label Studio. El sincronizador intercambia ese secreto por un access
+token nuevo en cada ciclo; no guardes un access token de corta vida. El token
+nunca debe estar en Git. Finalmente habilita el timer:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mednews-labelstudio-sync.timer
+sudo systemctl start mednews-labelstudio-sync.service
+sudo journalctl -u mednews-labelstudio-sync.service -n 50 --no-pager
+```
+
+El timer revisa Object Storage cada cinco minutos. No requiere abrir Label
+Studio al exterior ni añadir otro schedule al pipeline OCI.
 
 ## 5. Trabajo entre dos personas
 

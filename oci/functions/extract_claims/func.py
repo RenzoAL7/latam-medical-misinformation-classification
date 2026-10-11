@@ -1,18 +1,19 @@
-"""Extract auditable claims from the one Silver/Body object in an OCI Event.
+"""Extract auditable claims from the Silver/Body backlog in bounded batches.
 
 This Function is deliberately a candidate-generation step.  It does not decide
 whether a claim is true or false.  Rows whose body extraction failed, is too
 short, or is missing are excluded before the LLM call.  Several valid rows are
 sent in one Gemini request to reduce API calls and rate-limit pressure.  The
-structured responses are written to a new CSV under ``silver/claims/``. The
-input is scoped to the ``silver/body/*.csv`` object that triggered the
-Function, so a previous run cannot be pulled into the current event.
+structured responses are written to a deterministic CSV under
+``silver/claims/``. A previous failed attempt remains retryable, while a
+successful LLM result is terminal for that ``record_id``.
 """
 
 from __future__ import annotations
 
 import csv
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -265,14 +266,40 @@ def _read_csv_object(client: Any, namespace: str, bucket: str, object_name: str)
     ]
 
 
-def _existing_claim_ids(client: Any, namespace: str, bucket: str, prefix: str) -> set[str]:
-    record_ids: set[str] = set()
+def _stable_token(object_name: str) -> str:
+    stem = object_name.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    readable = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")[:72] or "source"
+    digest = hashlib.sha256(object_name.encode("utf-8")).hexdigest()[:12]
+    return f"{readable}_{digest}"
+
+
+def _claims_output_name(prefix: str, source_object: str) -> str:
+    return f"{prefix.strip('/')}/claims_current_{_stable_token(source_object)}.csv"
+
+
+def _claim_row_is_terminal(row: dict[str, str]) -> bool:
+    """Only a completed LLM response closes a claims row."""
+
+    return row.get("llm_status", "").strip().upper() == "OK"
+
+
+def _existing_claim_rows(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    prefix: str,
+) -> dict[str, dict[str, str]]:
+    rows_by_id: dict[str, dict[str, str]] = {}
     for object_name in _list_csv_objects(client, namespace, bucket, prefix):
         for row in _read_csv_object(client, namespace, bucket, object_name):
             record_id = row.get("record_id", "").strip()
             if record_id:
-                record_ids.add(record_id)
-    return record_ids
+                previous = rows_by_id.get(record_id)
+                if previous is None or (
+                    _claim_row_is_terminal(row) and not _claim_row_is_terminal(previous)
+                ) or (_claim_row_is_terminal(row) == _claim_row_is_terminal(previous)):
+                    rows_by_id[record_id] = row
+    return rows_by_id
 
 
 def _event_object_name(data: io.BytesIO | None, bucket: str, prefix: str) -> str:
@@ -315,19 +342,21 @@ def _event_object_name(data: io.BytesIO | None, bucket: str, prefix: str) -> str
     raise RuntimeError(f"Event does not identify a CSV under {expected_prefix}")
 
 
-def _event_rows(
+def _pending_rows(
     client: Any,
     namespace: str,
     bucket: str,
-    object_name: str,
+    body_prefix: str,
     claims_prefix: str,
     max_rows: int,
-) -> tuple[list[dict[str, str]], dict[str, int]]:
-    """Select valid, not-yet-attempted bodies from one triggering CSV."""
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Select one bounded Body source and count all pending claim rows."""
 
-    attempted_ids = _existing_claim_ids(client, namespace, bucket, claims_prefix)
-    selected_ids: set[str] = set()
+    existing = _existing_claim_rows(client, namespace, bucket, claims_prefix)
+    body_objects = _list_csv_objects(client, namespace, bucket, body_prefix)
     selected: list[dict[str, str]] = []
+    pending_ids: set[str] = set()
+    selected_source = ""
     stats = Counter(
         {
             "body_objects_scanned": 0,
@@ -335,38 +364,48 @@ def _event_rows(
             "skipped_no_body": 0,
             "skipped_extraction_error": 0,
             "skipped_duplicate": 0,
-            "claims_record_ids": len(attempted_ids),
+            "skipped_completed": 0,
+            "claims_record_ids": len(existing),
         }
     )
-    source_rows = _read_csv_object(client, namespace, bucket, object_name)
-    stats["body_objects_scanned"] = 1
-    for source_row in source_rows:
-        stats["body_rows_seen"] += 1
-        record_id = source_row.get("record_id", "").strip()
-        body = source_row.get("body", "").strip()
-        extraction_status = source_row.get("extraction_status", "").strip().upper()
-        if not record_id or not body:
-            stats["skipped_no_body"] += 1
-            continue
-        if extraction_status != "OK":
-            stats["skipped_extraction_error"] += 1
-            continue
-        if record_id in attempted_ids or record_id in selected_ids:
-            stats["skipped_duplicate"] += 1
-            continue
-        selected_ids.add(record_id)
-        selected.append(
-            {
-                field: source_row.get(field, "").strip()
-                for field in BRONZE_FIELDS + BODY_FIELDS
-            }
-            | {"source_silver_object": object_name}
-        )
-    if max_rows > 0 and len(selected) > max_rows:
-        raise RuntimeError(
-            f"Event object {object_name} has {len(selected)} eligible rows, exceeding LLM_MAX_ROWS={max_rows}"
-        )
+    for object_name in body_objects:
+        source_pending: list[dict[str, str]] = []
+        for source_row in _read_csv_object(client, namespace, bucket, object_name):
+            stats["body_rows_seen"] += 1
+            record_id = source_row.get("record_id", "").strip()
+            body = source_row.get("body", "").strip()
+            extraction_status = source_row.get("extraction_status", "").strip().upper()
+            if not record_id or not body:
+                stats["skipped_no_body"] += 1
+                continue
+            if extraction_status != "OK":
+                stats["skipped_extraction_error"] += 1
+                continue
+            previous = existing.get(record_id)
+            if previous is not None and _claim_row_is_terminal(previous):
+                stats["skipped_completed"] += 1
+                continue
+            if record_id in pending_ids:
+                stats["skipped_duplicate"] += 1
+                continue
+            pending_ids.add(record_id)
+            source_pending.append(
+                {
+                    field: source_row.get(field, "").strip()
+                    for field in BRONZE_FIELDS + BODY_FIELDS
+                }
+                | {"source_silver_object": object_name}
+            )
 
+        if source_pending and not selected_source:
+            selected_source = object_name
+            selected = source_pending[:max_rows] if max_rows > 0 else source_pending
+
+        stats["body_objects_scanned"] += 1
+
+    stats["pending_rows"] = len(pending_ids)
+    stats["selected"] = len(selected)
+    stats["selected_source_object"] = selected_source
     return selected, dict(stats)
 
 
@@ -791,14 +830,13 @@ def _write_claims(
     bucket: str,
     prefix: str,
     rows: list[dict[str, str]],
-    run_id: str,
-    object_stem: str = "claims",
+    source_object: str,
 ) -> str:
     csv_buffer = io.StringIO(newline="")
     writer = csv.DictWriter(csv_buffer, fieldnames=OUTPUT_FIELDS, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
-    object_name = f"{prefix.strip('/')}/{object_stem}_{run_id}.csv"
+    object_name = _claims_output_name(prefix, source_object)
     client.put_object(
         namespace_name=namespace,
         bucket_name=bucket,
@@ -824,8 +862,9 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         default_model_id = DEFAULT_GOOGLE_MODEL_ID if provider == "google" else DEFAULT_MODEL_ID
         model_id = os.getenv("LLM_MODEL_ID", default_model_id).strip() or default_model_id
         region = os.getenv("LLM_REGION", os.getenv("OCI_REGION", "us-ashburn-1")).strip()
-        # A zero max means "process every eligible body from this event".
-        max_rows = _env_int("LLM_MAX_ROWS", 0, minimum=0)
+        # A zero max means "process every eligible Body row". Production uses
+        # a positive cap so a large backlog advances in repeatable batches.
+        max_rows = _env_int("LLM_MAX_ROWS", 25, minimum=0)
         request_batch_size = _env_int("LLM_REQUEST_BATCH_SIZE", 10, minimum=1)
         max_seconds = _env_float("LLM_MAX_SECONDS", 150.0, minimum=1.0)
         time_buffer = _env_float("LLM_TIME_BUFFER", 10.0, minimum=0.0)
@@ -839,15 +878,15 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             raise RuntimeError("LLM_TIME_BUFFER must be smaller than LLM_MAX_SECONDS")
 
         storage = _object_storage_client()
-        source_object = _event_object_name(data, bucket, body_prefix)
-        pending, scan_meta = _event_rows(
+        pending, scan_meta = _pending_rows(
             storage,
             namespace,
             bucket,
-            source_object,
+            body_prefix,
             claims_prefix,
             max_rows,
         )
+        source_object = str(scan_meta.get("selected_source_object", ""))
         deadline = started + max_seconds - time_buffer
         output_rows: list[dict[str, str]] = []
         statuses: Counter[str] = Counter()
@@ -950,21 +989,34 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                         break
 
         object_name = ""
-        if output_rows:
+        if output_rows and source_object:
+            canonical_name = _claims_output_name(claims_prefix, source_object)
+            existing_rows = (
+                _read_csv_object(storage, namespace, bucket, canonical_name)
+                if canonical_name in _list_csv_objects(storage, namespace, bucket, claims_prefix)
+                else []
+            )
+            merged = {
+                row.get("record_id", ""): row
+                for row in existing_rows
+                if row.get("record_id", "")
+            }
+            merged.update({row["record_id"]: row for row in output_rows})
             object_name = _write_claims(
                 storage,
                 namespace,
                 bucket,
                 claims_prefix,
-                output_rows,
-                run_id,
-                object_stem="claims",
+                sorted(merged.values(), key=lambda row: row.get("record_id", "")),
+                source_object,
             )
         result_status = "ok"
         if statuses.get("ERROR", 0) and not output_rows:
             result_status = "error"
         elif statuses.get("ERROR", 0):
             result_status = "partial"
+        terminal_written = sum(1 for row in output_rows if _claim_row_is_terminal(row))
+        pending_total = int(scan_meta.get("pending_rows", 0))
         result = {
             "status": result_status,
             "mode": "claims",
@@ -975,7 +1027,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "row_count": str(len(output_rows)),
             "ok_rows": str(statuses.get("OK", 0)),
             "error_rows": str(statuses.get("ERROR", 0)),
-            "rows_left_for_next_run": "0",
+            "rows_left_for_next_run": str(max(0, pending_total - terminal_written)),
             "llm_error": last_llm_error,
             "model_id": model_id,
             "llm_provider": provider,

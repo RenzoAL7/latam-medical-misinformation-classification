@@ -14,11 +14,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from api_auth import authorization_header
+
 
 def _request(base_url: str, path: str, token: str) -> Any:
     request = urllib.request.Request(
         f"{base_url.rstrip('/')}{path}",
-        headers={"Accept": "application/json", **({"Authorization": f"Token {token}"} if token else {})},
+        headers={"Accept": "application/json", **authorization_header(token)},
         method="GET",
     )
     try:

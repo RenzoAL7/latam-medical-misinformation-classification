@@ -7,8 +7,8 @@ English candidates with OCI Generative AI `cohere.embed-v4.0`, translates only
 the returned abstracts with a separate Gemini secret, and writes one CSV row
 per claim under `silver/evidence/`. The top-k articles are stored in the
 `pubmed_results_json` column, so ten candidates per claim remain inside that
-row instead of becoming ten extra CSV rows. Each Object Storage event is scoped
-to one Claims CSV, so the Function processes only that file's eligible claims.
+row instead of becoming ten extra CSV rows. Each Object Storage event wakes a
+global backlog drain that selects one bounded Claims source at a time.
 
 This Function does not assign a truth label. `evidence_status=OK` means that
 PubMed returned candidate records, not that the news claim is supported. The
@@ -23,7 +23,7 @@ OBJECT_STORAGE_BUCKET=mednews-data
 SILVER_CLAIMS_PREFIX=silver/claims
 SILVER_EVIDENCE_PREFIX=silver/evidence
 SILVER_REJECTED_EVIDENCE_PREFIX=silver/rejected/evidence
-EVIDENCE_MAX_ROWS=0
+EVIDENCE_MAX_ROWS=20
 PUBMED_TOP_K=10
 PUBMED_EMAIL=<research contact email>
 PUBMED_TOOL=mednews-thesis
@@ -61,17 +61,17 @@ row.
 
 ## Selection and deduplication
 
-The Function reads the single `silver/claims/*.csv` named by the OCI Event and
-requires `is_claim_eligible=true`, `llm_status=OK`, `claim_text`, and
-`pubmed_query_en`. Record IDs already written to Evidence or rejected Evidence
-are skipped only to make duplicate delivery of that same event idempotent.
-It never scans another Claims file to fill the current run. PubMed, network,
-timeout, and translation failures are recorded explicitly in that run; no
-hourly drain or global retry is used.
+The Function scans all `silver/claims/*.csv` objects and requires
+`is_claim_eligible=true`, `llm_status=OK`, `claim_text`, and `pubmed_query_en`.
+Terminal IDs already in accepted Evidence or rejected Evidence are skipped;
+transient PubMed/time-budget/network errors remain retryable. A positive
+`EVIDENCE_MAX_ROWS` bounds one source batch, which is important for a corpus of
+1000 news items.
 
 `EVIDENCE_MAX_ROWS=0` means that the Function selects every eligible claim in
-the triggering object. Set a positive value only to deliberately cap a run; a
-cap smaller than the event file is rejected instead of silently deferring rows.
+the selected source. The production value `20` lets a recurring drain advance
+the backlog without crossing the PubMed/translation time budget. The response
+reports the real `rows_left_for_next_run` count.
 The 295-second budget leaves five seconds to persist the final CSV before OCI's
 300-second synchronous limit. It waits 0.4 seconds between PubMed requests,
 then translates one abstract at a time on up to two Gemini keys in parallel.
@@ -85,13 +85,15 @@ complete duration, PubMed and Embed 4 limits.
 
 ## Output
 
-`silver/evidence/` now contains only rows with `evidence_status=OK`. Rows that
-do not yield usable PubMed evidence are written under
+`silver/evidence/` contains only rows with `evidence_status=OK`. Rows that do
+not yield usable PubMed evidence are written under
 `silver/rejected/evidence/` with `rejection_reason` (for example
-`PUBMED_NO_RESULTS`), and remain part of terminal-result deduplication.
+`PUBMED_NO_RESULTS`), and remain part of terminal-result deduplication. Each
+source has one accepted and one rejected canonical object; retries replace the
+row by `record_id` instead of creating another CSV.
 
 ```text
-silver/evidence/evidence_<run_id>.csv
+silver/evidence/evidence_run_zz_current_<claims-source>_<hash>.csv
 ```
 
 The CSV has one row per input claim. `pubmed_results_json` contains up to ten
@@ -124,7 +126,7 @@ unchanged for review.
 oci fn function invoke \
   --function-id <retrieve-pubmed-evidence-function-ocid> \
   --file - \
-  --body '{"data":{"resourceName":"silver/claims/<input>.csv","additionalDetails":{"bucketName":"mednews-data"}}}' \
+  --body '{}' \
   --region us-ashburn-1 \
   --read-timeout 360
 ```

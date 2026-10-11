@@ -16,9 +16,9 @@ estaba activa conserva su comportamiento anterior hasta ese despliegue.
 | Etapa | Disparador | Trabajo máximo por invocación | Presupuesto interno | Salida |
 | --- | --- | ---: | ---: | --- |
 | Recolección NewsData | Scheduler, 08:00 y 20:00 Lima | 50 filas nuevas; hasta 8 solicitudes con la configuración actual | 150 s + 10 s de margen | `bronze/newsdata_<run_id>.csv` |
-| Extracción del cuerpo | Event `bronze/*.csv` + drenaje horario | 50 filas | 150 s + 10 s de margen | `silver/body/body_<run_id>.csv` |
-| Claims | Event `silver/body/*.csv` + drenaje horario | Todas las filas elegibles; solicitudes Gemini de 10 filas | 150 s + 10 s de margen | `silver/claims/claims_<run_id>.csv` |
-| Evidence | Event `silver/claims/*.csv` | Todas las claims elegibles; hasta 10 artículos PubMed por claim | 270 s + margen de 10 s dentro del código | `silver/evidence/evidence_<run_id>.csv` |
+| Extracción del cuerpo | Event `bronze/*.csv` + drenaje | 50 filas del mismo Bronze; backlog global | 150 s + 10 s de margen | `silver/body/body_current_<source>_<hash>.csv` |
+| Claims | Event `silver/body/*.csv` + drenaje | 25 filas del mismo Body; solicitudes Gemini de 10 filas | 150 s + 10 s de margen | `silver/claims/claims_current_<source>_<hash>.csv` |
+| Evidence | Event `silver/claims/*.csv` + drenaje | 20 claims del mismo Claims; hasta 10 artículos PubMed por claim | 295 s + margen de 5 s | `silver/evidence/evidence_run_zz_current_<source>_<hash>.csv` |
 | Etiquetado | Persona en Label Studio | No tiene timeout de OCI | Depende del equipo | Gold revisado |
 
 Los tamaños son límites superiores, no cantidades garantizadas. Si una etapa
@@ -37,12 +37,12 @@ filas porque NewsData entrega una ventana reciente y Bronze ya puede contener
 El tiempo de una Function y el tiempo de todo el pipeline son cosas distintas.
 Events puede iniciar la siguiente etapa poco después del `PUT`, pero el
 servicio es asíncrono. Para un
-CSV Bronze de 50 filas, claims hace como máximo 5 solicitudes Gemini de 10
-filas dentro de una invocación. Evidence intenta procesar todas las claims
-resultantes en esa invocación: hace una búsqueda PubMed por claim, agrupa el
-EFetch, trocea los embeddings y traduce abstracts en grupos de 2. Si ese trabajo
-no cabe dentro del presupuesto, una invocación posterior de Evidence por Events
-aprovecha su tiempo restante para continuar las traducciones pendientes. El tiempo observado depende de la cola de
+CSV Bronze de 50 filas, claims avanza en lotes de 25 y hace como máximo 3
+solicitudes Gemini de 10 filas por invocación. Evidence avanza en lotes de 20:
+hace una búsqueda PubMed por claim, agrupa el EFetch, trocea los embeddings y
+traduce abstracts en grupos de 2. Si ese trabajo no cabe dentro del presupuesto,
+la fila queda reintentable y una activación posterior del drenaje continúa. El
+tiempo observado depende de la cola de
 OCI, Events, URLs, PubMed, cuotas y errores; se debe reportar desde
 `elapsed_seconds` y los nombres de objetos, no inferirlo solo desde la hora del
 Scheduler.
@@ -220,9 +220,11 @@ pequeños CSV auditables y evita reescribir todo el histórico.
 
 Events es asíncrono: la creación de un objeto puede disparar la siguiente
 Function después de que el PUT terminó y una entrega puede necesitar reintento.
-Por eso cada etapa es idempotente por `record_id`; los drenajes de Body y
-Claims complementan sus eventos. No se debe usar el timestamp del evento como garantía de que la etapa
-terminó.
+Por eso cada etapa es idempotente por `record_id`; los handlers recorren el
+backlog global y escriben un objeto canónico por fuente. No se debe usar el
+timestamp del evento como garantía de que la etapa terminó: para terminar una
+colección grande se necesita una activación recurrente de drenaje mientras
+`rows_left_for_next_run` sea mayor que cero.
 
 Referencias: [OCI Resource Scheduler](https://docs.oracle.com/en-us/iaas/Content/resource-scheduler/tasks/create-manage.htm)
 y [OCI Object Storage overview](https://docs.oracle.com/en-us/iaas/Content/Object/Concepts/objectstorageoverview.htm).

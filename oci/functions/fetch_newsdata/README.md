@@ -58,7 +58,8 @@ With `BRONZE_DEDUP_ENABLED=1`, each run reads prior CSVs under `bronze/` and
 skips any `record_id` already stored there and also removes duplicates between
 countries in the current run. This prevents the same canonical URL from
 returning in multiple runs while the API's latest feed covers overlapping
-48-hour windows. `NEWSDATA_MAX_PAGES` controls pages per country group. The production value is
+48-hour windows. If a run finds no new rows, it returns `no_new_rows` and does
+not create an empty Bronze CSV. `NEWSDATA_MAX_PAGES` controls pages per country group. The production value is
 `2`: with `NEWSDATA_COUNTRY_GROUP_SIZE=5`, a full 19-country pass makes at most
 8 NewsData requests (four country groups x two pages), while the function stops
 early as soon as it has 50 new rows. When two Vault keys are configured, groups
