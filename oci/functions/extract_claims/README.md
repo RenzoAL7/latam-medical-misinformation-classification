@@ -24,7 +24,7 @@ SILVER_CLAIMS_PREFIX=silver/claims
 LLM_MODEL_ID=google.gemini-2.5-flash
 LLM_REGION=us-ashburn-1
 GENAI_COMPARTMENT_ID=<Cloud compartment OCID>
-LLM_MAX_ROWS=0
+LLM_MAX_ROWS=25
 LLM_REQUEST_BATCH_SIZE=10
 LLM_MAX_SECONDS=150
 LLM_TIME_BUFFER=10
@@ -53,14 +53,14 @@ group must be allowed to read both secrets. The request uses the
 `llm_key_slot` records which loaded slot produced each row without exposing the
 key.
 
-Each OCI Event identifies one `silver/body/*.csv` object. The Function reads
-only that source file, excludes body rows whose extraction was not `OK`, and
-writes its corresponding Claims CSV. Record IDs already present in
-`silver/claims/` are skipped only to make a duplicated delivery of the same
-event idempotent; rows from earlier Body files are never pulled into the run.
-`LLM_MAX_ROWS=0` means process every eligible body from the triggering object.
-Set it to a positive value only for a deliberate cap; a cap smaller than the
-event file is rejected instead of silently spilling rows into another run.
+Each OCI Event wakes a global backlog drain. The Function scans all
+`silver/body/*.csv` objects, excludes body rows whose extraction was not `OK`,
+and selects one source batch. A successful `llm_status=OK` row is terminal;
+LLM errors and time-budget rows remain retryable. `LLM_MAX_ROWS=0` means all
+eligible rows from the selected source; the production value `25` bounds the
+batch for a recurring drain. The output is one deterministic
+`claims_current_*.csv` per Body source, merged by `record_id`, so a retry
+updates the same object instead of creating a duplicate CSV.
 `LLM_REQUEST_BATCH_SIZE` limits the number of rows sent in one Gemini request;
 the recommended value 10 keeps each prompt bounded while the function sends
 the next request in the same invocation. Eligible rows include
@@ -69,14 +69,14 @@ English PubMed abstracts without another Gemini request. The Function writes
 successful rows when the internal time budget is reached. If Gemini is
 unavailable, the quota is exhausted, or a response does not contain one valid
 item per input row, every affected article is written with `llm_status=ERROR`
-and an explicit reason; it does not remain pending for another scheduled run.
+and an explicit reason; it remains pending for a later retry.
 HTTP 4xx, quota, rate-limit, and malformed JSON failures are not retried
 inside the same invocation, so a failed request does not consume a duplicate
 API call.
 
-The current request batch is 10 rows. With 50 eligible bodies in the triggering
-file this means five
-Gemini requests, alternating the two configured project keys. The actual time
+The current request batch is 10 rows. With 50 eligible bodies in a source file
+this means five Gemini requests, alternating the two configured project keys.
+The actual time
 is dominated by body length, response tokens and project quota. See
 [`docs/limits_and_timing.md`](../../../docs/limits_and_timing.md) for the
 provider, quota and retry matrix.
@@ -86,7 +86,7 @@ provider, quota and retry matrix.
 Successful invocations write a CSV such as:
 
 ```text
-silver/claims/claims_run_20261005T000000Z_ab12cd34.csv
+silver/claims/claims_current_<body-source>_<hash>.csv
 ```
 
 The output keeps the Bronze and body columns and adds `claim_text`,
@@ -101,7 +101,7 @@ The output keeps the Bronze and body columns and adds `claim_text`,
 oci fn function invoke \
   --function-id <extract-claims-function-ocid> \
   --file - \
-  --body '{"data":{"resourceName":"silver/body/<input>.csv","additionalDetails":{"bucketName":"mednews-data"}}}' \
+  --body '{}' \
   --region us-ashburn-1 \
   --read-timeout 360
 ```

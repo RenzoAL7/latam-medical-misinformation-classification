@@ -718,6 +718,20 @@ def _write_bronze(
     prefix = os.getenv("BRONZE_PREFIX", "bronze").strip("/")
     retrieved_at = datetime.now(timezone.utc)
     run_id = f"run_{retrieved_at.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+    if not rows:
+        return {
+            "run_id": run_id,
+            "bucket": bucket,
+            "object_name": "",
+            "row_count": "0",
+            "candidate_row_count": str(request_meta["candidate_rows"]),
+            "duplicates_skipped": str(request_meta["duplicates_skipped"]),
+            "existing_record_ids": str(request_meta["existing_record_ids"]),
+            "dedup_enabled": str(request_meta["dedup_enabled"]).lower(),
+            "countries_attempted": ",".join(request_meta["countries_attempted"]),
+            "write_skipped": "empty_batch",
+            "request_meta": json.dumps(request_meta, ensure_ascii=False),
+        }
     # The layer is already encoded by ``prefix``.  Keep the object name short
     # and stable so a bucket listing is readable across pipeline stages.
     object_name = f"{prefix}/newsdata_{run_id}.csv"
@@ -745,6 +759,7 @@ def _write_bronze(
         "existing_record_ids": str(request_meta["existing_record_ids"]),
         "dedup_enabled": str(request_meta["dedup_enabled"]).lower(),
         "countries_attempted": ",".join(request_meta["countries_attempted"]),
+        "write_skipped": "",
         "request_meta": json.dumps(request_meta, ensure_ascii=False),
     }
 
@@ -784,10 +799,15 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                 f"{json.dumps(summary, ensure_ascii=False)}"
             )
         result = _write_bronze(rows, request_meta, client)
-        LOGGER.info("Bronze CSV written: %s (%s rows)", result["object_name"], result["row_count"])
+        result_status = "ok" if result["object_name"] else "no_new_rows"
+        LOGGER.info(
+            "Bronze batch completed: %s (%s rows)",
+            result["object_name"] or "no object written",
+            result["row_count"],
+        )
         return response.Response(
             ctx,
-            response_data=json.dumps({"status": "ok", **result}),
+            response_data=json.dumps({"status": result_status, **result}),
             headers={"Content-Type": "application/json"},
         )
     except Exception as exc:  # noqa: BLE001 - the invocation must return a useful error

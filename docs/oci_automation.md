@@ -99,21 +99,22 @@ humano en Label Studio.
 | Capa | Function | Máximo por invocación | Resultado |
 | --- | --- | ---: | --- |
 | Bronze | `fetch-newsdata` | 50 noticias nuevas | `bronze/newsdata_<run_id>.csv` |
-| Silver body | `extract-news-body` | 50 filas | `silver/body/body_<run_id>.csv` |
-| Silver claims | `extract-claims` | Todas las filas elegibles pendientes; solicitudes Gemini de 10 filas | `silver/claims/claims_<run_id>.csv` |
-| Silver evidence | `retrieve-pubmed-evidence` | Todas las claims elegibles pendientes; hasta 10 artículos por claim | `silver/evidence/evidence_<run_id>.csv` |
+| Silver body | `extract-news-body` | 50 filas del mismo Bronze; backlog global | `silver/body/body_current_<source>_<hash>.csv` |
+| Silver claims | `extract-claims` | 25 filas del mismo Body; solicitudes Gemini de 10 filas | `silver/claims/claims_current_<source>_<hash>.csv` |
+| Silver evidence | `retrieve-pubmed-evidence` | 20 claims del mismo Claims; hasta 10 artículos por claim | `silver/evidence/evidence_run_zz_current_<source>_<hash>.csv` |
 
 `extract-news-body` debe usar el prefijo específico `SILVER_BODY_PREFIX=silver/body`.
 No se debe configurar el prefijo genérico `SILVER_PREFIX=silver`: produciría
 `silver/body_<run_id>.csv`, que no coincide con la regla Events
 `silver/body/*.csv` y corta la cadena automática.
 
-Claims y Evidence recorren los pendientes en una invocación y detienen el
+Claims y Evidence recorren los pendientes en lotes acotados y detienen el
 trabajo al alcanzar el presupuesto interno. Las solicitudes individuales siguen
 siendo pequeñas: Claims envía 10 filas por llamada Gemini y Evidence traduce en
-grupos de 2 abstracts. Evidence aprovecha el tiempo restante de cada
-invocación por Events para continuar traducciones pendientes; no existe un
-schedule Evidence separado.
+grupos de 2 abstracts. Los handlers dejan `rows_left_for_next_run` real y deben
+ser activados de nuevo por Events o por un schedule de drenaje hasta llegar a
+cero; no se debe asumir que una sola entrega de Events vacía un corpus de 1000
+noticias.
 
 Evidence guarda hasta 10 candidatos PubMed dentro de
 `pubmed_results_json`. Eso son diez candidatos por claim, no diez filas

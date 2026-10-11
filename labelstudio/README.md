@@ -46,12 +46,13 @@ sean `OK`, consulta las tareas que ya existen en el proyecto y solo importa
 registros nuevos. Se puede ejecutar después de cada corrida de evidence. No
 guardes el token, las API keys ni el manifest con datos en Git.
 
-Cada tarea conserva `evidence_text` completo y además crea `evidence_primary`,
-`evidence_additional` y `evidence_count`. La interfaz muestra primero el
-candidato mejor ordenado y deja los demás dentro de un panel desplegable. Si
-ya tienes tareas importadas con la configuración anterior, ejecuta el mismo
-comando con `--refresh-existing` para actualizar solo los datos de las tareas
-correspondientes y conservar sus anotaciones. El importador seguirá
+Cada tarea conserva `evidence_primary`, `evidence_additional` y `evidence_count`.
+No se guarda una segunda copia completa de la evidencia porque aumenta el
+payload de cada tarea sin ser usada por `config.xml`. La interfaz muestra
+primero el candidato mejor ordenado y deja los demás dentro de un panel
+desplegable. Si ya tienes tareas importadas con la configuración anterior,
+ejecuta el mismo comando con `--refresh-existing` para reducir el payload de
+las tareas correspondientes y conservar sus anotaciones. El importador seguirá
 deduplicando por `record_id`.
 
 ```bash

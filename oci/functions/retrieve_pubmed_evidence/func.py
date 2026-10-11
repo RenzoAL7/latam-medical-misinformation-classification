@@ -1,17 +1,18 @@
-"""Retrieve PubMed evidence for the one Claims object in an OCI Event.
+"""Retrieve PubMed evidence from the Claims backlog in bounded batches.
 
 The function is deliberately an evidence-retrieval step. It does not decide
-whether a news claim is true or false. It processes only the
-``silver/claims/*.csv`` object that triggered the event, queries PubMed with
-ESearch, ranks the candidates with OCI Cohere Embed 4, translates all retained
-abstract excerpts to Spanish, and writes one output row per claim. A
-transparent Spanish TF-IDF score is kept as a diagnostic and fallback.
+whether a news claim is true or false. It drains one bounded source batch,
+queries PubMed with ESearch, ranks the candidates with OCI Cohere Embed 4,
+translates all retained abstract excerpts to Spanish, and writes accepted and
+rejected rows to deterministic output objects. A transparent Spanish TF-IDF
+score is kept as a diagnostic and fallback.
 """
 
 from __future__ import annotations
 
 import csv
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import io
 import json
 import logging
@@ -459,6 +460,81 @@ def _event_claim_rows(
     }
 
 
+def _stable_token(object_name: str) -> str:
+    stem = object_name.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    readable = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")[:72] or "source"
+    digest = hashlib.sha256(object_name.encode("utf-8")).hexdigest()[:12]
+    return f"{readable}_{digest}"
+
+
+def _evidence_output_name(prefix: str, source_object: str, rejected: bool = False) -> str:
+    """Return the one canonical Evidence object for a Claims source."""
+
+    token = _stable_token(source_object)
+    if rejected:
+        return f"{prefix.strip('/')}/rejected_evidence_current_{token}.csv"
+    # Keep the historical evidence_run_ prefix so the Label Studio sync accepts
+    # the file, while zz_current sorts after immutable legacy runs.
+    return f"{prefix.strip('/')}/evidence_run_zz_current_{token}.csv"
+
+
+def _evidence_row_is_terminal(row: dict[str, str]) -> bool:
+    """Return whether an evidence outcome is final for automatic retrieval."""
+
+    status = row.get("evidence_status", "").strip().upper()
+    if status in {"OK", "NO_RESULTS", "NO_ABSTRACT"}:
+        return True
+    if status != "ERROR":
+        return False
+    error = row.get("evidence_error", "").lower()
+    transient_markers = (
+        "time_budget",
+        "timeout",
+        "timed out",
+        "network error",
+        "temporarily",
+        "temporarily unavailable",
+        "http 408",
+        "http 425",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "connection",
+    )
+    return bool(error) and not any(marker in error for marker in transient_markers)
+
+
+def _latest_claim_rows(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    claims_prefix: str,
+) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
+    """Read all Claims objects and keep one auditable row per record_id."""
+
+    rows_by_id: dict[str, dict[str, str]] = {}
+    objects = _list_csv_objects(client, namespace, bucket, claims_prefix)
+    rows_seen = 0
+    for object_name in objects:
+        for source_row in _read_csv_object(client, namespace, bucket, object_name):
+            rows_seen += 1
+            record_id = source_row.get("record_id", "").strip()
+            if not record_id:
+                continue
+            row = dict(source_row)
+            row["source_claims_object"] = object_name
+            previous = rows_by_id.get(record_id)
+            if previous is None or _row_priority(row) >= _row_priority(previous):
+                rows_by_id[record_id] = row
+    return rows_by_id, {
+        "claims_objects_scanned": len(objects),
+        "claims_rows_seen": rows_seen,
+        "unique_claims": len(rows_by_id),
+    }
+
+
 def _existing_evidence_ids(
     client: Any,
     namespace: str,
@@ -466,7 +542,7 @@ def _existing_evidence_ids(
     evidence_prefix: str,
     rejected_prefix: str = "",
 ) -> set[str]:
-    """Return all evidence attempts so duplicate Events cannot reprocess rows."""
+    """Return terminal evidence IDs; transient errors remain retryable."""
 
     record_ids: set[str] = set()
     prefixes = [evidence_prefix] + ([rejected_prefix] if rejected_prefix else [])
@@ -474,7 +550,7 @@ def _existing_evidence_ids(
         for object_name in _list_csv_objects(client, namespace, bucket, prefix):
             for row in _read_csv_object(client, namespace, bucket, object_name):
                 record_id = row.get("record_id", "").strip()
-                if record_id:
+                if record_id and _evidence_row_is_terminal(row):
                     record_ids.add(record_id)
     return record_ids
 
@@ -485,6 +561,7 @@ def _select_claims(
     max_rows: int,
 ) -> tuple[list[dict[str, str]], dict[str, int]]:
     selected: list[dict[str, str]] = []
+    pending_candidates: list[dict[str, str]] = []
     stats = Counter(
         {
             "claims_seen": len(rows_by_id),
@@ -505,12 +582,21 @@ def _select_claims(
         if not _row_complete(row):
             stats["skipped_missing_query"] += 1
             continue
+        pending_candidates.append(row)
+
+    source_objects = sorted(
+        {row.get("source_claims_object", "") for row in pending_candidates}
+    )
+    selected_source = source_objects[0] if source_objects else ""
+    for row in pending_candidates:
+        if row.get("source_claims_object", "") != selected_source:
+            continue
         selected.append(row)
-    if max_rows > 0 and len(selected) > max_rows:
-        raise RuntimeError(
-            f"Event object has {len(selected)} eligible claims, exceeding EVIDENCE_MAX_ROWS={max_rows}"
-        )
+        if max_rows > 0 and len(selected) >= max_rows:
+            break
+    stats["pending"] = len(pending_candidates)
     stats["selected"] = len(selected)
+    stats["selected_source_object"] = selected_source
     return selected, dict(stats)
 
 
@@ -1534,14 +1620,13 @@ def _write_evidence(
     bucket: str,
     prefix: str,
     rows: list[dict[str, str]],
-    run_id: str,
-    object_stem: str = "evidence",
+    source_object: str,
 ) -> str:
     csv_buffer = io.StringIO(newline="")
     writer = csv.DictWriter(csv_buffer, fieldnames=OUTPUT_FIELDS, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
-    object_name = f"{prefix.strip('/')}/{object_stem}_{run_id}.csv"
+    object_name = _evidence_output_name(prefix, source_object)
     client.put_object(
         namespace_name=namespace,
         bucket_name=bucket,
@@ -1558,13 +1643,13 @@ def _write_rejected_evidence(
     bucket: str,
     prefix: str,
     rows: list[dict[str, str]],
-    run_id: str,
+    source_object: str,
 ) -> str:
     csv_buffer = io.StringIO(newline="")
     writer = csv.DictWriter(csv_buffer, fieldnames=REJECTED_FIELDS, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
-    object_name = f"{prefix.strip('/')}/rejected_evidence_{run_id}.csv"
+    object_name = _evidence_output_name(prefix, source_object, rejected=True)
     client.put_object(
         namespace_name=namespace,
         bucket_name=bucket,
@@ -1597,10 +1682,10 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         claims_prefix = os.getenv("SILVER_CLAIMS_PREFIX", "silver/claims").strip("/")
         evidence_prefix = os.getenv("SILVER_EVIDENCE_PREFIX", "silver/evidence").strip("/")
         rejected_prefix = os.getenv("SILVER_REJECTED_EVIDENCE_PREFIX", "silver/rejected/evidence").strip("/")
-        # A zero max processes every eligible claim in the triggering object.
-        # An explicit error row is preferable to silently carrying a record
-        # into a later scheduled run.
-        max_rows = _env_int("EVIDENCE_MAX_ROWS", 0, minimum=0, maximum=1000)
+        # A zero max processes every eligible claim in the selected source.
+        # Production can set a positive cap to let a recurring drain advance a
+        # large backlog without crossing the PubMed/translation time budget.
+        max_rows = _env_int("EVIDENCE_MAX_ROWS", 20, minimum=0, maximum=1000)
         top_k = _env_int("PUBMED_TOP_K", 10, minimum=1, maximum=20)
         request_delay = _env_float("PUBMED_REQUEST_DELAY", 0.4, minimum=0.34)
         request_timeout = _env_float("PUBMED_REQUEST_TIMEOUT", 20.0, minimum=5.0)
@@ -1662,10 +1747,10 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             if translation_secret_ids and not translation_api_keys:
                 translation_config_error = "No usable translation Gemini Vault secret was found"
 
-        source_object = _event_object_name(data, bucket, claims_prefix)
-        claim_rows, scan_meta = _event_claim_rows(storage, namespace, bucket, source_object)
+        claim_rows, scan_meta = _latest_claim_rows(storage, namespace, bucket, claims_prefix)
         existing_ids = _existing_evidence_ids(storage, namespace, bucket, evidence_prefix, rejected_prefix)
         pending, selection_meta = _select_claims(claim_rows, existing_ids, max_rows)
+        source_object = str(selection_meta.get("selected_source_object", ""))
 
         query_pmids: dict[str, list[str]] = {}
         errors: dict[str, str] = {}
@@ -1784,20 +1869,56 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             row["rejection_reason"] = _evidence_rejection_reason(row)
         status_counts = Counter(row.get("evidence_status", "") for row in output_rows)
         object_name = ""
-        if accepted_rows:
-            object_name = _write_evidence(
-                storage,
-                namespace,
-                bucket,
-                evidence_prefix,
-                accepted_rows,
-                run_id,
-            )
         rejected_object_name = ""
-        if rejected_rows:
-            rejected_object_name = _write_rejected_evidence(
-                storage, namespace, bucket, rejected_prefix, rejected_rows, run_id
+        if output_rows and source_object:
+            accepted_name = _evidence_output_name(evidence_prefix, source_object)
+            rejected_name = _evidence_output_name(rejected_prefix, source_object, rejected=True)
+            evidence_objects = _list_csv_objects(storage, namespace, bucket, evidence_prefix)
+            rejected_objects = _list_csv_objects(storage, namespace, bucket, rejected_prefix)
+            existing_accepted = (
+                _read_csv_object(storage, namespace, bucket, accepted_name)
+                if accepted_name in evidence_objects
+                else []
             )
+            existing_rejected = (
+                _read_csv_object(storage, namespace, bucket, rejected_name)
+                if rejected_name in rejected_objects
+                else []
+            )
+            accepted_by_id = {
+                row.get("record_id", ""): row
+                for row in existing_accepted
+                if row.get("record_id", "")
+            }
+            rejected_by_id = {
+                row.get("record_id", ""): row
+                for row in existing_rejected
+                if row.get("record_id", "")
+            }
+            for row in accepted_rows:
+                accepted_by_id[row["record_id"]] = row
+                rejected_by_id.pop(row["record_id"], None)
+            for row in rejected_rows:
+                if row["record_id"] not in accepted_by_id:
+                    rejected_by_id[row["record_id"]] = row
+            if accepted_by_id:
+                object_name = _write_evidence(
+                    storage,
+                    namespace,
+                    bucket,
+                    evidence_prefix,
+                    sorted(accepted_by_id.values(), key=lambda row: row.get("record_id", "")),
+                    source_object,
+                )
+            if rejected_by_id or rejected_name in rejected_objects:
+                rejected_object_name = _write_rejected_evidence(
+                    storage,
+                    namespace,
+                    bucket,
+                    rejected_prefix,
+                    sorted(rejected_by_id.values(), key=lambda row: row.get("record_id", "")),
+                    source_object,
+                )
 
         result = {
             "status": "ok" if not status_counts.get("ERROR") else "partial",
@@ -1810,7 +1931,13 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "rejected_object_name": rejected_object_name,
             "rejected_row_count": str(len(rejected_rows)),
             "status_counts": dict(status_counts),
-            "rows_left_for_next_run": "0",
+            "rows_left_for_next_run": str(
+                max(
+                    0,
+                    int(selection_meta.get("pending", 0))
+                    - sum(1 for row in output_rows if _evidence_row_is_terminal(row)),
+                )
+            ),
             "pubmed_requests": str(pubmed_requests),
             "translation": translation_stats,
             "translation_model": translation_model if translate_enabled else "",

@@ -22,6 +22,10 @@ def test_sync_accepts_only_current_evidence_outputs() -> None:
     assert sync._evidence_object_name(
         "silver/evidence/evidence_run_20261009T130636Z_8a27e68e.csv", "silver/evidence"
     )
+    assert sync._evidence_object_name(
+        "silver/evidence/evidence_run_zz_current_claims_current_a_123456789abc.csv",
+        "silver/evidence",
+    )
     assert not sync._evidence_object_name(
         "silver/evidence/evidence_translated_run_20261009T020412Z_02085de4.csv", "silver/evidence"
     )

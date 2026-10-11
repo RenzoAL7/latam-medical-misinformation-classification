@@ -1,14 +1,15 @@
-"""Extract bodies for exactly the Bronze object that triggered OCI Events.
+"""Extract article bodies from the Bronze backlog in bounded, idempotent batches.
 
-Each Object Storage event is a single pipeline run: ``bronze/*.csv`` becomes
-one ``silver/body/*.csv``.  The handler never fills an event's batch with a
-pending row from an older Bronze object, so a previous publisher failure cannot
-displace a new article from the current scheduled run.
+Object Storage Events still wake this Function when a Bronze CSV is created,
+but the handler drains the oldest pending rows across all Bronze CSVs.  A
+deterministic output object is maintained per Bronze source, so retries replace
+the previous attempt instead of creating a second CSV for the same articles.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -160,6 +161,147 @@ def _read_csv_object(
         for row in reader
         if row
     ]
+
+
+def _stable_token(object_name: str) -> str:
+    """Build a readable, collision-resistant token for a source object."""
+
+    stem = object_name.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    readable = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")[:72] or "source"
+    digest = hashlib.sha256(object_name.encode("utf-8")).hexdigest()[:12]
+    return f"{readable}_{digest}"
+
+
+def _body_output_name(prefix: str, source_object: str) -> str:
+    """Return the one canonical Body CSV for a Bronze source."""
+
+    return f"{prefix.strip('/')}/body_current_{_stable_token(source_object)}.csv"
+
+
+def _body_row_is_terminal(row: dict[str, str]) -> bool:
+    """Return whether a Body result must not be retried automatically."""
+
+    status = row.get("extraction_status", "").strip().upper()
+    if status in {"OK", "CUERPO_INSUFICIENTE"}:
+        return True
+    if status == "HTTP_ERROR":
+        try:
+            http_status = int(row.get("http_status", "0"))
+        except ValueError:
+            http_status = 0
+        return http_status not in RETRYABLE_HTTP_STATUS
+    if status == "URL_ERROR":
+        error = row.get("extraction_error", "").lower()
+        return bool(error) and not any(
+            marker in error
+            for marker in (
+                "timed out",
+                "timeout",
+                "temporary",
+                "temporarily",
+                "network",
+                "connection",
+                "urlopen error",
+                "try again",
+            )
+        )
+    if status in {"TIMEOUT", "PENDING", ""}:
+        return False
+    error = row.get("extraction_error", "").lower()
+    return bool(error) and not any(
+        marker in error
+        for marker in (
+            "time budget",
+            "timeout",
+            "temporarily",
+            "network",
+            "connection",
+            "try again",
+        )
+    )
+
+
+def _existing_body_rows(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    prefix: str,
+) -> dict[str, dict[str, str]]:
+    """Read the latest Body attempt for each record_id across all output CSVs."""
+
+    latest: dict[str, dict[str, str]] = {}
+    for object_name in _list_csv_objects(client, namespace, bucket, prefix):
+        for row in _read_csv_object(client, namespace, bucket, object_name):
+            record_id = row.get("record_id", "").strip()
+            if record_id:
+                previous = latest.get(record_id)
+                if previous is None or (
+                    _body_row_is_terminal(row) and not _body_row_is_terminal(previous)
+                ) or (_body_row_is_terminal(row) == _body_row_is_terminal(previous)):
+                    latest[record_id] = row
+    return latest
+
+
+def _pending_rows(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    bronze_prefix: str,
+    silver_prefix: str,
+    batch_size: int,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Select one bounded source batch and count the complete pending backlog."""
+
+    existing = _existing_body_rows(client, namespace, bucket, silver_prefix)
+    bronze_objects = _list_csv_objects(client, namespace, bucket, bronze_prefix)
+    selected: list[dict[str, str]] = []
+    selected_ids: set[str] = set()
+    pending_ids: set[str] = set()
+    selected_source = ""
+    rows_seen = 0
+    invalid_rows = 0
+    skipped_terminal = 0
+    duplicate_rows = 0
+
+    for object_name in bronze_objects:
+        source_pending: list[dict[str, str]] = []
+        for source_row in _read_csv_object(client, namespace, bucket, object_name):
+            rows_seen += 1
+            record_id = source_row.get("record_id", "").strip()
+            canonical_url = source_row.get("canonical_url", "").strip()
+            if not record_id or not canonical_url:
+                invalid_rows += 1
+                continue
+            previous = existing.get(record_id)
+            if previous is not None and _body_row_is_terminal(previous):
+                skipped_terminal += 1
+                continue
+            if record_id in pending_ids:
+                duplicate_rows += 1
+                continue
+            pending_ids.add(record_id)
+            row = {
+                field: source_row.get(field, "").strip() for field in BRONZE_FIELDS
+            }
+            row["source_bronze_object"] = object_name
+            source_pending.append(row)
+
+        if source_pending and not selected_source:
+            selected_source = object_name
+            selected = source_pending[:batch_size]
+            selected_ids = {row["record_id"] for row in selected}
+
+    return selected, {
+        "bronze_objects_scanned": len(bronze_objects),
+        "bronze_rows_seen": rows_seen,
+        "invalid_or_duplicate_rows": invalid_rows + duplicate_rows,
+        "duplicate_rows": duplicate_rows,
+        "skipped_terminal": skipped_terminal,
+        "bronze_record_ids": len(pending_ids),
+        "pending_rows": len(pending_ids),
+        "selected_source_object": selected_source,
+        "selected_rows": len(selected_ids),
+    }
 
 
 def _event_object_name(data: io.BytesIO | None, bucket: str, prefix: str) -> str:
@@ -451,13 +593,13 @@ def _write_silver(
     bucket: str,
     prefix: str,
     rows: list[dict[str, str]],
-    run_id: str,
+    source_object: str,
 ) -> str:
     csv_buffer = io.StringIO(newline="")
     writer = csv.DictWriter(csv_buffer, fieldnames=SILVER_FIELDS, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
-    object_name = f"{prefix.strip('/')}/body_{run_id}.csv"
+    object_name = _body_output_name(prefix, source_object)
     client.put_object(
         namespace_name=namespace,
         bucket_name=bucket,
@@ -485,7 +627,7 @@ def _body_output_prefix() -> str:
 
 
 def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
-    """Process up to one body batch and write the attempted rows to Silver."""
+    """Process one bounded Body batch from the global Bronze backlog."""
 
     started = time.monotonic()
     now = datetime.now(timezone.utc)
@@ -513,19 +655,19 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             raise RuntimeError("BODY_TIME_BUFFER must be smaller than BODY_MAX_SECONDS")
 
         client = _object_storage_client()
-        source_object = _event_object_name(data, bucket, bronze_prefix)
-        pending, scan_meta = _event_rows(
+        pending, scan_meta = _pending_rows(
             client,
             namespace,
             bucket,
-            source_object,
+            bronze_prefix,
+            silver_prefix,
             batch_size,
         )
+        source_object = str(scan_meta.get("selected_source_object", ""))
         deadline = started + max_seconds - time_buffer
         output_rows: list[dict[str, str]] = []
         for index, source_row in enumerate(pending):
             if time.monotonic() >= deadline:
-                output_rows.extend(_time_budget_row(row, run_id) for row in pending[index:])
                 break
             output_rows.append(
                 _extract_row(
@@ -545,15 +687,29 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
 
         object_name = ""
         if output_rows:
+            canonical_name = _body_output_name(silver_prefix, source_object)
+            existing_rows = (
+                _read_csv_object(client, namespace, bucket, canonical_name)
+                if canonical_name in _list_csv_objects(client, namespace, bucket, silver_prefix)
+                else []
+            )
+            merged = {
+                row.get("record_id", ""): row
+                for row in existing_rows
+                if row.get("record_id", "")
+            }
+            merged.update({row["record_id"]: row for row in output_rows})
             object_name = _write_silver(
                 client,
                 namespace,
                 bucket,
                 silver_prefix,
-                output_rows,
-                run_id,
+                sorted(merged.values(), key=lambda row: row.get("record_id", "")),
+                source_object,
             )
         statuses = Counter(row["extraction_status"] for row in output_rows)
+        terminal_written = sum(1 for row in output_rows if _body_row_is_terminal(row))
+        pending_total = int(scan_meta.get("pending_rows", 0))
         result = {
             "status": "ok",
             "run_id": run_id,
@@ -561,8 +717,8 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "object_name": object_name,
             "source_object": source_object,
             "row_count": str(len(output_rows)),
-            "selected_event_rows": str(len(pending)),
-            "rows_left_for_next_run": "0",
+            "selected_pending_rows": str(len(pending)),
+            "rows_left_for_next_run": str(max(0, pending_total - terminal_written)),
             "ok_rows": str(statuses.get("OK", 0)),
             "insufficient_rows": str(statuses.get("CUERPO_INSUFICIENTE", 0)),
             "error_rows": str(sum(value for key, value in statuses.items() if key not in {"OK", "CUERPO_INSUFICIENTE"})),

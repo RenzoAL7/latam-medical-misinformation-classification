@@ -108,9 +108,9 @@ def _task_from_row(row: dict[str, str]) -> dict[str, Any]:
         "best_pmid": row.get("best_pmid", ""),
         "best_embedding_similarity": row.get("best_embedding_similarity", ""),
         "best_tfidf_similarity": row.get("best_tfidf_similarity", ""),
-        # Keep the complete text for compatibility, but expose a compact
-        # primary candidate and a separate collapsed block for the rest.
-        "evidence_text": _candidate_text(row),
+        # Keep one copy of the candidate text in the fields used by config.xml.
+        # Storing a second complete ``evidence_text`` copy makes every task
+        # unnecessarily large and slows Label Studio as the corpus grows.
         "evidence_primary": _candidate_text(row, 0, 1),
         "evidence_additional": _candidate_text(row, 1) if len(candidates) > 1 else "No hay candidatos adicionales.",
         "evidence_count": str(len(candidates)),
