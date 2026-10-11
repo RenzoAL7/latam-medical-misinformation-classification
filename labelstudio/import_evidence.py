@@ -98,6 +98,7 @@ def _task_from_row(row: dict[str, str]) -> dict[str, Any]:
         "record_id": row.get("record_id", ""),
         "country": row.get("country", ""),
         "source_name": row.get("source_name", ""),
+        "topic": row.get("topic", ""),
         "canonical_url": row.get("canonical_url", ""),
         "published_at": row.get("published_at", ""),
         "title": row.get("title", ""),
@@ -106,8 +107,11 @@ def _task_from_row(row: dict[str, str]) -> dict[str, Any]:
         "pubmed_query_en": row.get("pubmed_query_en", ""),
         "evidence_status": row.get("evidence_status", ""),
         "best_pmid": row.get("best_pmid", ""),
+        "best_cosine_similarity": row.get("best_cosine_similarity", ""),
         "best_embedding_similarity": row.get("best_embedding_similarity", ""),
         "best_tfidf_similarity": row.get("best_tfidf_similarity", ""),
+        "ranking_method": row.get("ranking_method", ""),
+        "embedding_model": row.get("embedding_model", ""),
         # Keep one copy of the candidate text in the fields used by config.xml.
         # Storing a second complete ``evidence_text`` copy makes every task
         # unnecessarily large and slows Label Studio as the corpus grows.

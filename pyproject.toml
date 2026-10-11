@@ -20,6 +20,10 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+training = [
+    "joblib>=1.4",
+    "scikit-learn>=1.5",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

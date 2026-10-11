@@ -19,6 +19,7 @@ def test_task_payload_does_not_duplicate_full_evidence_text() -> None:
         "record_id": "r1",
         "country": "pe",
         "source_name": "source",
+        "topic": "health",
         "canonical_url": "https://example.test/r1",
         "title": "Title",
         "claim_text": "Claim",
@@ -26,8 +27,11 @@ def test_task_payload_does_not_duplicate_full_evidence_text() -> None:
         "pubmed_query_en": "Claim",
         "evidence_status": "OK",
         "best_pmid": "123",
+        "best_cosine_similarity": "0.8",
         "best_embedding_similarity": "0.8",
         "best_tfidf_similarity": "0.4",
+        "ranking_method": "oci_cohere_embed_v4",
+        "embedding_model": "cohere.embed-v4.0",
         "evidence_run_id": "run-1",
         "pubmed_results_json": json.dumps(
             [
@@ -44,5 +48,7 @@ def test_task_payload_does_not_duplicate_full_evidence_text() -> None:
     data = module._task_from_row(row)["data"]
 
     assert "evidence_text" not in data
+    assert data["topic"] == "health"
+    assert data["best_cosine_similarity"] == "0.8"
     assert data["evidence_primary"] != "No hay abstracts disponibles."
     assert data["evidence_count"] == "1"

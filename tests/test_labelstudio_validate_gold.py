@@ -17,6 +17,7 @@ def _row(record_id: str, label: str, relation: str, **overrides: str) -> dict[st
         "source_name": "Fuente",
         "canonical_url": f"https://example.test/{record_id}",
         "title": "Título",
+        "body": "Texto completo de la noticia para entrenamiento.",
         "claim_text": "Claim verificable",
         "best_pmid": "12345678",
         "best_embedding_similarity": "0.75",
@@ -74,9 +75,12 @@ def test_write_csv_includes_eligible_flag(tmp_path: Path) -> None:
     training_path = tmp_path / "training.csv"
     rejected_path = tmp_path / "rejected.csv"
     validate_gold._write_csv(reviewed_path, validate_gold.OUTPUT_FIELDS, reviewed)
-    validate_gold._write_csv(training_path, validate_gold.OUTPUT_FIELDS, training)
+    validate_gold._write_csv(training_path, validate_gold.TRAINING_FIELDS, training)
     validate_gold._write_csv(rejected_path, validate_gold.REJECT_FIELDS, rejected)
 
     assert len(list(csv.DictReader(reviewed_path.open(encoding="utf-8-sig")))) == 1
-    assert len(list(csv.DictReader(training_path.open(encoding="utf-8-sig")))) == 1
+    training_rows = list(csv.DictReader(training_path.open(encoding="utf-8-sig")))
+    assert len(training_rows) == 1
+    assert list(training_rows[0]) == list(validate_gold.TRAINING_FIELDS)
+    assert set(training_rows[0]) == {"record_id", "title", "body", "label", "dataset_split"}
     assert not list(csv.DictReader(rejected_path.open(encoding="utf-8-sig")))

@@ -24,6 +24,7 @@ data/01_candidates/*
 !data/01_candidates/.gitkeep
 reports/runs/*
 !reports/runs/.gitkeep
+artifacts/training_runs/
 
 # Credenciales y archivos pesados comunes
 *.key

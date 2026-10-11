@@ -38,11 +38,20 @@ OUTPUT_FIELDS = (
     "record_id",
     "country",
     "source_name",
+    "topic",
     "canonical_url",
+    "published_at",
     "title",
+    "body",
     "claim_text",
     "best_pmid",
+    "best_cosine_similarity",
     "best_embedding_similarity",
+    "best_tfidf_similarity",
+    "ranking_method",
+    "embedding_model",
+    "evidence_status",
+    "evidence_run_id",
     "evidence_relation",
     "label",
     "verification_note",
@@ -51,6 +60,14 @@ OUTPUT_FIELDS = (
     "annotated_at",
     "final_training_eligible",
     "validation_status",
+    "dataset_split",
+)
+TRAINING_FIELDS = (
+    "record_id",
+    "title",
+    "body",
+    "label",
+    "dataset_split",
 )
 REJECT_FIELDS = (*OUTPUT_FIELDS, "rejection_reasons")
 
@@ -78,6 +95,10 @@ def _issues(row: dict[str, str], seen_ids: set[str]) -> list[str]:
         issues.append("label_relation_mismatch")
     if label in {"RESPALDADA", "REFUTADA"} and not row.get("best_pmid", ""):
         issues.append("missing_best_pmid_for_binary_label")
+    if label in {"RESPALDADA", "REFUTADA"} and not row.get("title", ""):
+        issues.append("missing_title_for_binary_label")
+    if label in {"RESPALDADA", "REFUTADA"} and not row.get("body", ""):
+        issues.append("missing_body_for_binary_label")
     return issues
 
 
@@ -145,7 +166,9 @@ def main() -> int:
         reviewed, training, rejected = validate_rows(reader)
 
     _write_csv(Path(args.reviewed_output), OUTPUT_FIELDS, reviewed)
-    _write_csv(Path(args.training_output), OUTPUT_FIELDS, training)
+    # Keep the model input intentionally small. The complete evidence and
+    # similarity audit remains available in reviewed_output and Silver.
+    _write_csv(Path(args.training_output), TRAINING_FIELDS, training)
     _write_csv(Path(args.rejected_output), REJECT_FIELDS, rejected)
     print(
         json.dumps(

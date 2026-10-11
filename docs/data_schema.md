@@ -48,7 +48,7 @@ anterior y añade:
 | `evidence_status` | `OK`, `NO_RESULTS`, `NO_ABSTRACT` o `ERROR`. |
 | `translation_status` | `OK`, `PARTIAL`, `ERROR`, `NO_ABSTRACTS` o estado de omisión. Un candidato puede marcarse `PARAPHRASED` si Gemini bloquea la traducción literal por recitación. |
 | `translation_key_slot` | Slot cargado de las claves Gemini 3/4 que produjo la traducción; no contiene la clave. |
-| `best_cosine_similarity` | Similitud coseno del mejor candidato según OCI Embed 4; si OCI no está disponible, conserva el fallback TF-IDF; sirve para ordenar, no para etiquetar. |
+| `best_cosine_similarity` | Alias histórico del score coseno elegido para ordenar; con Embed 4 normalmente coincide con `best_embedding_similarity`, por lo que no es una tercera señal independiente. |
 | `best_embedding_similarity` | Mejor similitud coseno calculada con `cohere.embed-v4.0`; es un apoyo de ranking y no una etiqueta. |
 | `best_tfidf_similarity` | Mejor similitud TF-IDF entre claim y abstract traducido al español; sirve como score auxiliar. |
 | `embedding_status` | Estado de la llamada a OCI Embed 4 (`OK`, `ERROR`, `NO_CANDIDATES` o `SKIPPED_NO_EVIDENCE`). |
@@ -72,9 +72,28 @@ Es una salida generada y no debe editarse manualmente. Solo incluye noticias de 
 
 - `validation_status=COMPLETADA`;
 - etiqueta binaria `RESPALDADA` o `REFUTADA`;
-- `body`, `main_medical_claim` y `evidence_url` no vacíos.
+- `body`, `claim_text` y `best_pmid` no vacíos;
+- relación de evidencia, nota y metadatos de anotación completos.
 
-Una fila por `record_id` conserva siete campos: `record_id`, `topic`, `source_name`, `title`, `body`, `label` y `dataset_split`. Para entrenar, se concatena `title + body` como entrada y se usa `label` como objetivo. `source_name` y `topic` no son variables predictoras. `dataset_split` permanece vacío hasta aplicar la partición estratificada 70/15/15.
+Una fila por `record_id` conserva la trazabilidad de la noticia y de su
+revisión. El CSV `gold/reviewed` incluye como mínimo `record_id`, `country`,
+`source_name`, `topic`, `canonical_url`, `published_at`, `title`, `body`,
+`claim_text`, `best_pmid`, `best_embedding_similarity`,
+`best_cosine_similarity`, `best_tfidf_similarity`, `ranking_method`,
+`embedding_model`, `evidence_status`, `evidence_run_id`, `evidence_relation`,
+`label`, `verification_note`, `annotation_id`, `annotator`, `annotated_at`,
+`final_training_eligible`,
+`validation_status` y `dataset_split`.
+
+`gold/reviewed` conserva también las filas válidas `NO_DETERMINABLE` y
+`EXCLUIDA` para auditoría; `gold/training` deja solamente `RESPALDADA` y
+`REFUTADA` y tiene únicamente cinco columnas: `record_id`, `title`, `body`,
+`label` y `dataset_split`. Para entrenar, el script local concatena `title +
+body` como una sola entrada y usa `label` como objetivo binario
+(`RESPALDADA=1`, `REFUTADA=0`). Las similitudes, claim, PMID, fuente y tema
+quedan en `gold/reviewed`/Silver para trazabilidad y análisis, no en el CSV
+que consume el modelo. `dataset_split` permanece vacío en Gold hasta que una
+corrida de entrenamiento genere su manifiesto estratificado 70/15/15.
 
 ## Artefactos temporales
 

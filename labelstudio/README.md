@@ -65,6 +65,11 @@ python3 labelstudio/import_evidence.py \
 `--refresh-existing` usa la actualización de datos de la tarea; no borra ni
 crea otra anotación.
 
+Las nuevas filas de Evidence conservan también `body`, `topic` y los campos de
+extracción. El importador mantiene `body` fuera de los datos de la tarea para
+que el payload y la interfaz sigan siendo ligeros; el exportador lo une por
+`record_id` desde los CSV de Evidence.
+
 ## 3. Anotar
 
 Para cada tarea compara el claim en español con la evidencia principal y abre
@@ -80,15 +85,19 @@ puntuación de embedding.
 ```bash
 python3 labelstudio/export_annotations.py \
   --project-id 1 \
+  --evidence-input /ruta/a/evidence_1.csv /ruta/a/evidence_2.csv \
   --output /ruta/privada/gold_labels.csv \
   --raw-export /ruta/privada/labelstudio-export.json
 ```
 
 El exportador toma la anotación completada más reciente por `record_id` y
-produce una fila Gold por noticia. El control `final_label` de la interfaz se
-exporta como la columna canónica `label`. El CSV resultante debe revisarse
-antes de generar el split 70/15/15. `annotation_id` permite volver a la tarea
-exacta.
+produce una fila Gold por noticia. `--evidence-input` puede recibir archivos o
+directorios de Evidence y restaura `body`, `topic` y la metadata técnica. El
+control `final_label` de la interfaz se exporta como la columna canónica
+`label`. Si falta el CSV de Evidence, el exportador informa `missing_body` y
+`validate_gold.py` rechazará las filas binarias incompletas. El CSV resultante
+debe revisarse antes de generar el split 70/15/15. `annotation_id` permite
+volver a la tarea exacta.
 
 ## Cuándo importar y cuánto demora
 
@@ -154,6 +163,7 @@ exporta las anotaciones humanas y luego valida la exportación:
 ```bash
 python3 labelstudio/export_annotations.py \
   --project-id 1 \
+  --evidence-input /ruta/privada/evidence/ \
   --output labelstudio/artifacts/gold_labels_2026-10-07.csv \
   --raw-export labelstudio/artifacts/labelstudio_export_2026-10-07.json
 

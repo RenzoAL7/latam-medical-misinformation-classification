@@ -28,4 +28,4 @@ El Colab reconstruye `Gold` a partir de `Silver`. Solo copia registros con cuerp
 
 ## 6. Alcance actual
 
-El repositorio cubre adquisición, trazabilidad y deduplicación. El Colab cubre integración con Google Sheets, extracción del cuerpo y generación del corpus Gold. Todavía no se entrenan clasificadores; esa actividad corresponde a una etapa posterior, una vez cerrada la validación humana y asignada la partición 70/15/15.
+El repositorio cubre adquisición, trazabilidad y deduplicación. El Colab cubre integración con Google Sheets, extracción del cuerpo y generación del corpus Gold. El primer entrenamiento local se ejecuta con `scripts/03_train_baseline.py` una vez cerradas al menos 100 filas binarias validadas; usa TF-IDF más regresión logística como baseline reproducible y mantiene una partición estratificada 70/15/15. Este resultado es un piloto metodológico, no una métrica final del corpus.

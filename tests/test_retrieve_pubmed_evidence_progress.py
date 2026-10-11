@@ -46,6 +46,31 @@ def test_evidence_rejection_reason_is_explicit() -> None:
     assert module._evidence_rejection_reason({"evidence_status": "NO_RESULTS"}) == "PUBMED_NO_RESULTS"
 
 
+def test_evidence_output_carries_training_text_and_audit_fields() -> None:
+    module = _load_module()
+    row = module._base_output_row(
+        {
+            "record_id": "record-1",
+            "country": "pe",
+            "source_name": "Fuente",
+            "topic": "health",
+            "title": "Título",
+            "body": "Texto completo de la noticia",
+            "extraction_status": "OK",
+            "claim_text": "Claim",
+            "claim_text_en": "Claim",
+            "pubmed_query_en": "claim",
+        },
+        "run-1",
+        "2026-10-11T00:00:00Z",
+    )
+
+    assert row["body"] == "Texto completo de la noticia"
+    assert row["topic"] == "health"
+    assert row["extraction_status"] == "OK"
+    assert set(("body", "topic", "extraction_status")).issubset(module.OUTPUT_FIELDS)
+
+
 def test_embedding_ranking_sets_best_pmid_even_before_translation(monkeypatch) -> None:
     module = _load_module()
     row = {

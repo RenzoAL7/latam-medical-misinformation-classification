@@ -150,6 +150,7 @@ configs/
   batch.yaml                     fuentes, temas y límites de la corrida
 scripts/
   01_collect_newsdata_urls.py    recolector local histórico
+  03_train_baseline.py           baseline local TF-IDF + regresión logística
 src/peruvian_medical_misinformation/
   __init__.py                    definición del paquete
   newsdata.py                    recolección, normalización y deduplicación
@@ -162,6 +163,7 @@ docs/
   limits_and_timing.md            duración, cuotas, límites y operación del pipeline
   oci_automation.md               Scheduler, Events, lotes y reintentos
   methodology.md                 metodología implementada
+  training_baseline.md            contrato y ejecución del primer modelo
 data/00_control/                 registro temporal de corridas
 data/01_candidates/              CSV temporal de cada corrida
 reports/runs/                    diagnóstico JSON temporal de cada corrida
@@ -174,6 +176,35 @@ labelstudio/
 ```
 
 Los CSV, reportes, credenciales y cuerpos de noticias no se versionan en Git.
+
+## Primer modelo local
+
+El entrenamiento empieza únicamente con el CSV compacto `gold/training`
+generado por `validate_gold.py`, no con `silver/evidence`. Ese CSV contiene
+`record_id`, `title`, `body`, `label` y `dataset_split`; el piloto exige al menos 100
+filas binarias revisadas por una persona, con `title` y `body` completos. Usa
+`title + body` como texto, `RESPALDADA=1` y `REFUTADA=0`; no usa claims,
+PMIDs, similitudes, fuente ni tema como variables predictoras.
+
+En el MacBook instala las dependencias opcionales y ejecuta:
+
+```bash
+python3 -m pip install -e '.[training]'
+python3 scripts/03_train_baseline.py \
+  --input /ruta/privada/gold_training_2026-10-11.csv \
+  --output-dir artifacts/training_runs \
+  --run-name pilot_100 \
+  --limit 100 \
+  --min-rows 100 \
+  --seed 42
+```
+
+La corrida crea `model.joblib`, `metrics.json`, `split_manifest.csv` y
+`predictions.csv` dentro de un directorio ignorado por Git. Reporta el baseline
+de mayoría, precisión, recall, Macro-F1, F1 por clase, ROC-AUC cuando ambas
+clases aparecen en el split y matriz de confusión. Con 100 filas, la partición
+queda en 70 train, 15 validation y 15 test; los resultados deben presentarse
+como piloto por el tamaño pequeño del test.
 
 ## Ejecución local opcional
 

@@ -62,6 +62,38 @@ def _task_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _evidence_rows(paths: list[str]) -> dict[str, dict[str, str]]:
+    """Load one latest Evidence row per record for the Gold text join."""
+
+    csv_paths: list[Path] = []
+    for value in paths:
+        path = Path(value)
+        if path.is_dir():
+            csv_paths.extend(sorted(path.glob("*.csv")))
+        elif path.is_file():
+            csv_paths.append(path)
+        else:
+            raise FileNotFoundError(f"Evidence input does not exist: {path}")
+
+    rows_by_id: dict[str, dict[str, str]] = {}
+    for path in sorted(set(csv_paths)):
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for source_row in csv.DictReader(handle):
+                record_id = str(source_row.get("record_id", "")).strip()
+                if record_id:
+                    candidate = {
+                        str(key): str(value or "").strip()
+                        for key, value in source_row.items()
+                        if key
+                    }
+                    previous = rows_by_id.get(record_id, {})
+                    # Prefer the row carrying the article body when a folder
+                    # contains an older evidence CSV plus a refreshed one.
+                    if not previous or candidate.get("body") or not previous.get("body"):
+                        rows_by_id[record_id] = candidate
+    return rows_by_id
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=os.getenv("LABEL_STUDIO_URL", "http://localhost:8080"))
@@ -69,9 +101,16 @@ def main() -> int:
     parser.add_argument("--token", default=os.getenv("LABEL_STUDIO_TOKEN", ""))
     parser.add_argument("--output", default="gold_labels.csv")
     parser.add_argument("--raw-export", default="")
+    parser.add_argument(
+        "--evidence-input",
+        nargs="*",
+        default=[],
+        help="Evidence CSV file(s) or directories used to restore body/topic metadata by record_id",
+    )
     args = parser.parse_args()
 
     payload = _request(args.url, f"/api/projects/{args.project_id}/export?exportType=JSON", args.token)
+    evidence_rows = _evidence_rows(args.evidence_input)
     if args.raw_export:
         Path(args.raw_export).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -95,15 +134,26 @@ def main() -> int:
         results = annotation.get("result", [])
         if not isinstance(results, list):
             results = []
+        source_row = evidence_rows.get(record_id, {})
+        value = lambda name: data.get(name, "") or source_row.get(name, "")
         rows_by_id[record_id] = {
             "record_id": record_id,
-            "country": data.get("country", ""),
-            "source_name": data.get("source_name", ""),
-            "canonical_url": data.get("canonical_url", ""),
-            "title": data.get("title", ""),
-            "claim_text": data.get("claim_text", ""),
-            "best_pmid": data.get("best_pmid", ""),
-            "best_embedding_similarity": data.get("best_embedding_similarity", ""),
+            "country": value("country"),
+            "source_name": value("source_name"),
+            "topic": value("topic"),
+            "canonical_url": value("canonical_url"),
+            "title": value("title"),
+            "published_at": value("published_at"),
+            "body": value("body"),
+            "claim_text": value("claim_text"),
+            "best_pmid": value("best_pmid"),
+            "best_cosine_similarity": value("best_cosine_similarity"),
+            "best_embedding_similarity": value("best_embedding_similarity"),
+            "best_tfidf_similarity": value("best_tfidf_similarity"),
+            "ranking_method": value("ranking_method"),
+            "embedding_model": value("embedding_model"),
+            "evidence_status": value("evidence_status"),
+            "evidence_run_id": value("evidence_run_id"),
             "evidence_relation": _value_for(results, "evidence_relation", "choices"),
             # The UI calls this control ``final_label``; Gold uses the
             # canonical dataset column name ``label``.
@@ -116,12 +166,37 @@ def main() -> int:
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fields = ["record_id", "country", "source_name", "canonical_url", "title", "claim_text", "best_pmid", "best_embedding_similarity", "evidence_relation", "label", "verification_note", "annotation_id", "annotator", "annotated_at"]
+    fields = [
+        "record_id",
+        "country",
+        "source_name",
+        "topic",
+        "canonical_url",
+        "published_at",
+        "title",
+        "body",
+        "claim_text",
+        "best_pmid",
+        "best_cosine_similarity",
+        "best_embedding_similarity",
+        "best_tfidf_similarity",
+        "ranking_method",
+        "embedding_model",
+        "evidence_status",
+        "evidence_run_id",
+        "evidence_relation",
+        "label",
+        "verification_note",
+        "annotation_id",
+        "annotator",
+        "annotated_at",
+    ]
     with output.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows_by_id.values())
-    print(json.dumps({"status": "ok", "project_id": args.project_id, "annotated_records": len(rows_by_id), "output": str(output), "exported_at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False))
+    missing_body = sum(1 for row in rows_by_id.values() if not row.get("body", ""))
+    print(json.dumps({"status": "ok", "project_id": args.project_id, "annotated_records": len(rows_by_id), "missing_body": missing_body, "output": str(output), "exported_at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False))
     return 0
 
 
