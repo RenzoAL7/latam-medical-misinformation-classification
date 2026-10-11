@@ -17,6 +17,7 @@ def _row(record_id: str, label: str, relation: str, **overrides: str) -> dict[st
         "source_name": "Fuente",
         "canonical_url": f"https://example.test/{record_id}",
         "title": "Título",
+        "body": "Cuerpo completo de la noticia.",
         "claim_text": "Claim verificable",
         "best_pmid": "12345678",
         "best_embedding_similarity": "0.75",
