@@ -8,16 +8,11 @@ version = "0.2.0"
 description = "Corpus trazable de noticias médicas peruanas para clasificación binaria posterior."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "beautifulsoup4>=4.12",
-    "httpx>=0.27",
-    "openpyxl>=3.1",
-    "pandas>=2.2",
-    "PyYAML>=6.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
+    "beautifulsoup4>=4.12",
     "pytest>=8.0",
 ]
 training = [
@@ -25,8 +20,8 @@ training = [
     "scikit-learn>=1.5",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+py-modules = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

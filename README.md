@@ -102,13 +102,6 @@ Generative AI, NewsData, Gemini y PubMed.
 El recolector registra `elapsed_seconds`; los presupuestos y su operación se
 documentan en [`docs/limits_and_timing.md`](docs/limits_and_timing.md).
 
-## Flujo local histórico (no es el flujo operativo)
-
-Los scripts y registros de la primera exploración se conservan para
-reproducibilidad. El dataset nuevo se recolecta en OCI y no depende de Colab ni
-de Google Sheets. Si se ejecuta una prueba local, su salida debe mantenerse
-fuera del bucket `mednews-data`.
-
 ## Cobertura de NewsData
 
 `fetch-newsdata` solicita `language=es`, `category=health` y una consulta médica
@@ -152,35 +145,25 @@ binaria final, pasan a Gold y al split de entrenamiento.
 ## Archivos del repositorio
 
 ```text
-configs/
-  batch.yaml                     fuentes, temas y límites de la corrida
 scripts/
-  01_collect_newsdata_urls.py    recolector local histórico
   03_train_baseline.py           baseline local TF-IDF + regresión logística
-src/peruvian_medical_misinformation/
-  __init__.py                    definición del paquete
-  newsdata.py                    recolección, normalización y deduplicación
 tests/
-  test_newsdata_batch.py         pruebas del recolector
-  test_batch_contract.py         protege las fuentes y la meta global del batch
-  test_repository_hygiene.py     evita versionar datos CSV
+  ...                             pruebas automatizadas
 docs/
   data_schema.md                 columnas de Bronze, Silver, claims, evidencia y Gold
   limits_and_timing.md            duración, cuotas, límites y operación del pipeline
   oci_automation.md               Scheduler, Events, lotes y reintentos
   training_baseline.md            contrato y ejecución del primer modelo
-data/00_control/                 registro temporal de corridas
-data/01_candidates/              CSV temporal de cada corrida
-reports/runs/                    diagnóstico JSON temporal de cada corrida
 labelstudio/
   config.xml                     interfaz de revisión humana
   import_evidence.py             importa evidencia sin duplicar
   export_annotations.py          exporta etiquetas Gold
   validate_gold.py               valida y separa auditoría/entrenamiento Gold
   README.md                      guía para el equipo
+oci/functions/                   Functions desplegadas en OCI
 ```
 
-Los CSV, reportes, credenciales y cuerpos de noticias no se versionan en Git.
+Los CSV, credenciales y artefactos generados no se versionan en Git.
 
 ## Primer modelo local
 
@@ -211,24 +194,15 @@ clases aparecen en el split y matriz de confusión. Con 100 filas, la partición
 queda en 70 train, 15 validation y 15 test; los resultados deben presentarse
 como piloto por el tamaño pequeño del test.
 
-## Ejecución local opcional
+## Verificación local
 
-El flujo oficial se ejecuta en OCI. Estos comandos sirven para verificar el
-recolector y las herramientas de revisión localmente.
+El flujo operativo se ejecuta en OCI. Para instalar las dependencias de
+desarrollo y validar las Functions y herramientas del repositorio:
 
 ```bash
 make setup
 make test
-make plan
 ```
-
-Para una corrida local, copia `.env.example` como `.env`, agrega `NEWSDATA_API_KEY` y ejecuta:
-
-```bash
-make run EXISTING="/ruta/Corpus noticias medicas.xlsx"
-```
-
-La opción `EXISTING` debe apuntar a un Excel o CSV con una columna `record_id`. El archivo se usa solo para excluir noticias conocidas.
 
 ## Límites metodológicos
 

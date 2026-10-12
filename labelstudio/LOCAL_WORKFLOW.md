@@ -1,10 +1,6 @@
 # Flujo local: JSON de Label Studio a primer modelo
 
-Este flujo se ejecuta en tu Mac, dentro del repositorio:
-
-```text
-/Users/renzo/Documents/GitHub/peruvian-medical-misinformation-classification
-```
+Este flujo se ejecuta localmente desde la raíz de este repositorio.
 
 Solo necesitas una carpeta local. No subas sus archivos a GitHub:
 

@@ -17,13 +17,6 @@ checkpoints/
 # Los datos de revisión humana y las credenciales nunca se versionan.
 *.csv
 labelstudio/artifacts/
-labelstudio-data/
-data/00_control/*
-!data/00_control/.gitkeep
-data/01_candidates/*
-!data/01_candidates/.gitkeep
-reports/runs/*
-!reports/runs/.gitkeep
 artifacts/training_runs/
 
 # Credenciales y archivos pesados comunes

@@ -94,11 +94,3 @@ body` como una sola entrada y usa `label` como objetivo binario
 quedan en `gold/reviewed`/Silver para trazabilidad y análisis, no en el CSV
 que consume el modelo. `dataset_split` permanece vacío en Gold hasta que una
 corrida de entrenamiento genere su manifiesto estratificado 70/15/15.
-
-## Artefactos temporales
-
-- `data/00_control/run_registry.csv`: estado y cantidades de cada ejecución local.
-- `data/01_candidates/<run_id>.csv`: salida temporal del recolector local histórico.
-- `reports/runs/<run_id>.json`: temas intentados, resultados por medio, duplicados y límites encontrados.
-
-Estos archivos están ignorados por Git y no constituyen el corpus final.
