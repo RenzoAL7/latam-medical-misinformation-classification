@@ -99,9 +99,8 @@ en [`docs/limits_and_timing.md`](docs/limits_and_timing.md). Incluye enlaces a
 la documentación oficial de OCI Functions, Scheduler, Events, Object Storage,
 Generative AI, NewsData, Gemini y PubMed.
 
-El nuevo presupuesto interno del recolector y su campo `elapsed_seconds` quedan
-listos en el PR de documentación; después de fusionarlo hay que desplegar la
-imagen de `fetch-newsdata` para que la Function activa los use.
+El recolector registra `elapsed_seconds`; los presupuestos y su operación se
+documentan en [`docs/limits_and_timing.md`](docs/limits_and_timing.md).
 
 ## Flujo local histórico (no es el flujo operativo)
 
@@ -169,7 +168,6 @@ docs/
   data_schema.md                 columnas de Bronze, Silver, claims, evidencia y Gold
   limits_and_timing.md            duración, cuotas, límites y operación del pipeline
   oci_automation.md               Scheduler, Events, lotes y reintentos
-  methodology.md                 metodología implementada
   training_baseline.md            contrato y ejecución del primer modelo
 data/00_control/                 registro temporal de corridas
 data/01_candidates/              CSV temporal de cada corrida
@@ -240,4 +238,3 @@ La opción `EXISTING` debe apuntar a un Excel o CSV con una columna `record_id`.
 - La afirmación, URL de evidencia, nota de verificación y etiqueta se completan y validan en `Silver`.
 - `Gold` contiene únicamente registros con cuerpo, afirmación, evidencia, etiqueta `RESPALDADA` o `REFUTADA` y validación completada.
 - Para entrenar, la entrada será `title + body` y el objetivo será `label`; `source_name` y `topic` se conservan solo para análisis y auditoría.
-- El historial de fuentes aceptadas y descartadas está documentado en `docs/source_audit.md`.
