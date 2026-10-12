@@ -1,11 +1,10 @@
 # `extract-news-body`
 
 Second OCI Function in the thesis pipeline. An Object Storage event wakes the
-Function, which drains one bounded batch from the global `bronze/*.csv`
-backlog, downloads the URLs, extracts the main HTML text, and updates one
-canonical CSV per Bronze source under `silver/body/`. This lets a later retry
-continue an older batch when an event was delayed or a previous invocation
-reached its time budget.
+Function and processes only the triggering `bronze/*.csv` object. An explicit
+drain invocation with an empty payload (`{}`) instead selects one bounded batch
+from the global backlog. Both modes download URLs, extract the main HTML text,
+and update one canonical CSV per Bronze source under `silver/body/`.
 
 ## OCI configuration
 
@@ -29,11 +28,13 @@ BODY_MIN_CHARS=800
 BODY_MAX_TEXT_CHARS=200000
 ```
 
-`BODY_BATCH_SIZE` is the maximum number of URLs attempted per invocation. The
-Fetch Function emits at most 50 rows, but the Body Function can drain older
-Bronze files as well. `BODY_MAX_SECONDS` leaves a safety margin below the
-300-second OCI Functions limit. Rows not attempted before the deadline remain
-pending; they are not incorrectly recorded as terminal failures.
+`BODY_BATCH_SIZE` is the maximum number of URLs attempted per invocation. Event
+invocations never borrow rows from another Bronze source, so an older retry
+cannot displace the current scheduled run. Drain invocations select the oldest
+source with pending rows so retryable backlog still advances. `BODY_MAX_SECONDS`
+leaves a safety margin below the 300-second OCI Functions limit. Rows not
+attempted before the deadline remain pending; they are not incorrectly recorded
+as terminal failures.
 
 The usual budget is 150 seconds with `BODY_TIME_BUFFER=10`; each URL has a
 15-second request timeout and at most one retry. The elapsed time and pending

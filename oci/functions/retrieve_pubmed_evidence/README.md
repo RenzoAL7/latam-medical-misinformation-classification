@@ -7,8 +7,9 @@ English candidates with OCI Generative AI `cohere.embed-v4.0`, translates only
 the returned abstracts with a separate Gemini secret, and writes one CSV row
 per claim under `silver/evidence/`. The top-k articles are stored in the
 `pubmed_results_json` column, so ten candidates per claim remain inside that
-row instead of becoming ten extra CSV rows. Each Object Storage event wakes a
-global backlog drain that selects one bounded Claims source at a time.
+row instead of becoming ten extra CSV rows. An Object Storage event processes
+only its triggering Claims object; an explicit empty-payload drain selects one
+bounded Claims source from the global backlog.
 
 This Function does not assign a truth label. `evidence_status=OK` means that
 PubMed returned candidate records, not that the news claim is supported. The
@@ -61,12 +62,14 @@ row.
 
 ## Selection and deduplication
 
-The Function scans all `silver/claims/*.csv` objects and requires
-`is_claim_eligible=true`, `llm_status=OK`, `claim_text`, and `pubmed_query_en`.
-Terminal IDs already in accepted Evidence or rejected Evidence are skipped;
-transient PubMed/time-budget/network errors remain retryable. A positive
-`EVIDENCE_MAX_ROWS` bounds one source batch, which is important for a corpus of
-1000 news items.
+An Object Storage Event is scoped to its triggering `silver/claims/*.csv`
+object. An explicit drain invocation with an empty payload (`{}`) scans all
+Claims objects and selects the oldest source with pending rows. In either mode,
+the Function requires `is_claim_eligible=true`, `llm_status=OK`, `claim_text`,
+and `pubmed_query_en`. Terminal IDs already in accepted Evidence or rejected
+Evidence are skipped; transient PubMed/time-budget/network errors remain
+retryable. A positive `EVIDENCE_MAX_ROWS` bounds one source batch, which is
+important for a corpus of 1000 news items.
 
 `EVIDENCE_MAX_ROWS=0` means that the Function selects every eligible claim in
 the selected source. The production value `20` lets a recurring drain advance

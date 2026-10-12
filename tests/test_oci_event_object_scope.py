@@ -62,3 +62,11 @@ def test_oci_event_rejects_an_object_outside_the_stage_prefix(function_name: str
         module._event_object_name(
             io.BytesIO(json.dumps(payload).encode("utf-8")), "mednews-data", prefix
         )
+
+
+@pytest.mark.parametrize(("function_name", "object_name"), FUNCTIONS)
+def test_empty_manual_payload_selects_drain_mode(function_name: str, object_name: str) -> None:
+    module = _load_module(function_name)
+    prefix = object_name.rsplit("/", 1)[0]
+
+    assert module._event_object_name_or_none(io.BytesIO(b"{}"), "mednews-data", prefix) is None

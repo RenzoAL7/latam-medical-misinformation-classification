@@ -53,14 +53,15 @@ group must be allowed to read both secrets. The request uses the
 `llm_key_slot` records which loaded slot produced each row without exposing the
 key.
 
-Each OCI Event wakes a global backlog drain. The Function scans all
-`silver/body/*.csv` objects, excludes body rows whose extraction was not `OK`,
-and selects one source batch. A successful `llm_status=OK` row is terminal;
-LLM errors and time-budget rows remain retryable. `LLM_MAX_ROWS=0` means all
-eligible rows from the selected source; the production value `25` bounds the
-batch for a recurring drain. The output is one deterministic
-`claims_current_*.csv` per Body source, merged by `record_id`, so a retry
-updates the same object instead of creating a duplicate CSV.
+An Object Storage Event is scoped to its triggering `silver/body/*.csv` object;
+it never imports rows from an older Body source. An explicit drain invocation
+with an empty payload (`{}`) scans the global backlog and selects the oldest
+source with pending rows. A successful `llm_status=OK` row is terminal; LLM
+errors and time-budget rows remain retryable. `LLM_MAX_ROWS=0` means all
+eligible rows from the selected source; the production value `25` bounds one
+invocation. The output is one deterministic `claims_current_*.csv` per Body
+source, merged by `record_id`, so a retry updates the same object instead of
+creating a duplicate CSV.
 `LLM_REQUEST_BATCH_SIZE` limits the number of rows sent in one Gemini request;
 the recommended value 10 keeps each prompt bounded while the function sends
 the next request in the same invocation. Eligible rows include

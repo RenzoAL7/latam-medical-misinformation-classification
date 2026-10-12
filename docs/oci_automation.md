@@ -22,10 +22,9 @@ predeterminado.
 
 Las etapas posteriores se encadenan mediante OCI Events: cada nueva entrada
 Bronze activa Body, cada salida de Body activa Claims y cada salida de Claims
-activa Evidence. Body y Claims conservan además su drenaje horario para
-recuperar trabajo transitorio. Evidence no tiene un schedule separado: usa el
-tiempo restante de su invocación por Events para continuar traducciones
-pendientes.
+activa Evidence. Los tres pasos Silver conservan además un drenaje horario con
+payload vacío (`{}`) para recuperar trabajo transitorio y avanzar los lotes que
+superan el tope de una invocación.
 
 ## Permisos y activación de los schedules
 
@@ -100,22 +99,23 @@ humano en Label Studio.
 | Capa | Function | Máximo por invocación | Resultado |
 | --- | --- | ---: | --- |
 | Bronze | `fetch-newsdata` | 50 noticias nuevas | `bronze/newsdata_<run_id>.csv` |
-| Silver body | `extract-news-body` | 50 filas del mismo Bronze; backlog global | `silver/body/body_current_<source>_<hash>.csv` |
-| Silver claims | `extract-claims` | 25 filas del mismo Body; solicitudes Gemini de 10 filas | `silver/claims/claims_current_<source>_<hash>.csv` |
-| Silver evidence | `retrieve-pubmed-evidence` | 20 claims del mismo Claims; hasta 10 artículos por claim | `silver/evidence/evidence_run_zz_current_<source>_<hash>.csv` |
+| Silver body | `extract-news-body` | 50 filas del Bronze disparador; drenaje global con payload vacío | `silver/body/body_current_<source>_<hash>.csv` |
+| Silver claims | `extract-claims` | 25 filas del Body disparador; drenaje global con payload vacío; solicitudes Gemini de 10 filas | `silver/claims/claims_current_<source>_<hash>.csv` |
+| Silver evidence | `retrieve-pubmed-evidence` | 20 claims del Claims disparador; drenaje global con payload vacío; hasta 10 artículos por claim | `silver/evidence/evidence_run_zz_current_<source>_<hash>.csv` |
 
 `extract-news-body` debe usar el prefijo específico `SILVER_BODY_PREFIX=silver/body`.
 No se debe configurar el prefijo genérico `SILVER_PREFIX=silver`: produciría
 `silver/body_<run_id>.csv`, que no coincide con la regla Events
 `silver/body/*.csv` y corta la cadena automática.
 
-Claims y Evidence recorren los pendientes en lotes acotados y detienen el
-trabajo al alcanzar el presupuesto interno. Las solicitudes individuales siguen
-siendo pequeñas: Claims envía 10 filas por llamada Gemini y Evidence traduce en
-grupos de 2 abstracts. Los handlers dejan `rows_left_for_next_run` real y deben
-ser activados de nuevo por Events o por un schedule de drenaje hasta llegar a
-cero; no se debe asumir que una sola entrega de Events vacía un corpus de 1000
-noticias.
+Cada evento procesa únicamente el objeto que lo disparó, evitando que una
+reintención antigua desplace la corrida actual. Una invocación explícita con
+payload vacío (`{}`) activa el drenaje global, siempre en lotes acotados y hasta
+el presupuesto interno. Las solicitudes individuales siguen siendo pequeñas:
+Claims envía 10 filas por llamada Gemini y Evidence traduce en grupos de 2
+abstracts. Los handlers dejan `rows_left_for_next_run` real y los schedules de
+drenaje deben volver a activarlos hasta llegar a cero; no se debe asumir que una
+sola entrega de Events vacía un corpus de 1000 noticias.
 
 Evidence guarda hasta 10 candidatos PubMed dentro de
 `pubmed_results_json`. Eso son diez candidatos por claim, no diez filas
@@ -148,7 +148,7 @@ asigna en Label Studio.
   retrasarse por la cola del servicio.
 - **Events y Object Storage:** Events es asíncrono y puede entregar un evento
   después de un retry; Object Storage usa prefijos, no carpetas POSIX. La
-  deduplicación por `record_id` y los drenajes de Body/Claims hacen segura la repetición.
+  deduplicación por `record_id` y los drenajes de Body/Claims/Evidence hacen segura la repetición.
 
 Enlaces oficiales y detalles de cada límite: [OCI Functions](https://docs.oracle.com/en-us/iaas/Content/Functions/Tasks/functionscustomizing.htm),
 [Resource Scheduler](https://docs.oracle.com/en-us/iaas/Content/resource-scheduler/tasks/create-manage.htm),

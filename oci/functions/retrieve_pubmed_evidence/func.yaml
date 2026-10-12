@@ -1,6 +1,6 @@
 schema_version: 20180708
 name: retrieve-pubmed-evidence
-version: 0.2.9
+version: 0.2.10
 runtime: python
 build_image: fnproject/python:3.12-dev
 run_image: fnproject/python:3.12

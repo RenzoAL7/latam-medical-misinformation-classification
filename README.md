@@ -11,14 +11,18 @@ Las Functions desplegadas en OCI separan las etapas de datos:
 
 1. `fetch-newsdata` consulta NewsData por países de Latinoamérica, incluye
    Puerto Rico (`pr`) y escribe lotes deduplicados en `bronze/`.
-2. `extract-news-body` recorre los CSV Bronze en orden, combina archivos para
-   formar lotes de hasta 50 filas pendientes y escribe los cuerpos en `silver/`.
-3. `extract-claims` toma solo cuerpos válidos, genera una afirmación candidata
-   en español y añade `claim_text_en` y `pubmed_query_en`. El modo
+2. `extract-news-body` procesa el objeto Bronze que disparó el evento y escribe
+   los cuerpos en `silver/body/`; el drenaje horario toma lotes globales de hasta
+   50 filas pendientes.
+3. `extract-claims` toma solo cuerpos válidos del Body disparador, genera una
+   afirmación candidata en español y añade `claim_text_en` y `pubmed_query_en`.
+   El drenaje horario procesa hasta 25 filas de una fuente Body por vez. El modo
    `enrich_queries` migra CSV de claims creados antes de esos campos.
-4. `retrieve-pubmed-evidence` consulta PubMed para cada claim elegible, guarda
-   hasta diez artículos por fila en `silver/evidence/`, los ordena con
-   `cohere.embed-v4.0` de OCI y conserva el TF-IDF en español como diagnóstico.
+4. `retrieve-pubmed-evidence` procesa solo el Claims disparador, consulta PubMed
+   para cada claim elegible y conserva hasta 20 claims por invocación; el drenaje
+   horario continúa las fuentes pendientes. Guarda hasta diez artículos por fila
+   en `silver/evidence/`, los ordena con `cohere.embed-v4.0` de OCI y conserva
+   el TF-IDF en español como diagnóstico.
 5. La revisión humana verifica la afirmación y la evidencia, asigna la etiqueta
    binaria y decide qué filas pasan a Gold.
 
@@ -52,9 +56,10 @@ fetch-newsdata -> bronze/*.csv
                               retrieve-pubmed-evidence -> silver/evidence/*.csv
 ```
 
-Los tres pasos Silver también tienen una invocación horaria de drenaje. Body
-selecciona hasta 50 filas; claims intenta drenar todas las filas elegibles en
-solicitudes Gemini de 10; evidence intenta drenar todas las claims elegibles y
+Los tres pasos Silver también tienen una invocación horaria de drenaje con
+payload vacío (`{}`). Los eventos procesan únicamente el objeto que los disparó;
+el drenaje selecciona una fuente pendiente y avanza hasta su tope: Body 50,
+Claims 25 y Evidence 20. Claims agrupa diez filas por solicitud Gemini y Evidence
 conserva hasta 10 artículos PubMed por claim. Si una etapa llega a su presupuesto
 de tiempo, cuota o error transitorio, la siguiente hora continúa con lo pendiente.
 
@@ -66,18 +71,18 @@ en una ejecución posterior; un resultado terminal no se vuelve a procesar.
 
 Los valores actuales son presupuestos por invocación: NewsData recolecta hasta
 50 filas con un máximo normal de ocho solicitudes por corrida; body procesa 50
-filas; claims intenta todas las filas pendientes en solicitudes de 10; evidence
-intenta todas las claims pendientes y conserva hasta 10 artículos PubMed por
+filas; claims procesa hasta 25 filas por invocación en solicitudes de 10;
+evidence procesa hasta 20 claims y conserva hasta 10 artículos PubMed por
 claim. Cada Function tiene un presupuesto interno de
 aproximadamente 150 segundos y deja 10 segundos antes del límite síncrono de
 OCI Functions y del límite práctico del Scheduler. Si una etapa no termina, escribe el trabajo
 completado y el drenaje horario continúa con las filas pendientes.
 
 El tiempo extremo a extremo no es un único timeout: un CSV Bronze de 50 filas
-requiere hasta 5 solicitudes Gemini de claims. Evidence intenta trabajar todas
-las claims resultantes en la misma invocación; si las búsquedas PubMed,
-embeddings o traducciones no caben en el presupuesto, el drenaje horario cubre
-lo que quede pendiente. La duración real se mide con `elapsed_seconds`,
+requiere hasta 5 solicitudes Gemini de claims. Evidence avanza por lotes; si las
+búsquedas PubMed, embeddings o traducciones no caben en el presupuesto, el
+drenaje horario cubre lo que quede pendiente. La duración real se mide con
+`elapsed_seconds`,
 `row_count` y los objetos escritos.
 
 NewsData trabaja con una ventana reciente, por lo que la misma URL puede

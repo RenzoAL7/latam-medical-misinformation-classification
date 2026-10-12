@@ -342,6 +342,81 @@ def _event_object_name(data: io.BytesIO | None, bucket: str, prefix: str) -> str
     raise RuntimeError(f"Event does not identify a CSV under {expected_prefix}")
 
 
+def _event_object_name_or_none(
+    data: io.BytesIO | None, bucket: str, prefix: str
+) -> str | None:
+    """Return an event object, or ``None`` for an explicit drain invocation."""
+
+    if data is None:
+        return None
+    raw = data.read()
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    stripped = raw.strip()
+    if not stripped or stripped in {b"{}", b"null"}:
+        return None
+    return _event_object_name(io.BytesIO(raw), bucket, prefix)
+
+
+def _event_claim_rows(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    object_name: str,
+    claims_prefix: str,
+    max_rows: int,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Select retryable claims only from the Body object in this event."""
+
+    existing = _existing_claim_rows(client, namespace, bucket, claims_prefix)
+    source_rows = _read_csv_object(client, namespace, bucket, object_name)
+    selected: list[dict[str, str]] = []
+    pending_rows = 0
+    skipped_no_body = 0
+    skipped_extraction_error = 0
+    skipped_completed = 0
+    seen_ids: set[str] = set()
+    for source_row in source_rows:
+        record_id = source_row.get("record_id", "").strip()
+        body = source_row.get("body", "").strip()
+        extraction_status = source_row.get("extraction_status", "").strip().upper()
+        if not record_id or not body:
+            skipped_no_body += 1
+            continue
+        if extraction_status != "OK":
+            skipped_extraction_error += 1
+            continue
+        if record_id in seen_ids:
+            continue
+        seen_ids.add(record_id)
+        previous = existing.get(record_id)
+        if previous is not None and _claim_row_is_terminal(previous):
+            skipped_completed += 1
+            continue
+        pending_rows += 1
+        selected.append(
+            {
+                field: source_row.get(field, "").strip()
+                for field in BRONZE_FIELDS + BODY_FIELDS
+            }
+            | {"source_silver_object": object_name}
+        )
+
+    if max_rows > 0:
+        selected = selected[:max_rows]
+    return selected, {
+        "source_object": object_name,
+        "body_objects_scanned": 1,
+        "body_rows_seen": len(source_rows),
+        "skipped_no_body": skipped_no_body,
+        "skipped_extraction_error": skipped_extraction_error,
+        "skipped_completed": skipped_completed,
+        "pending_rows": pending_rows,
+        "selected": len(selected),
+        "selected_source_object": object_name,
+    }
+
+
 def _pending_rows(
     client: Any,
     namespace: str,
@@ -878,15 +953,29 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             raise RuntimeError("LLM_TIME_BUFFER must be smaller than LLM_MAX_SECONDS")
 
         storage = _object_storage_client()
-        pending, scan_meta = _pending_rows(
-            storage,
-            namespace,
-            bucket,
-            body_prefix,
-            claims_prefix,
-            max_rows,
-        )
-        source_object = str(scan_meta.get("selected_source_object", ""))
+        event_object = _event_object_name_or_none(data, bucket, body_prefix)
+        if event_object:
+            pending, scan_meta = _event_claim_rows(
+                storage,
+                namespace,
+                bucket,
+                event_object,
+                claims_prefix,
+                max_rows,
+            )
+            source_object = event_object
+            invocation_mode = "event"
+        else:
+            pending, scan_meta = _pending_rows(
+                storage,
+                namespace,
+                bucket,
+                body_prefix,
+                claims_prefix,
+                max_rows,
+            )
+            source_object = str(scan_meta.get("selected_source_object", ""))
+            invocation_mode = "drain"
         deadline = started + max_seconds - time_buffer
         output_rows: list[dict[str, str]] = []
         statuses: Counter[str] = Counter()
@@ -1020,6 +1109,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         result = {
             "status": result_status,
             "mode": "claims",
+            "invocation_mode": invocation_mode,
             "run_id": run_id,
             "bucket": bucket,
             "object_name": object_name,

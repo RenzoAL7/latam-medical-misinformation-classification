@@ -345,24 +345,47 @@ def _event_object_name(data: io.BytesIO | None, bucket: str, prefix: str) -> str
     raise RuntimeError(f"Event does not identify a CSV under {expected_prefix}")
 
 
+def _event_object_name_or_none(
+    data: io.BytesIO | None, bucket: str, prefix: str
+) -> str | None:
+    """Return an event object, or ``None`` for an explicit drain invocation."""
+
+    if data is None:
+        return None
+    raw = data.read()
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    stripped = raw.strip()
+    if not stripped or stripped in {b"{}", b"null"}:
+        return None
+    return _event_object_name(io.BytesIO(raw), bucket, prefix)
+
+
 def _event_rows(
     client: Any,
     namespace: str,
     bucket: str,
     object_name: str,
     batch_size: int,
-) -> tuple[list[dict[str, str]], dict[str, int]]:
+    silver_prefix: str,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
     """Read valid rows from one triggering Bronze CSV without cross-run scans."""
 
+    existing = _existing_body_rows(client, namespace, bucket, silver_prefix)
     selected: list[dict[str, str]] = []
     invalid_rows = 0
     seen_ids: set[str] = set()
+    skipped_terminal = 0
     source_rows = _read_csv_object(client, namespace, bucket, object_name)
     for source_row in source_rows:
         record_id = source_row.get("record_id", "").strip()
         canonical_url = source_row.get("canonical_url", "").strip()
         if not record_id or not canonical_url or record_id in seen_ids:
             invalid_rows += 1
+            continue
+        previous = existing.get(record_id)
+        if previous is not None and _body_row_is_terminal(previous):
+            skipped_terminal += 1
             continue
         seen_ids.add(record_id)
         selected.append(
@@ -378,6 +401,9 @@ def _event_rows(
         "bronze_objects_scanned": 1,
         "bronze_rows_seen": len(source_rows),
         "invalid_or_duplicate_rows": invalid_rows,
+        "skipped_terminal": skipped_terminal,
+        "pending_rows": len(selected),
+        "selected_rows": len(selected),
     }
 
 
@@ -627,7 +653,7 @@ def _body_output_prefix() -> str:
 
 
 def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
-    """Process one bounded Body batch from the global Bronze backlog."""
+    """Process an event object, or one bounded batch from the global backlog."""
 
     started = time.monotonic()
     now = datetime.now(timezone.utc)
@@ -655,15 +681,29 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             raise RuntimeError("BODY_TIME_BUFFER must be smaller than BODY_MAX_SECONDS")
 
         client = _object_storage_client()
-        pending, scan_meta = _pending_rows(
-            client,
-            namespace,
-            bucket,
-            bronze_prefix,
-            silver_prefix,
-            batch_size,
-        )
-        source_object = str(scan_meta.get("selected_source_object", ""))
+        event_object = _event_object_name_or_none(data, bucket, bronze_prefix)
+        if event_object:
+            pending, scan_meta = _event_rows(
+                client,
+                namespace,
+                bucket,
+                event_object,
+                batch_size,
+                silver_prefix,
+            )
+            source_object = event_object
+            invocation_mode = "event"
+        else:
+            pending, scan_meta = _pending_rows(
+                client,
+                namespace,
+                bucket,
+                bronze_prefix,
+                silver_prefix,
+                batch_size,
+            )
+            source_object = str(scan_meta.get("selected_source_object", ""))
+            invocation_mode = "drain"
         deadline = started + max_seconds - time_buffer
         output_rows: list[dict[str, str]] = []
         for index, source_row in enumerate(pending):
@@ -714,6 +754,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "status": "ok",
             "run_id": run_id,
             "bucket": bucket,
+            "mode": invocation_mode,
             "object_name": object_name,
             "source_object": source_object,
             "row_count": str(len(output_rows)),

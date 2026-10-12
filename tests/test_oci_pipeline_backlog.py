@@ -96,6 +96,28 @@ def test_body_backlog_skips_terminal_rows_and_counts_all_pending() -> None:
     )
 
 
+def test_body_event_uses_only_the_triggering_bronze_object() -> None:
+    module = _load("extract_news_body")
+    storage = _Storage(
+        {
+            "bronze/old.csv": _csv([_bronze_row("old")], module.BRONZE_FIELDS),
+            "bronze/new.csv": _csv([_bronze_row("new")], module.BRONZE_FIELDS),
+        }
+    )
+
+    selected, meta = module._event_rows(
+        storage,
+        "ns",
+        "bucket",
+        "bronze/new.csv",
+        50,
+        "silver/body",
+    )
+
+    assert [row["record_id"] for row in selected] == ["new"]
+    assert meta["source_object"] == "bronze/new.csv"
+
+
 def test_claim_backlog_retries_failed_rows_and_keeps_source_batch() -> None:
     module = _load("extract_claims")
     body_fields = module.BRONZE_FIELDS + module.BODY_FIELDS
@@ -125,6 +147,39 @@ def test_claim_backlog_retries_failed_rows_and_keeps_source_batch() -> None:
     assert selected[0]["source_silver_object"] == "silver/body/body_a.csv"
     assert meta["pending_rows"] == 2
     assert meta["selected_source_object"] == "silver/body/body_a.csv"
+
+
+def test_claim_event_uses_only_the_triggering_body_object() -> None:
+    module = _load("extract_claims")
+    body_fields = module.BRONZE_FIELDS + module.BODY_FIELDS
+    body_row = {
+        **_bronze_row("new"),
+        "body": "A sufficiently long body",
+        "extraction_status": "OK",
+    }
+    storage = _Storage(
+        {
+            "silver/body/old.csv": _csv(
+                [{**body_row, "record_id": "old"}], body_fields
+            ),
+            "silver/body/new.csv": _csv([body_row], body_fields),
+            "silver/claims/claims_current_old.csv": _csv(
+                [{"record_id": "old", "llm_status": "ERROR"}], module.OUTPUT_FIELDS
+            ),
+        }
+    )
+
+    selected, meta = module._event_claim_rows(
+        storage,
+        "ns",
+        "bucket",
+        "silver/body/new.csv",
+        "silver/claims",
+        25,
+    )
+
+    assert [row["record_id"] for row in selected] == ["new"]
+    assert meta["source_object"] == "silver/body/new.csv"
 
 
 def test_evidence_selection_is_bounded_per_claims_source() -> None:
@@ -171,6 +226,27 @@ def test_evidence_selection_is_bounded_per_claims_source() -> None:
     assert not module._evidence_row_is_terminal(
         {"evidence_status": "ERROR", "evidence_error": "EVIDENCE_TIME_BUDGET"}
     )
+
+
+def test_evidence_event_uses_only_the_triggering_claims_object() -> None:
+    module = _load("retrieve_pubmed_evidence")
+    fields = ["record_id", "claim_text", "claim_text_en", "pubmed_query_en"]
+    storage = _Storage(
+        {
+            "silver/claims/old.csv": _csv([{"record_id": "old"}], fields),
+            "silver/claims/new.csv": _csv([{"record_id": "new"}], fields),
+        }
+    )
+
+    rows, meta = module._event_claim_rows(
+        storage,
+        "ns",
+        "bucket",
+        "silver/claims/new.csv",
+    )
+
+    assert list(rows) == ["new"]
+    assert meta["source_object"] == "silver/claims/new.csv"
 
 
 def test_fetch_does_not_write_an_empty_bronze_csv(monkeypatch) -> None:

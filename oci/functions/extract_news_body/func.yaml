@@ -1,6 +1,6 @@
 schema_version: 20180708
 name: extract-news-body
-version: 0.2.7
+version: 0.2.8
 runtime: python
 build_image: fnproject/python:3.12-dev
 run_image: fnproject/python:3.12

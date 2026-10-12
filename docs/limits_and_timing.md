@@ -16,11 +16,14 @@ estaba activa conserva su comportamiento anterior hasta ese despliegue.
 | Etapa | Disparador | Trabajo máximo por invocación | Presupuesto interno | Salida |
 | --- | --- | ---: | ---: | --- |
 | Recolección NewsData | Scheduler, 08:00 y 20:00 Lima | 50 filas nuevas; hasta 8 solicitudes con la configuración actual | 150 s + 10 s de margen | `bronze/newsdata_<run_id>.csv` |
-| Extracción del cuerpo | Event `bronze/*.csv` + drenaje | 50 filas del mismo Bronze; backlog global | 150 s + 10 s de margen | `silver/body/body_current_<source>_<hash>.csv` |
-| Claims | Event `silver/body/*.csv` + drenaje | 25 filas del mismo Body; solicitudes Gemini de 10 filas | 150 s + 10 s de margen | `silver/claims/claims_current_<source>_<hash>.csv` |
-| Evidence | Event `silver/claims/*.csv` + drenaje | 20 claims del mismo Claims; hasta 10 artículos PubMed por claim | 295 s + margen de 5 s | `silver/evidence/evidence_run_zz_current_<source>_<hash>.csv` |
+| Extracción del cuerpo | Event `bronze/*.csv` + drenaje | 50 filas del Bronze disparador; drenaje global con payload vacío | 150 s + 10 s de margen | `silver/body/body_current_<source>_<hash>.csv` |
+| Claims | Event `silver/body/*.csv` + drenaje | 25 filas del Body disparador; drenaje global con payload vacío; solicitudes Gemini de 10 filas | 150 s + 10 s de margen | `silver/claims/claims_current_<source>_<hash>.csv` |
+| Evidence | Event `silver/claims/*.csv` + drenaje | 20 claims del Claims disparador; drenaje global con payload vacío; hasta 10 artículos PubMed por claim | 295 s + margen de 5 s | `silver/evidence/evidence_run_zz_current_<source>_<hash>.csv` |
 | Etiquetado | Persona en Label Studio | No tiene timeout de OCI | Depende del equipo | Gold revisado |
 
+Los eventos procesan solo el objeto recibido. El drenaje global se reserva para
+invocaciones explícitas con payload vacío (`{}`), que seleccionan el pendiente
+más antiguo y permiten recuperar reintentos sin mezclar corridas activas.
 Los tamaños son límites superiores, no cantidades garantizadas. Si una etapa
 se queda sin tiempo, escribe lo que terminó y deja el resto pendiente para la
 siguiente activación de esa etapa. El `run_id`, el nombre del objeto, `row_count` y los campos
@@ -135,9 +138,9 @@ contiene exactamente 50 filas. Puede tomar las filas restantes de un segundo
 CSV para llenar el lote. Cada URL tiene timeout de 15 s y un reintento para
 errores transitorios. Una página bloqueada, un paywall o un cuerpo muy corto
 queda en el CSV con `extraction_status`. Los cuerpos insuficientes son
-terminales. Timeouts, throttling, errores de conexión, HTTP 403,
-redirecciones fallidas y HTTP 5xx quedan pendientes para el próximo evento que
-active Body.
+terminales. Timeouts, throttling, errores de conexión, HTTP 403 y HTTP 5xx
+quedan pendientes para el siguiente drenaje o evento de Body; los códigos 4xx
+fuera de la lista reintentable, como 406, quedan como errores terminales.
 
 Así se evita que una corrida de 50 URLs exceda los 300 s de OCI. No se elimina
 una fila sin explicación: `HTTP_ERROR`, `TIMEOUT`, `URL_ERROR` y
@@ -145,8 +148,9 @@ una fila sin explicación: `HTTP_ERROR`, `TIMEOUT`, `URL_ERROR` y
 
 ## Claims y Gemini
 
-Claims intenta drenar todas las filas elegibles de `silver/body/` en una
-invocación. Agrupa diez filas por solicitud Gemini y continúa con la siguiente
+Claims procesa hasta 25 filas elegibles de una fuente Body por invocación. Los
+eventos se limitan al Body disparador y el drenaje horario selecciona una fuente
+pendiente. Agrupa diez filas por solicitud Gemini y continúa con la siguiente
 solicitud hasta terminar o alcanzar el presupuesto. Usa las claves Gemini 1 y 2
 de proyectos distintos, pero
 la cuota de Gemini se mide por proyecto y modelo en RPM, TPM y RPD; cuatro
@@ -208,8 +212,8 @@ y [NCBI E-utilities usage guidelines](https://www.ncbi.nlm.nih.gov/books/NBK2549
 Resource Scheduler evalúa los cron en UTC. Las expresiones `0 13 * * *` y
 `0 1 * * *` representan 08:00 y 20:00 en Lima mientras la conversión local sea
 la esperada. Scheduler no cambia automáticamente el cron por horario de
-verano y su intervalo mínimo es de una hora; por eso Body y Claims usan el
-drenaje `0 * * * *`.
+verano y su intervalo mínimo es de una hora; por eso Body, Claims y Evidence
+usan el drenaje `0 * * * *` con payload vacío.
 La hora de inicio puede retrasarse por la cola del servicio.
 
 Object Storage usa prefijos, no carpetas POSIX. Un archivo `bronze/foo.csv`
@@ -222,11 +226,11 @@ pequeños CSV auditables y evita reescribir todo el histórico.
 
 Events es asíncrono: la creación de un objeto puede disparar la siguiente
 Function después de que el PUT terminó y una entrega puede necesitar reintento.
-Por eso cada etapa es idempotente por `record_id`; los handlers recorren el
-backlog global y escriben un objeto canónico por fuente. No se debe usar el
-timestamp del evento como garantía de que la etapa terminó: para terminar una
-colección grande se necesita una activación recurrente de drenaje mientras
-`rows_left_for_next_run` sea mayor que cero.
+Por eso cada etapa es idempotente por `record_id`; los eventos procesan solo su
+objeto disparador y los drains con payload vacío recorren una fuente pendiente a
+la vez. No se debe usar el timestamp del evento como garantía de que la etapa
+terminó: para terminar una colección grande se necesita una activación
+recurrente de drenaje mientras `rows_left_for_next_run` sea mayor que cero.
 
 Referencias: [OCI Resource Scheduler](https://docs.oracle.com/en-us/iaas/Content/resource-scheduler/tasks/create-manage.htm)
 y [OCI Object Storage overview](https://docs.oracle.com/en-us/iaas/Content/Object/Concepts/objectstorageoverview.htm).

@@ -446,6 +446,22 @@ def _event_object_name(data: io.BytesIO | None, bucket: str, prefix: str) -> str
     raise RuntimeError(f"Event does not identify a CSV under {expected_prefix}")
 
 
+def _event_object_name_or_none(
+    data: io.BytesIO | None, bucket: str, prefix: str
+) -> str | None:
+    """Return an event object, or ``None`` for an explicit drain invocation."""
+
+    if data is None:
+        return None
+    raw = data.read()
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    stripped = raw.strip()
+    if not stripped or stripped in {b"{}", b"null"}:
+        return None
+    return _event_object_name(io.BytesIO(raw), bucket, prefix)
+
+
 def _event_claim_rows(
     client: Any,
     namespace: str,
@@ -1773,7 +1789,18 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             if translation_secret_ids and not translation_api_keys:
                 translation_config_error = "No usable translation Gemini Vault secret was found"
 
-        claim_rows, scan_meta = _latest_claim_rows(storage, namespace, bucket, claims_prefix)
+        event_object = _event_object_name_or_none(data, bucket, claims_prefix)
+        if event_object:
+            claim_rows, scan_meta = _event_claim_rows(
+                storage,
+                namespace,
+                bucket,
+                event_object,
+            )
+            invocation_mode = "event"
+        else:
+            claim_rows, scan_meta = _latest_claim_rows(storage, namespace, bucket, claims_prefix)
+            invocation_mode = "drain"
         existing_ids = _existing_evidence_ids(storage, namespace, bucket, evidence_prefix, rejected_prefix)
         pending, selection_meta = _select_claims(claim_rows, existing_ids, max_rows)
         source_object = str(selection_meta.get("selected_source_object", ""))
@@ -1949,6 +1976,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         result = {
             "status": "ok" if not status_counts.get("ERROR") else "partial",
             "mode": mode,
+            "invocation_mode": invocation_mode,
             "run_id": run_id,
             "bucket": bucket,
             "object_name": object_name,
