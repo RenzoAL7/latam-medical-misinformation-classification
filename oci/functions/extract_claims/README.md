@@ -14,6 +14,24 @@ prepare a faithful English rendering plus a PubMed search query. It does not
 decide whether the claim is true or false. Human review and evidence are
 required later.
 
+## Diseño objetivo JSONL (multi-claim)
+
+La implementación descrita abajo conserva el contrato CSV vigente. El diseño
+objetivo está en [`docs/multiclaim_jsonl_plan.md`](../../../docs/multiclaim_jsonl_plan.md):
+una corrida debe escribir un `claims.jsonl` con una línea por noticia y un
+arreglo `claims` de cero a `N` afirmaciones. Cada afirmación recibe un
+`claim_id`, su texto, la consulta PubMed y su estado de elegibilidad.
+
+La respuesta `llm_status=OK` solo confirma que el JSON estructurado fue válido.
+No asigna `RESPALDADA` ni `REFUTADA`. La fila de una noticia sin claims debe
+conservarse con `claims: []`; `claims_truncated` debe hacer visible cualquier
+límite aplicado por noticia. `manifest.json` debe registrar los conteos de
+noticias, claims, truncamientos y errores de la corrida.
+
+La migración necesita actualizar también la Function de Evidence, los eventos
+de Object Storage y los consumidores de Label Studio. Hasta ese cambio, no se
+debe enviar el `claims.jsonl` objetivo al lector CSV actual.
+
 ## Configuration
 
 ```text

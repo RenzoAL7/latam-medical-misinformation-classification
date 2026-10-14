@@ -38,6 +38,22 @@ HTTP para que una URL bloqueada no desaparezca del registro. El Function deja
 un margen interno antes del límite de 300 segundos y continúa con las filas
 pendientes en la siguiente ejecución.
 
+## Plan multi-claim y JSONL
+
+El contrato operativo actual de las Functions todavía usa CSV y una fila de
+Claims por noticia. El diseño objetivo para soportar varias afirmaciones por
+noticia está documentado en
+[`docs/multiclaim_jsonl_plan.md`](docs/multiclaim_jsonl_plan.md): una corrida
+escribe un `claims.jsonl` con una línea por noticia y un arreglo `claims` de
+cero a `N` elementos, además de un `manifest.json`. Evidence conserva el
+estado de cada claim y sus candidatos PubMed en JSONL, sin convertir una
+similitud en una etiqueta de verdad.
+
+La migración todavía requiere actualizar los productores, consumidores,
+selectores de OCI Events y herramientas de Label Studio de forma coordinada.
+Mientras tanto, los nombres CSV de las secciones operativas describen el
+comportamiento desplegado y no deben mezclarse con los prefijos JSONL.
+
 ## Automatización OCI
 
 Resource Scheduler inicia `fetch-newsdata` a las 08:00 y 20:00, hora de Lima.
@@ -151,6 +167,7 @@ tests/
   ...                             pruebas automatizadas
 docs/
   data_schema.md                 columnas de Bronze, Silver, claims, evidencia y Gold
+  multiclaim_jsonl_plan.md        diseño objetivo multi-claim, JSONL y migración
   limits_and_timing.md            duración, cuotas, límites y operación del pipeline
   oci_automation.md               Scheduler, Events, lotes y reintentos
   training_baseline.md            contrato y ejecución del primer modelo

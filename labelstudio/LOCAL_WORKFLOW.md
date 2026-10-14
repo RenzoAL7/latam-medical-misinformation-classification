@@ -16,6 +16,13 @@ labelstudio/artifacts/
 `labelstudio/artifacts/` ya está ignorada por Git. Solo se suben a `main` los
 scripts Python y esta guía.
 
+Este flujo local sigue el contrato CSV desplegado. El plan objetivo de
+`claims.jsonl` y `evidence.jsonl` por corrida está documentado en
+[`docs/multiclaim_jsonl_plan.md`](../docs/multiclaim_jsonl_plan.md), pero los
+scripts de esta guía todavía no leen esos objetos directamente. Mantén los
+JSONL de migración fuera de esta carpeta hasta que exista el adaptador y la
+prueba de compatibilidad correspondiente.
+
 ## 1. Descargar el JSON
 
 En Label Studio usa **Export > JSON** y copia el archivo descargado a:

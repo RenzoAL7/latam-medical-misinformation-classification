@@ -3,6 +3,11 @@
 Este documento describe los recursos que deben existir en el tenancy. Los
 OCID concretos se mantienen en la configuración de OCI y no en el repositorio.
 
+La automatización que ya está desplegada usa objetos CSV. El plan objetivo para
+varios claims y JSONL está separado en
+[`multiclaim_jsonl_plan.md`](multiclaim_jsonl_plan.md); no se deben activar
+selectores CSV y JSONL sobre el mismo prefijo durante la transición.
+
 ## Frecuencia
 
 Resource Scheduler inicia `fetch-newsdata` dos veces al día, a las 08:00 y
@@ -94,6 +99,26 @@ Cada regla filtra también `bucketName=mednews-data`. No se crea una regla para
 `silver/evidence/`, porque la revisión de etiquetas permanece bajo control
 humano en Label Studio.
 
+### Encadenamiento objetivo JSONL
+
+Después de la migración, las reglas de las etapas nuevas deberán distinguir el
+objeto de corrida y el sufijo JSONL:
+
+```text
+silver/body/*.csv
+        |
+        v
+extract-claims -> silver/claims/run_id=<run_id>/claims.jsonl
+                              |
+                              v
+retrieve-pubmed-evidence -> silver/evidence/run_id=<run_id>/evidence.jsonl
+```
+
+El evento de Evidence deberá consumir únicamente el `claims.jsonl` que lo
+disparó. Un drenaje explícito podrá seleccionar una corrida pendiente, pero el
+manifest y el `run_id` deben mantenerse juntos. La etiqueta final seguirá
+siendo humana y no habrá un evento automático desde Evidence hacia Gold.
+
 ## Orden y tamaño de los lotes
 
 | Capa | Function | Máximo por invocación | Resultado |
@@ -122,6 +147,12 @@ Evidence guarda hasta 10 candidatos PubMed dentro de
 adicionales. La puntuación `embedding_similarity` de OCI Embed 4 ordena la
 lista; el valor no es una probabilidad de veracidad. La etiqueta final se
 asigna en Label Studio.
+
+En el contrato objetivo JSONL, esta lista dejará de viajar en una columna
+`pubmed_results_json`: se conservará dentro del objeto de Evidence asociado a
+cada `claim_id`, junto con `evidence_status`, `translation_status` y
+`embedding_status`. El cambio no altera el significado de los scores ni la
+necesidad de revisión humana.
 
 ## Restricciones externas que afectan la automatización
 

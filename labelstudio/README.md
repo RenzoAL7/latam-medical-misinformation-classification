@@ -5,6 +5,13 @@ es todavía Gold: contiene candidatos recuperados de PubMed y puntuaciones de
 similitud. Una persona debe decidir la relación de la evidencia y la etiqueta
 final antes de que una fila entre al conjunto de entrenamiento.
 
+El importador y el sincronizador documentados aquí consumen actualmente los
+CSV de Evidence. El plan objetivo multi-claim conserva los claims y candidatos
+en JSONL por corrida; antes de activarlo se debe incorporar un adaptador que
+reconstruya las tareas por `record_id` y `claim_id`. No se debe pasar un
+`claims.jsonl` o `evidence.jsonl` directamente al importador CSV actual. La
+salida de entrenamiento seguirá siendo una fila binaria por noticia.
+
 ## 1. Crear un proyecto limpio y ejecutar Label Studio
 
 Con Docker Desktop iniciado:

@@ -5,6 +5,12 @@ organización Medallion con los prefijos `bronze/`, `silver/` y `gold/`; las
 tablas de revisión pueden exportarse a Google Sheets o Label Studio sin perder
 los identificadores de trazabilidad.
 
+Este documento conserva el contrato CSV actualmente desplegado y añade el
+contrato objetivo JSONL para la migración multi-claim. La diferencia es
+intencional: hasta que se actualicen las Functions y los consumidores, los
+objetos operativos siguen siendo CSV. El diseño objetivo completo está en
+[`multiclaim_jsonl_plan.md`](multiclaim_jsonl_plan.md).
+
 ## Bronze
 
 Una fila representa una noticia candidata todavía no validada. Se mantienen diez campos:
@@ -66,6 +72,21 @@ auditoría y no se crea una fila posterior en `silver/claims/`; Bronze puede
 marcarse como `EXCLUIR_SIN_TEXTO` durante la revisión. Las decisiones médicas
 y de veracidad siguen siendo humanas y basadas en evidencia.
 
+### Contrato objetivo JSONL
+
+En la migración, `silver/claims/run_id=<run_id>/claims.jsonl` tendrá una línea
+por noticia y `claims: []` cuando no se produzcan afirmaciones. Cada elemento
+llevará un `claim_id` y los campos necesarios para consultar PubMed. La etapa
+Evidence escribirá `silver/evidence/run_id=<run_id>/evidence.jsonl`, una línea
+por claim con sus candidatos y estados de recuperación, traducción y
+embedding. Los manifests conservarán los conteos que no pueden inferirse al
+contar únicamente candidatos.
+
+El contrato JSONL no crea varias filas de entrenamiento para una noticia. La
+relación entre `record_id`, `claim_id` y candidatos de evidencia se conserva
+para auditoría y revisión humana; `gold/training` sigue siendo una fila por
+noticia.
+
 ## Gold
 
 Es una salida generada y no debe editarse manualmente. Solo incluye noticias de `Silver` que cumplen simultáneamente:
@@ -94,3 +115,9 @@ body` como una sola entrada y usa `label` como objetivo binario
 quedan en `gold/reviewed`/Silver para trazabilidad y análisis, no en el CSV
 que consume el modelo. `dataset_split` permanece vacío en Gold hasta que una
 corrida de entrenamiento genere su manifiesto estratificado 70/15/15.
+
+Con el formato multi-claim, el artefacto de revisión puede conservar una lista
+de claims y relaciones de evidencia por `record_id`; el CSV compacto de
+`gold/training` no cambia. Si se entrena un verificador de claims en el futuro,
+deberá definirse como un dataset separado y no reinterpretar el CSV binario de
+noticias.

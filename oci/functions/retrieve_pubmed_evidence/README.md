@@ -16,6 +16,26 @@ PubMed returned candidate records, not that the news claim is supported. The
 relation (`supports`, `contradicts`, or `unclear`) and the final binary label
 remain human decisions in the review workflow.
 
+## Diseño objetivo JSONL (multi-claim)
+
+La implementación vigente consume `claims/*.csv` y guarda los candidatos en la
+columna `pubmed_results_json`. El contrato objetivo consume el `claims.jsonl`
+de una corrida y escribe `evidence.jsonl` con una línea por `claim_id`; el
+arreglo `candidates` conserva hasta `PUBMED_TOP_K` artículos y también queda
+presente cuando está vacío. Esto mantiene visibles `NO_RESULTS`, `NO_ABSTRACT`,
+errores de traducción y fallos de embedding sin convertirlos en etiquetas de
+verdad.
+
+Cada registro debe conservar `run_id`, `record_id`, `claim_id`, PMID cuando
+exista, estado de evidencia, estado de traducción, modelo/campo de embedding y
+los scores de ranking. `supports`, `contradicts`, `unclear` y la etiqueta
+binaria no se rellenan automáticamente. El esquema objetivo y la migración de
+los eventos están en [`docs/multiclaim_jsonl_plan.md`](../../../docs/multiclaim_jsonl_plan.md).
+
+Hasta que se actualice el consumidor, la sección operativa de este documento
+continúa describiendo el CSV desplegado; no se deben mezclar ambos contratos
+bajo el mismo prefijo.
+
 ## Configuration
 
 ```text
