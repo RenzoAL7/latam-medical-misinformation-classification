@@ -36,7 +36,6 @@ SILVER_EVIDENCE_PREFIX=silver/evidence
 PIPELINE_SCHEMA=v1
 EVIDENCE_MAX_ROWS=0
 PUBMED_CANDIDATES_FETCHED=5
-EMBED_TOP_K_PER_CLAIM=3
 PUBMED_EMAIL=<research contact email>
 PUBMED_TOOL=mednews-thesis
 PUBMED_REQUEST_DELAY=0.4
@@ -81,9 +80,9 @@ from that object is represented in the resulting JSONL, even if it terminates
 in `ERROR`.
 
 The 285-second work budget leaves ten seconds to persist JSONL and the
-manifest before OCI's 300-second limit. To make all claims affordable, it gets
-at most five PubMed PMIDs per claim and sends only the best three to Embed 4.
-The query embedding remains per claim, while a repeated identical
+manifest before OCI's 300-second limit. It gets at most five PubMed PMIDs per
+claim, and embeds and translates every returned candidate with a usable
+abstract. The query embedding remains per claim, while a repeated identical
 PMID+abstract reuses one document embedding and one translation inside the
 invocation. It waits 0.4 seconds between PubMed requests. The Embed 4 requests
 are chunked by input count and a conservative 100,000-token estimate so a
@@ -100,8 +99,9 @@ silver/evidence/run_id=<run_id>/evidence.jsonl
 silver/evidence/run_id=<run_id>/manifest.json
 ```
 
-The `candidates` array contains up to three candidates after the embedding
-prefilter, with PMID, title, original English `abstract_excerpt`, translated
+The `candidates` array contains every usable abstract among the at-most-five
+PubMed candidates, sorted by a lexical diagnostic before semantic ranking,
+with PMID, title, original English `abstract_excerpt`, translated
 `abstract_es`, journal, publication date, DOI, PubMed URL, rank, translation
 status, OCI embedding cosine similarity and Spanish TF-IDF diagnostic score.
 The embedding query is `claim_text_en` and the document input is the English

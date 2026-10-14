@@ -98,6 +98,25 @@ def test_evidence_excludes_pubmed_results_without_abstract() -> None:
     assert [candidate["pmid"] for candidate in candidates] == ["2"]
 
 
+def test_prefilter_keeps_every_fetched_candidate_when_embedding_all() -> None:
+    candidates = [
+        {
+            "pmid": str(index),
+            "title": f"Study {index}",
+            "abstract_excerpt": f"Abstract about treatment {index}",
+            "pubmed_rank": index,
+        }
+        for index in range(1, 6)
+    ]
+
+    ranked = EVIDENCE._prefilter_candidates(
+        {"claim_text_en": "treatment outcome"}, candidates
+    )
+
+    assert len(ranked) == 5
+    assert {candidate["pmid"] for candidate in ranked} == {"1", "2", "3", "4", "5"}
+
+
 def test_embedding_is_per_claim_and_reuses_identical_pubmed_document(monkeypatch) -> None:
     rows = [
         {
@@ -407,13 +426,14 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
 
     monkeypatch.setattr(EVIDENCE, "_object_storage_client", lambda: storage)
     monkeypatch.setattr(EVIDENCE, "_vault_secret_value", lambda _secret: "translation-key")
-    monkeypatch.setattr(EVIDENCE, "_search_pubmed", lambda *args, **kwargs: ["12345678"])
+    pmids = ["12345671", "12345672", "12345673", "12345674", "12345675"]
+    monkeypatch.setattr(EVIDENCE, "_search_pubmed", lambda *args, **kwargs: pmids)
     monkeypatch.setattr(
         EVIDENCE,
         "_fetch_pubmed",
         lambda *args, **kwargs: {
-            "12345678": {
-                "pmid": "12345678",
+            pmid: {
+                "pmid": pmid,
                 "title": "Clinical study",
                 "abstract": "A biomedical abstract with usable evidence.",
                 "journal": "Journal",
@@ -421,13 +441,16 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
                 "doi": "",
                 "publication_types": ["Clinical Trial"],
             }
+            for pmid in pmids
         },
     )
     monkeypatch.setattr(EVIDENCE, "_generative_ai_client", lambda *args, **kwargs: object())
+    embedding_inputs: dict[str, list[str]] = {}
 
     def fake_embed(*args, **kwargs):
         texts = args[1]
         input_type = args[4]
+        embedding_inputs.setdefault(input_type, []).extend(texts)
         return [[1.0, 0.0] for _ in texts] if input_type == "SEARCH_QUERY" else [[1.0, 0.0] for _ in texts]
 
     monkeypatch.setattr(EVIDENCE, "_embed_in_batches", fake_embed)
@@ -435,7 +458,9 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
         EVIDENCE,
         "_translate_batch",
         lambda _key, _model, rows, _tokens, _timeout: {
-            EVIDENCE._claim_identity(row): {"12345678": "Un abstract biomédico en español."}
+            EVIDENCE._claim_identity(row): {
+                pmid: "Un abstract biomédico en español." for pmid in pmids
+            }
             for row in rows
         },
     )
@@ -462,4 +487,8 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
     }
     assert all(record["evidence_status"] == "OK" for record in evidence_records)
     assert all(record["evidence_run_id"] == evidence_result["run_id"] for record in evidence_records)
+    assert all(len(record["candidates"]) == 5 for record in evidence_records)
+    assert len(embedding_inputs["SEARCH_QUERY"]) == 2
+    assert len(embedding_inputs["SEARCH_DOCUMENT"]) == 5
+    assert evidence_manifest["configuration"]["embed_all_retrieved_candidates_with_abstract"] is True
     assert evidence_manifest["status"] == "COMPLETE"

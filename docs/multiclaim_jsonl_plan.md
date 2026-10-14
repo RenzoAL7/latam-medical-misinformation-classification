@@ -159,7 +159,8 @@ Cada corrida debe tener un manifest por etapa con, como mínimo:
 - `claims_total`, `claims_truncated` y conteos por estado;
 - `evidence_claims_processed`, `candidates_total` y estados de PubMed,
   traducción y embeddings;
-- configuración efectiva (candidatos recuperados y `top_k` de embedding),
+- configuración efectiva (candidatos recuperados y confirmación de que todos
+  los abstracts utilizables fueron embedidos),
   estadísticas de caché y errores agregados sin incluir secretos.
 
 El manifest es el lugar para auditar artículos sin claims o claims sin
@@ -195,7 +196,7 @@ por `claim_id`, con claim y evidencia como entrada.
    Label Studio mientras se valida la migración.
 2. Construir y subir las Functions para `linux/amd64`/`GENERIC_X86`; configurar
    `PIPELINE_SCHEMA=v1`, `LLM_MAX_ROWS=0`, `EVIDENCE_MAX_ROWS=0`,
-   `PUBMED_CANDIDATES_FETCHED=5` y `EMBED_TOP_K_PER_CLAIM=3`.
+   `PUBMED_CANDIDATES_FETCHED=5`.
 3. Cambiar **solo** la regla Events Claims → Evidence para que acepte
    `silver/claims/run_id=*/claims.jsonl`; Body → Claims mantiene el CSV de
    Body como entrada.

@@ -80,9 +80,10 @@ con candidatos, recuperación, traducción, embedding y ranking. Ambos directori
 incluyen un `manifest.json` con conteos, duración, configuración y errores.
 
 Todos los claims del objeto de entrada se procesan en la misma invocación v1.
-La optimización de costo es `PUBMED_CANDIDATES_FETCHED=5` y
-`EMBED_TOP_K_PER_CLAIM=3`, más caché por PMID+abstract dentro de la corrida;
-no se omiten claims para cumplir el tiempo.
+Cada claim recupera como máximo `PUBMED_CANDIDATES_FETCHED=5` PMIDs y genera
+embeddings y traducciones para todos los candidatos con abstract utilizable.
+La caché por PMID+abstract reduce duplicados dentro de la corrida; no se
+omiten claims ni candidatos recuperados para cumplir el tiempo.
 
 El contrato JSONL no crea varias filas de entrenamiento para una noticia. La
 relación entre `record_id`, `claim_id` y candidatos se conserva para auditoría;

@@ -18,8 +18,9 @@ Las Functions desplegadas en OCI separan las etapas de datos:
    Cada claim tiene `claim_id`, texto en español e inglés y su consulta PubMed.
 4. `retrieve-pubmed-evidence` procesa todos los claims elegibles del
    `claims.jsonl` disparador. Recupera como máximo cinco candidatos PubMed por
-   claim, prefiltra y hace Embed 4 solo sobre los tres mejores; reutiliza la
-   traducción y el embedding de un PMID/abstract idéntico dentro de la corrida.
+   claim, ordena el resultado y hace Embed 4 sobre todos los abstracts
+   utilizables; reutiliza la traducción y el embedding de un PMID/abstract
+   idéntico dentro de la corrida.
    La salida es una línea JSONL por claim con sus candidatos y estados.
 5. Label Studio crea una tarea por `record_id + claim_id`. La persona revisora
    decide materialidad, relación y veredicto de cada claim; luego se agrega una
@@ -91,8 +92,8 @@ Los presupuestos son por invocación: NewsData recolecta hasta 50 noticias y
 Body procesa hasta 50 filas. Claims v1 procesa todas las filas válidas del
 Body disparador y Evidence v1 todos sus claims, con un presupuesto interno de
 270--285 segundos y margen de escritura. Cada claim consulta cinco PMIDs como
-máximo y se embeben solo tres candidatos; los objetos compartidos se cachean
-dentro de la invocación. La duración real se audita con el manifest,
+máximo y se embeben todos los candidatos con abstract; los objetos compartidos
+se cachean dentro de la invocación. La duración real se audita con el manifest,
 `elapsed_seconds`, conteos de claims y candidatos, no por un número fijo de
 filas.
 

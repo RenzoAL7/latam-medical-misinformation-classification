@@ -46,15 +46,15 @@ El ahorro se aplica a los candidatos:
 
 ```text
 PUBMED_CANDIDATES_FETCHED=5
-EMBED_TOP_K_PER_CLAIM=3
 TRANSLATION_PARALLELISM=1
 ```
 
-Cada claim consulta hasta cinco PMIDs; el prefiltrado barato elige hasta tres
-para Embed 4 y traducción. Si dos claims reciben exactamente el mismo
-PMID+abstract, se calcula una sola representación del documento y una sola
-traducción dentro de la Function; las similitudes coseno siguen siendo una por
-claim porque cada query de claim es distinta.
+Cada claim consulta hasta cinco PMIDs y Embed 4 procesa todos los candidatos
+recuperados que tengan abstract. El prefiltrado barato solo fija el orden de
+presentación; no descarta candidatos. Si dos claims reciben exactamente el
+mismo PMID+abstract, se calcula una sola representación del documento y una
+sola traducción dentro de la Function; las similitudes coseno siguen siendo
+una por claim porque cada query de claim es distinta.
 
 ## Claims y Gemini
 
@@ -75,10 +75,10 @@ resultado con título pero sin abstract se clasifica `NO_ABSTRACT`; no se crea
 un candidato utilizable. Una vez recuperados los abstracts:
 
 1. un filtro léxico barato ordena los cinco candidatos;
-2. Embed 4 calcula vectores de `claim_text_en` y título+abstract de hasta tres
-   candidatos;
+2. Embed 4 calcula vectores de `claim_text_en` y título+abstract de todos los
+   candidatos recuperados con abstract;
 3. la similitud coseno ordena los candidatos para la lectura humana;
-4. Gemini traduce los abstracts seleccionados al español;
+4. Gemini traduce al español todos los abstracts candidatos;
 5. si embedding o traducción falla, el estado final pasa a `ERROR`.
 
 TF-IDF es un diagnóstico y fallback de ranking local; no es el TF-IDF del

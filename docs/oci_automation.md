@@ -65,7 +65,6 @@ En `retrieve-pubmed-evidence`:
 PIPELINE_SCHEMA=v1
 EVIDENCE_MAX_ROWS=0
 PUBMED_CANDIDATES_FETCHED=5
-EMBED_TOP_K_PER_CLAIM=3
 EVIDENCE_MAX_SECONDS=285
 EVIDENCE_TIME_BUFFER=10
 TRANSLATION_PARALLELISM=1
@@ -73,8 +72,8 @@ TRANSLATION_PARALLELISM=1
 
 `MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` son reglas de integridad:
 no se descarta un claim por ser el sexto o por superar un lote arbitrario.
-El costo se controla con cinco PMIDs recuperados y tres candidatos embedidos
-por claim. El embedding del query siempre es por claim; un mismo
+Cada claim recupera como máximo cinco PMIDs y se embeben todos los candidatos
+con abstract. El embedding del query siempre es por claim; un mismo
 PMID+abstract reaprovecha su embedding y traducción dentro de la misma
 invocación.
 

@@ -1505,9 +1505,9 @@ def _candidate_results(
 def _prefilter_candidates(
     row: dict[str, str],
     candidates: list[dict[str, Any]],
-    top_k: int,
+    top_k: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Use cheap lexical ranking before the paid embedding/translation calls."""
+    """Rank candidates lexically before downstream work without dropping them by default."""
 
     query = (row.get("claim_text_en", "") or row.get("claim_text", "")).strip()
     for candidate in candidates:
@@ -1516,13 +1516,14 @@ def _prefilter_candidates(
             f"{str(candidate.get('abstract_excerpt', '') or '').strip()}"
         ).strip()
         candidate["prefilter_tfidf_similarity"] = round(_cosine_similarity(query, document), 6)
-    return sorted(
+    ranked = sorted(
         candidates,
         key=lambda item: (
             -float(item.get("prefilter_tfidf_similarity", 0.0)),
             int(item.get("pubmed_rank", 0)),
         ),
-    )[:top_k]
+    )
+    return ranked if top_k is None else ranked[:top_k]
 
 
 def _embedding_batches(
@@ -2490,7 +2491,6 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         if configured_max_rows:
             raise RuntimeError("EVIDENCE_MAX_ROWS must be 0 in evidence.v1; every claim must be processed")
         candidates_fetched = _env_int("PUBMED_CANDIDATES_FETCHED", 5, minimum=1, maximum=10)
-        embed_top_k = _env_int("EMBED_TOP_K_PER_CLAIM", 3, minimum=1, maximum=candidates_fetched)
         request_delay = _env_float("PUBMED_REQUEST_DELAY", 0.4, minimum=0.34)
         request_timeout = _env_float("PUBMED_REQUEST_TIMEOUT", 20.0, minimum=5.0)
         max_seconds = _env_float("EVIDENCE_MAX_SECONDS", 285.0, minimum=30.0)
@@ -2595,7 +2595,11 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             else:
                 pmids = query_pmids.get(identity, [])
                 candidates = _candidate_results(row, pmids, records, candidates_fetched, abstract_max_chars)
-                candidates = _prefilter_candidates(row, candidates, embed_top_k)
+                # Every usable abstract among the bounded PubMed results is
+                # embedded and translated.  Lexical TF-IDF only establishes a
+                # deterministic presentation order; it must not discard a
+                # candidate before semantic ranking.
+                candidates = _prefilter_candidates(row, candidates)
                 output["pubmed_result_count"] = str(len(pmids))
                 output["pubmed_results_json"] = json.dumps(candidates, ensure_ascii=False)
                 if not pmids:
@@ -2667,7 +2671,7 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "scan": scan,
             "configuration": {
                 "candidates_fetched_per_claim": candidates_fetched,
-                "embed_top_k_per_claim": embed_top_k,
+                "embed_all_retrieved_candidates_with_abstract": True,
                 "translation_batch_size": translation_batch_size,
                 "translation_parallelism": translation_parallelism,
                 "embedding_model": embedding_model,
