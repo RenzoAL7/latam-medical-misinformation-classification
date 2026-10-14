@@ -43,6 +43,31 @@ def test_sync_cache_path_is_stable_and_flat(tmp_path: Path) -> None:
     assert first.name.endswith("evidence_run_20261009T130636Z_a.csv")
 
 
+def test_sync_accepts_only_completed_v1_manifest_reference(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": "evidence.manifest.v1",
+                "status": "COMPLETE",
+                "evidence_object": "silver/evidence/run_id=run_1/evidence.jsonl",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert sync._evidence_manifest_object_name(
+        "silver/evidence/run_id=run_1/manifest.json", "silver/evidence"
+    )
+    assert not sync._evidence_manifest_object_name(
+        "silver/evidence/run_id=run_1/evidence.jsonl", "silver/evidence"
+    )
+    assert sync._read_v1_manifest(manifest, "silver/evidence") == (
+        "COMPLETE",
+        "silver/evidence/run_id=run_1/evidence.jsonl",
+    )
+
+
 def test_api_auth_uses_bearer_only_for_jwt_tokens() -> None:
     assert auth.authorization_header("legacy-token") == {"Authorization": "Token legacy-token"}
     assert auth.authorization_header("header.payload.signature") == {

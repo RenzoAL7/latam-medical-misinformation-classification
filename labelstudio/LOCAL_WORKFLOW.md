@@ -1,91 +1,75 @@
-# Flujo local: JSON de Label Studio a primer modelo
+# Flujo local: revisión por claim a dataset binario
 
-Este flujo se ejecuta localmente desde la raíz de este repositorio.
-
-Solo necesitas una carpeta local. No subas sus archivos a GitHub:
+Todo artefacto descargado o generado vive fuera de Git, por ejemplo:
 
 ```text
 labelstudio/artifacts/
-  labelstudio_export.json       # lo descargas de Label Studio
-  silver_evidence_*.csv         # Evidence con el body de las noticias
-  gold_labels.csv               # lo genera el exportador
-  gold_reviewed.csv             # lo genera el validador
-  gold_training.csv             # lo genera el validador
+  evidence.jsonl                 # salida evidence.v1 de una corrida
+  body/                           # CSV Body que permite restaurar title/body
+  labelstudio_export.json         # export descargado de Label Studio
+  claim_reviews.csv               # una revisión humana por claim
+  article_labels.csv              # una fila agregada por noticia
+  gold_reviewed.csv
+  gold_training.csv
 ```
 
-`labelstudio/artifacts/` ya está ignorada por Git. Solo se suben a `main` los
-scripts Python y esta guía.
+## 1. Importar tareas por claim
 
-Este flujo local sigue el contrato CSV desplegado. El plan objetivo de
-`claims.jsonl` y `evidence.jsonl` por corrida está documentado en
-[`docs/multiclaim_jsonl_plan.md`](../docs/multiclaim_jsonl_plan.md), pero los
-scripts de esta guía todavía no leen esos objetos directamente. Mantén los
-JSONL de migración fuera de esta carpeta hasta que exista el adaptador y la
-prueba de compatibilidad correspondiente.
+Crea un proyecto limpio con `config_multiclaim.xml` y usa
+`import_evidence.py` sobre `evidence.jsonl`. Solo se importan claims que tienen
+los cuatro estados listos: LLM, evidencia, embedding y traducción en `OK`.
 
-## 1. Descargar el JSON
-
-En Label Studio usa **Export > JSON** y copia el archivo descargado a:
-
-```text
-labelstudio/artifacts/labelstudio_export.json
+```bash
+export LABEL_STUDIO_TOKEN='token-local'
+python3 labelstudio/import_evidence.py \
+  --project-id <id> \
+  --input labelstudio/artifacts/evidence.jsonl \
+  --manifest labelstudio/artifacts/import_manifest.csv
 ```
 
-Coloca también en esa misma carpeta el CSV de Evidence correspondiente. El
-JSON de Label Studio no contiene el `body` completo porque se excluyó para que
-la interfaz sea más ligera. El exportador busca automáticamente los CSV cuyo
-nombre contiene `evidence`.
+El identificador de deduplicación es `claim_key = record_id::claim_id`; por eso
+una noticia con tres claims crea tres tareas y ninguna tarea se repite.
 
-## 2. Convertir JSON a CSV
+## 2. Exportar revisiones humanas
 
-Desde la raíz del repo ejecuta:
+Desde la interfaz de Label Studio usa **Export > JSON** y guárdalo como
+`labelstudio/artifacts/labelstudio_export.json`.
 
 ```bash
 python3 labelstudio/export_annotations.py \
+  --mode multiclaim \
   --input-json labelstudio/artifacts/labelstudio_export.json \
-  --output labelstudio/artifacts/gold_labels.csv \
-  --evidence-input labelstudio/artifacts/
+  --output labelstudio/artifacts/claim_reviews.csv
 ```
 
-El script toma la última anotación completada por `record_id`, conserva la
-etiqueta y la relación de evidencia, y escribe una fila por noticia. Revisa
-el resultado impreso: si `missing_body` es mayor que cero, falta el CSV de
-Evidence y todavía no se debe entrenar.
+El resultado sigue siendo una fila por claim. No lo entregues aún al modelo de
+clasificación de noticias.
 
-## 3. Validar las etiquetas humanas
+## 3. Agregar una sola etiqueta por noticia
+
+```bash
+python3 labelstudio/aggregate_article_labels.py \
+  --claims-input labelstudio/artifacts/claim_reviews.csv \
+  --body-input labelstudio/artifacts/body/ \
+  --output labelstudio/artifacts/article_labels.csv
+```
+
+La regla es: algún claim central/material refutado → `REFUTADA`; todos los
+claims centrales/materiales respaldados → `RESPALDADA`; de otro modo →
+`NO_DETERMINABLE`. La salida conserva auditoría (`claims_total`, razones y
+anotaciones), pero no duplica artículos.
+
+## 4. Validar Gold
 
 ```bash
 python3 labelstudio/validate_gold.py \
-  --input labelstudio/artifacts/gold_labels.csv \
+  --input labelstudio/artifacts/article_labels.csv \
   --reviewed-output labelstudio/artifacts/gold_reviewed.csv \
   --training-output labelstudio/artifacts/gold_training.csv \
   --rejected-output labelstudio/artifacts/gold_rejected.csv \
   --fail-on-reject
 ```
 
-Para entrenamiento solo pasan `RESPALDADA` y `REFUTADA`. Las filas
-`NO_DETERMINABLE`, `EXCLUIDA` o incompletas quedan fuera del CSV binario.
-
-## 4. Entrenar el primer modelo
-
-Instala las dependencias una vez:
-
-```bash
-python3 -m pip install scikit-learn joblib
-```
-
-Con al menos 100 filas binarias validadas:
-
-```bash
-python3 scripts/03_train_baseline.py \
-  --input labelstudio/artifacts/gold_training.csv \
-  --output-dir labelstudio/artifacts \
-  --run-name pilot_100 \
-  --limit 100 \
-  --min-rows 100 \
-  --seed 42
-```
-
-El modelo usa únicamente `title + body`. Claims, PMIDs, similitudes, fuente y
-tema se conservan como metadata de auditoría, pero no son variables de entrada
-del primer modelo.
+`gold_training.csv` contiene solo `record_id`, `title`, `body`, `label` y
+`dataset_split`. El primer modelo aprende de `title + body`; claims,
+evidencia, PMIDs y similitudes se conservan fuera como auditoría.

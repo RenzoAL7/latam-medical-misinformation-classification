@@ -1,5 +1,5 @@
 [Unit]
-Description=Poll OCI Object Storage for MedNews Evidence CSVs
+Description=Poll OCI Object Storage for completed MedNews Evidence JSONL runs
 
 [Timer]
 OnBootSec=2min
