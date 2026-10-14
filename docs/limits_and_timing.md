@@ -11,6 +11,10 @@ documentación. Para que esos campos aparezcan en la respuesta de producción se
 debe desplegar la nueva imagen después de fusionar el PR; la imagen que ya
 estaba activa conserva su comportamiento anterior hasta ese despliegue.
 
+La tabla de este documento refleja actualmente el contrato CSV desplegado. El
+impacto del diseño objetivo multi-claim y JSONL se resume más abajo y se
+especifica en [`multiclaim_jsonl_plan.md`](multiclaim_jsonl_plan.md).
+
 ## Resumen de una corrida
 
 | Etapa | Disparador | Trabajo máximo por invocación | Presupuesto interno | Salida |
@@ -28,6 +32,25 @@ Los tamaños son límites superiores, no cantidades garantizadas. Si una etapa
 se queda sin tiempo, escribe lo que terminó y deja el resto pendiente para la
 siguiente activación de esa etapa. El `run_id`, el nombre del objeto, `row_count` y los campos
 de auditoría son la fuente de verdad para saber cuánto se procesó realmente.
+
+### Impacto del diseño multi-claim JSONL
+
+El cambio de formato no debe ocultar el cambio de cardinalidad:
+
+- Body sigue midiendo artículos procesados.
+- Claims mide artículos de entrada y debe registrar también `claims_total`,
+  `claims_count` por noticia y `claims_truncated`.
+- Evidence mide claims elegibles y candidatos recuperados; `top_k` es por
+  `claim_id`, no por noticia.
+- Cada etapa escribe un `manifest.json` con artículos, claims, candidatos,
+  estados terminales y `rows_left_for_next_run`.
+- Una corrida JSONL es inmutable. Los reintentos actualizan el estado de la
+  misma combinación de `run_id`, `record_id` y `claim_id` o generan una nueva
+  corrida explícita; no mezclan resultados silenciosamente.
+
+Por eso un lote de 25 noticias puede producir más de 25 claims y Evidence
+puede hacer más de 25 búsquedas PubMed. El presupuesto se debe validar por
+tokens, claims y candidatos, no únicamente por el número de artículos.
 
 Con dos corridas de recolección al día, el objetivo normal es de hasta 100
 filas nuevas diarias antes de descartar URLs repetidas, artículos sin cuerpo o
@@ -191,6 +214,12 @@ el título+abstract en inglés. Guarda `embedding_similarity`,
 no una probabilidad de que la noticia sea verdadera. La evidencia pasa a Gold
 solo después de la decisión humana (`supports`, `contradicts` o `unclear` y la
 etiqueta final).
+
+En el formato objetivo JSONL, `evidence.jsonl` conserva una línea por claim
+con su arreglo `candidates`, incluidos los casos sin resultados. Así se evita
+que `NO_RESULTS` o `NO_ABSTRACT` desaparezcan por no tener un PMID que contar.
+Si se necesita una tabla plana para análisis, puede derivarse una línea por
+candidato manteniendo `record_id` y `claim_id` como claves.
 
 Embed 4 admite hasta 128.000 tokens de entrada total por llamada en API/SDK y
 dimensiones 256, 512, 1024 o 1536; el pipeline usa 512 y limita el texto por
