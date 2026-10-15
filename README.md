@@ -60,11 +60,12 @@ El contrato, los ejemplos JSONL y la compatibilidad temporal están en
 
 ## Automatización OCI
 
-Los schedules de producción y el timer de sincronización de Label Studio están
-**pausados mientras se ordena la migración**. OCI Events permanecerá como el
-encadenamiento por objeto una vez desplegados de forma coordinada los selectores
-JSONL y las dos imágenes v1. No se deben reactivar schedules ni crear datos de
-prueba productivos hasta verificar una corrida controlada.
+Para una corrida v1 limpia, permanece activo solo el schedule de producción de
+las 08:00 Lima junto con OCI Events y el timer de sincronización del proyecto
+multi-claim de Label Studio. El schedule de las 20:00 y los drains históricos
+siguen inactivos: no son pasos de la cadena normal y podrían recorrer objetos
+históricos. No se deben crear datos de prueba productivos ni reprocesar CSV
+existentes durante la corrida.
 
 Con la configuración v1, OCI Events encadena el proceso así:
 

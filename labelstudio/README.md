@@ -21,10 +21,10 @@ aggregate_article_labels.py (una noticia, una etiqueta)
 validate_gold.py -> gold/reviewed + gold/training
 ```
 
-El sincronizador automático y los schedules de producción están pausados
-mientras se valida la migración. No importes los CSV históricos en el proyecto
-multi-claim ni cambies la configuración de un proyecto que ya tenga
-anotaciones con el XML antiguo.
+Para una corrida v1 validada, el sincronizador automático puede permanecer
+activo solo para el proyecto multi-claim y el formato `jsonl`. No importes los
+CSV históricos en ese proyecto ni cambies la configuración de un proyecto que
+ya tenga anotaciones con el XML antiguo.
 
 ## 1. Crear un proyecto limpio
 
@@ -118,6 +118,6 @@ importar. Usa un JWT refresh token de Label Studio en un archivo protegido y
 el Instance Principal de la VM para Object Storage; nunca guardes access tokens
 ni secretos en Git.
 
-El unit de systemd describe este modo, pero su timer debe seguir deshabilitado
-hasta completar una corrida controlada y decidir la reactivación de los
-schedules.
+El unit de systemd describe este modo. Una vez habilitado tras la validación,
+el timer sincroniza los manifests `COMPLETE` cada cinco minutos; no sustituye
+las reglas Events ni justifica activar los drains históricos.
