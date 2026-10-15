@@ -322,6 +322,11 @@ def _google_key_switchable(error: Exception) -> bool:
             "timeout",
             "temporarily unavailable",
             "service unavailable",
+            # Gemini can reject a literal biomedical abstract with RECITATION
+            # even though another configured project accepts it.  Try that
+            # project before falling back to the bounded paraphrase path.
+            "recitation",
+            "empty response",
         )
     )
 
@@ -988,6 +993,7 @@ def _translate_row_individually(
     row: dict[str, str],
     max_tokens: int,
     timeout: float,
+    deadline: float = float("inf"),
 ) -> tuple[dict[str, str], list[str], int, set[str]]:
     """Retry a row one abstract at a time when its combined response is empty."""
 
@@ -1000,14 +1006,22 @@ def _translate_row_individually(
             continue
         if str(candidate.get("abstract_es", "") or "").strip():
             continue
+        pmid = str(candidate.get("pmid", "") or "")
+        remaining = deadline - time.monotonic()
+        # Keep a small buffer for writing the row and its manifest.  A
+        # paraphrase retry must never turn one recoverable RECITATION into a
+        # Function timeout for the entire run.
+        if remaining <= 5.0:
+            errors.append(f"{pmid}: translation time budget reached")
+            break
+        candidate_timeout = min(timeout, max(1.0, remaining - 5.0))
         single_row = dict(row)
         single_row["pubmed_results_json"] = json.dumps([candidate], ensure_ascii=False)
         attempts += 1
         try:
-            result = _translate_batch(api_key, model_id, [single_row], max_tokens, timeout)
+            result = _translate_batch(api_key, model_id, [single_row], max_tokens, candidate_timeout)
             translated.update(result.get(_claim_identity(row), {}))
         except Exception as exc:  # noqa: BLE001 - preserve each PMID's audit trail
-            pmid = str(candidate.get("pmid", "") or "")
             attempts += 1
             try:
                 if "RECITATION" in str(exc).upper():
@@ -1029,7 +1043,7 @@ def _translate_row_individually(
                     model_id,
                     plain_prompt,
                     max_tokens,
-                    timeout,
+                    candidate_timeout,
                 )
             except Exception as plain_exc:  # noqa: BLE001 - preserve both attempts
                 errors.append(
@@ -1239,6 +1253,50 @@ def _apply_translations(
             stats["translated_abstracts"] += translated_count
             stats["scored_rows"] += int(scored)
 
+    def apply_candidate_fallback(
+        row: dict[str, str],
+        fallback_slot: int,
+        leading_error: Exception,
+    ) -> None:
+        """Recover a failed row without letting RECITATION poison the run.
+
+        Gemini sometimes rejects the JSON translation response for a literal
+        abstract with ``RECITATION``.  The single-abstract helper uses its
+        existing plain-text, faithful-paraphrase fallback in that case.  The
+        resulting candidate is explicitly marked ``PARAPHRASED`` while the
+        row can remain reviewable only if *every* candidate was recovered.
+        """
+
+        mapping, fallback_errors, attempts, paraphrased_pmids = _translate_row_individually(
+            api_keys[fallback_slot],
+            model_id,
+            row,
+            max_tokens,
+            timeout,
+            deadline,
+        )
+        row["translation_key_slot"] = str(fallback_slot + 1)
+        stats["translation_requests"] += attempts
+        translated_count, missing_count, scored = _apply_translation_mapping(
+            row,
+            mapping,
+            paraphrased_pmids,
+        )
+        for candidate in _candidate_list(row):
+            abstract_es = str(candidate.get("abstract_es", "") or "").strip()
+            if abstract_es:
+                translation_cache.setdefault(cache_key(candidate), abstract_es)
+        stats["paraphrased_abstracts"] += len(paraphrased_pmids)
+        stats["translated_abstracts"] += translated_count
+        stats["scored_rows"] += int(scored)
+        if fallback_errors or missing_count:
+            row["translation_status"] = "PARTIAL" if translated_count else "ERROR"
+            details = "; ".join(fallback_errors)
+            row["translation_error"] = (
+                f"{type(leading_error).__name__}: {leading_error}; {details}"
+            )[:1500] or f"{missing_count} abstract(s) were not translated"
+            stats["translation_errors"] += 1
+
     # One row contains all of its PubMed candidates.  With two independent
     # Gemini projects, send one complete row per key concurrently.  This avoids
     # a large multi-row response exceeding its output limit and gives every
@@ -1282,12 +1340,8 @@ def _apply_translations(
                                 apply_mapping([row], translated, fallback_slot)
                                 stats["translation_requests"] += 1
                             except Exception as fallback_exc:  # noqa: BLE001
-                                row["translation_status"] = "ERROR"
-                                row["translation_error"] = (
-                                    f"{type(exc).__name__}: {exc}; "
-                                    f"fallback {type(fallback_exc).__name__}: {fallback_exc}"
-                                )[:1500]
-                                stats["translation_errors"] += 1
+                                stats["translation_candidate_fallbacks"] += 1
+                                apply_candidate_fallback(row, fallback_slot, fallback_exc)
         return dict(stats)
 
     for offset in range(0, len(pending), batch_size):
@@ -1336,33 +1390,10 @@ def _apply_translations(
                     translated, used_slot = translate_with_failover([row])
                     stats["translation_requests"] += 1
                     apply_mapping([row], translated, used_slot)
-                except Exception:  # noqa: BLE001 - keep row-level audit trail
+                except Exception as exc:  # noqa: BLE001 - keep row-level audit trail
                     stats["translation_candidate_fallbacks"] += 1
                     fallback_slot = key_cursor % len(api_keys)
-                    mapping, fallback_errors, attempts, paraphrased_pmids = _translate_row_individually(
-                        api_keys[fallback_slot],
-                        model_id,
-                        row,
-                        max_tokens,
-                        timeout,
-                    )
-                    row["translation_key_slot"] = str(fallback_slot + 1)
-                    stats["translation_requests"] += attempts
-                    translated_count, missing_count, scored = _apply_translation_mapping(
-                        row,
-                        mapping,
-                        paraphrased_pmids,
-                    )
-                    stats["paraphrased_abstracts"] += len(paraphrased_pmids)
-                    if fallback_errors or missing_count:
-                        row["translation_status"] = "PARTIAL" if translated_count else "ERROR"
-                        details = "; ".join(fallback_errors)
-                        row["translation_error"] = details[:1500] or (
-                            f"{missing_count} abstract(s) were not translated"
-                        )
-                        stats["translation_errors"] += 1
-                    stats["translated_abstracts"] += translated_count
-                    stats["scored_rows"] += int(scored)
+                    apply_candidate_fallback(row, fallback_slot, exc)
     return dict(stats)
 
 

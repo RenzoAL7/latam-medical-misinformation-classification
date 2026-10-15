@@ -47,7 +47,9 @@ Una noticia puede tener cero, uno o muchos claims. No se recorta por defecto:
 procesar todos los claims del objeto disparador. El límite de cinco minutos se
 protege reduciendo candidatos por claim, no descartando claims. Los manifiestos
 registran `COMPLETE`, `PARTIAL` o `FAILED`; no hay drenaje ni reprocesamiento
-automático de una corrida v1.
+automático de una corrida v1. Si un manifiesto queda `PARTIAL`, el
+sincronizador puede entregar a Label Studio sus claims ya listos; la fila con
+error sigue excluida por sus propios estados.
 
 La agregación humana aplica esta regla explícita: un claim central o material
 refutado vuelve la noticia `REFUTADA`; si todos los claims centrales/materiales

@@ -209,6 +209,47 @@ def test_translation_reuses_identical_pubmed_abstract_between_claims(monkeypatch
     assert [row["translation_status"] for row in rows] == ["OK", "OK"]
 
 
+def test_parallel_translation_recovers_recitation_with_paraphrase(monkeypatch) -> None:
+    """The two-key path must reach the per-abstract RECITATION fallback."""
+
+    row = {
+        "record_id": "news_001",
+        "claim_id": "news_001_c01",
+        "claim_text_en": "first claim",
+        "evidence_status": "OK",
+        "pubmed_results_json": json.dumps(
+            [{"pmid": "123", "title": "Study", "abstract_excerpt": "Literal abstract", "pubmed_rank": 1}]
+        ),
+    }
+
+    def recitation(*_args, **_kwargs):
+        raise RuntimeError("Gemini translation returned an empty response (RECITATION)")
+
+    monkeypatch.setattr(EVIDENCE, "_translate_batch", recitation)
+    monkeypatch.setattr(EVIDENCE, "_google_generate_text", lambda *_args, **_kwargs: "Resumen fiel en español.")
+
+    stats = EVIDENCE._apply_translations(
+        [row],
+        ["translation-key-1", "translation-key-2"],
+        "model",
+        1,
+        1000,
+        30,
+        float("inf"),
+        "run_1",
+        True,
+        parallelism=2,
+    )
+
+    candidate = json.loads(row["pubmed_results_json"])[0]
+    assert row["translation_status"] == "OK"
+    assert row["translation_error"] == ""
+    assert candidate["translation_status"] == "PARAPHRASED"
+    assert candidate["abstract_es"] == "Resumen fiel en español."
+    assert stats["translation_candidate_fallbacks"] == 1
+    assert stats["paraphrased_abstracts"] == 1
+
+
 def test_gate_changes_ok_to_error_when_embedding_or_translation_failed() -> None:
     rows = [
         {

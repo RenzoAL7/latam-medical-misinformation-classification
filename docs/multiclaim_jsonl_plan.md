@@ -146,8 +146,10 @@ humana.
 Los claims sin resultados o con abstracts inutilizables se conservan con su
 estado terminal y una lista `candidates` vacía. Una falla de LLM, Embed 4 o
 traducción hace que `evidence_status=ERROR`, por lo que ese claim no llega a
-Label Studio como si tuviera evidencia lista. No se reintenta en segundo plano:
-la siguiente corrida normal genera un nuevo `run_id`.
+Label Studio como si tuviera evidencia lista. Una respuesta Gemini bloqueada
+por `RECITATION` puede usar, dentro de la misma invocación y con presupuesto de
+tiempo acotado, un resumen fiel marcado `PARAPHRASED`. No se reintenta en
+segundo plano: la siguiente corrida normal genera un nuevo `run_id`.
 
 ## `manifest.json`
 

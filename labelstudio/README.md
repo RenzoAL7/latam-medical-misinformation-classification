@@ -112,12 +112,15 @@ similitudes quedan como trazabilidad, no como variables del primer modelo.
 ## Sincronización desde Object Storage
 
 En una VM privada, `sync_evidence_from_object_storage.py --format jsonl`
-acepta únicamente manifests `evidence.manifest.v1` con estado `COMPLETE`,
-descarga el `evidence.jsonl` referido y aplica `config_multiclaim.xml` antes de
-importar. Usa un JWT refresh token de Label Studio en un archivo protegido y
-el Instance Principal de la VM para Object Storage; nunca guardes access tokens
-ni secretos en Git.
+acepta manifests `evidence.manifest.v1` `COMPLETE` o `PARTIAL`, descarga el
+`evidence.jsonl` referido y aplica `config_multiclaim.xml` antes de importar.
+Un manifest `PARTIAL` solo entrega claims con `llm_status`,
+`evidence_status`, `embedding_status` y `translation_status` en `OK`; las
+filas fallidas permanecen fuera de revisión hasta una corrida posterior.
+Usa un JWT refresh token de Label Studio en un archivo protegido y el Instance
+Principal de la VM para Object Storage; nunca guardes access tokens ni secretos
+en Git.
 
 El unit de systemd describe este modo. Una vez habilitado tras la validación,
-el timer sincroniza los manifests `COMPLETE` cada cinco minutos; no sustituye
-las reglas Events ni justifica activar los drains históricos.
+el timer sincroniza los manifests con claims aptos cada cinco minutos; no
+sustituye las reglas Events ni justifica activar los drains históricos.

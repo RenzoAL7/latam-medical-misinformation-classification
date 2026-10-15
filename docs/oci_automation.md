@@ -87,8 +87,9 @@ OCI Functions tiene un timeout de 300 segundos. Claims se detiene a 270 s con
 20 s de margen y Evidence a 285 s con 10 s de margen. El límite se aplica a
 la corrida, no a un claim: si una llamada falla o se acaba el tiempo, el claim
 queda en `ERROR` dentro de `claims.jsonl` o `evidence.jsonl` y el manifest pasa
-a `PARTIAL` o `FAILED`. No hay reintento automático, backlog ni modificación
-de objetos históricos.
+a `PARTIAL` o `FAILED`. Para `RECITATION`, Evidence puede usar en la misma
+invocación un fallback acotado de resumen fiel; no hay reintento automático,
+backlog ni modificación de objetos históricos.
 
 `evidence_status=OK` solo se conserva si `llm_status`, `embedding_status` y
 `translation_status` son `OK`. `NO_RESULTS` y `NO_ABSTRACT` también son
@@ -105,8 +106,9 @@ claves se cargan en tiempo de ejecución y nunca se incorporan a la imagen.
 
 La VM privada de Label Studio usa Instance Principal para listar/leer Objects,
 y un JWT refresh token local protegido para renovar su access token. El
-sincronizador v1 solo consume manifests `evidence.manifest.v1` en estado
-`COMPLETE`.
+sincronizador v1 consume manifests `evidence.manifest.v1` `COMPLETE` o
+`PARTIAL`, pero el importador conserva la compuerta por claim: los cuatro
+estados deben estar en `OK`.
 
 ## Imágenes y activación segura
 

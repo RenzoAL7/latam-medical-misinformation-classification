@@ -5,7 +5,8 @@ The program is intended for a private Label Studio VM. It authenticates to
 Object Storage with the VM's Instance Principal, accepts only the immutable
 ``silver/evidence/run_id=*/manifest.json`` outputs for the multi-claim JSONL
 contract. A compatibility CSV mode remains available only for a legacy
-project. JSONL manifests must be ``COMPLETE`` before importing tasks.
+project. JSONL manifests can be ``COMPLETE`` or ``PARTIAL``: the importer
+still accepts only individual claims whose four review states are ``OK``.
 
 The Label Studio API token is read only from ``LABEL_STUDIO_TOKEN`` at runtime;
 it is never written to the state file or committed to the repository.
@@ -34,6 +35,7 @@ except ModuleNotFoundError:  # Allows lightweight unit tests without OCI SDK.
 
 DEFAULT_PREFIX = "silver/evidence"
 STATE_FILE_NAME = "sync-state.json"
+REVIEWABLE_MANIFEST_STATUSES = frozenset({"COMPLETE", "PARTIAL"})
 
 
 def _required(value: str, name: str) -> str:
@@ -158,7 +160,7 @@ def _download_object(client: Any, namespace: str, bucket: str, object_name: str,
 
 
 def _read_v1_manifest(path: Path, prefix: str) -> tuple[str, str]:
-    """Return the Evidence JSONL object only for a completed v1 run."""
+    """Return a validated Evidence JSONL reference and its run status."""
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -172,6 +174,25 @@ def _read_v1_manifest(path: Path, prefix: str) -> tuple[str, str]:
     if not evidence_object.startswith(expected_prefix) or not evidence_object.endswith("/evidence.jsonl"):
         raise RuntimeError(f"Evidence manifest references an invalid object: {evidence_object!r}")
     return status, evidence_object
+
+
+def _manifest_has_reviewable_rows(status: str) -> bool:
+    """Whether a manifest may contain claim rows safe for human review."""
+
+    return status.strip().upper() in REVIEWABLE_MANIFEST_STATUSES
+
+
+def _manifest_was_handled(previous: object, etag: str) -> bool:
+    """Do not re-import a run, but reconsider an old skipped PARTIAL run.
+
+    Earlier releases stored ``observed_etag`` for every non-COMPLETE manifest.
+    Keeping that value out of this decision lets the upgraded synchronizer
+    recover ready claims from an already-observed PARTIAL run exactly once.
+    """
+
+    if not isinstance(previous, dict):
+        return False
+    return previous.get("imported_etag") == etag or previous.get("skipped_etag") == etag
 
 
 def _label_studio_request(url: str, token: str, project_id: int, label_config: Path) -> None:
@@ -306,6 +327,7 @@ def main() -> int:
     imported = 0
     skipped = 0
     skipped_incomplete = 0
+    partial_manifests_imported = 0
     if args.format == "jsonl":
         objects = _list_evidence_manifest_objects(client, namespace, bucket, args.prefix)
         for item in objects:
@@ -315,7 +337,7 @@ def main() -> int:
             manifest_path = _local_input_path(cache_dir / "manifests", object_name)
             if (
                 isinstance(previous, dict)
-                and previous.get("imported_etag", previous.get("observed_etag")) == etag
+                and _manifest_was_handled(previous, etag)
                 and manifest_path.is_file()
             ):
                 skipped += 1
@@ -324,10 +346,11 @@ def main() -> int:
                 _download_object(client, namespace, bucket, object_name, manifest_path)
                 downloaded += 1
             status, evidence_object = _read_v1_manifest(manifest_path, args.prefix)
-            if status != "COMPLETE":
+            if not _manifest_has_reviewable_rows(status):
                 tracked[object_name] = {
                     "etag": etag,
                     "observed_etag": etag,
+                    "skipped_etag": etag,
                     "manifest_status": status,
                     "local_path": manifest_path.name,
                 }
@@ -356,6 +379,7 @@ def main() -> int:
             }
             _write_state(state_path, state)
             imported += 1
+            partial_manifests_imported += int(status == "PARTIAL")
     else:
         objects = _list_evidence_objects(client, namespace, bucket, args.prefix)
         for item in objects:
@@ -398,6 +422,7 @@ def main() -> int:
                 "imported_or_refreshed": imported,
                 "skipped_unchanged": skipped,
                 "skipped_incomplete": skipped_incomplete,
+                "partial_manifests_imported": partial_manifests_imported,
             },
             ensure_ascii=False,
         )

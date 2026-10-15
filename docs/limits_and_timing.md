@@ -107,6 +107,9 @@ translation_status=OK
 ```
 
 Esto evita tratar como evidencia útil una fila con error de infraestructura.
+Un manifest `PARTIAL` no bloquea los demás claims: el sincronizador importa
+solo las filas que cumplen esta compuerta y conserva las fallidas fuera de
+Label Studio.
 Label Studio no recibe un `final_label`; la persona clasifica materialidad,
 relación de evidencia y veredicto del claim. `aggregate_article_labels.py`
 aplica la regla artículo: un claim central/material refutado implica
