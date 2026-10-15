@@ -21,10 +21,10 @@ aggregate_article_labels.py (una noticia, una etiqueta)
 validate_gold.py -> gold/reviewed + gold/training
 ```
 
-El sincronizador automático y los schedules de producción están pausados
-mientras se valida la migración. No importes los CSV históricos en el proyecto
-multi-claim ni cambies la configuración de un proyecto que ya tenga
-anotaciones con el XML antiguo.
+Para una corrida v1 validada, el sincronizador automático puede permanecer
+activo solo para el proyecto multi-claim y el formato `jsonl`. No importes los
+CSV históricos en ese proyecto ni cambies la configuración de un proyecto que
+ya tenga anotaciones con el XML antiguo.
 
 ## 1. Crear un proyecto limpio
 
@@ -112,12 +112,15 @@ similitudes quedan como trazabilidad, no como variables del primer modelo.
 ## Sincronización desde Object Storage
 
 En una VM privada, `sync_evidence_from_object_storage.py --format jsonl`
-acepta únicamente manifests `evidence.manifest.v1` con estado `COMPLETE`,
-descarga el `evidence.jsonl` referido y aplica `config_multiclaim.xml` antes de
-importar. Usa un JWT refresh token de Label Studio en un archivo protegido y
-el Instance Principal de la VM para Object Storage; nunca guardes access tokens
-ni secretos en Git.
+acepta manifests `evidence.manifest.v1` `COMPLETE` o `PARTIAL`, descarga el
+`evidence.jsonl` referido y aplica `config_multiclaim.xml` antes de importar.
+Un manifest `PARTIAL` solo entrega claims con `llm_status`,
+`evidence_status`, `embedding_status` y `translation_status` en `OK`; las
+filas fallidas permanecen fuera de revisión hasta una corrida posterior.
+Usa un JWT refresh token de Label Studio en un archivo protegido y el Instance
+Principal de la VM para Object Storage; nunca guardes access tokens ni secretos
+en Git.
 
-El unit de systemd describe este modo, pero su timer debe seguir deshabilitado
-hasta completar una corrida controlada y decidir la reactivación de los
-schedules.
+El unit de systemd describe este modo. Una vez habilitado tras la validación,
+el timer sincroniza los manifests con claims aptos cada cinco minutos; no
+sustituye las reglas Events ni justifica activar los drains históricos.

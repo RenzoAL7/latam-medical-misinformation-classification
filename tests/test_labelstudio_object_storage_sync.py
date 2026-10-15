@@ -68,6 +68,18 @@ def test_sync_accepts_only_completed_v1_manifest_reference(tmp_path: Path) -> No
     )
 
 
+def test_sync_imports_ready_claims_from_partial_v1_manifests_once() -> None:
+    assert sync._manifest_has_reviewable_rows("COMPLETE")
+    assert sync._manifest_has_reviewable_rows("partial")
+    assert not sync._manifest_has_reviewable_rows("FAILED")
+
+    # A previous release recorded PARTIAL manifests as merely observed.  They
+    # must be reconsidered after the upgrade, then imported exactly once.
+    assert not sync._manifest_was_handled({"observed_etag": "etag-1"}, "etag-1")
+    assert sync._manifest_was_handled({"imported_etag": "etag-1"}, "etag-1")
+    assert sync._manifest_was_handled({"skipped_etag": "etag-1"}, "etag-1")
+
+
 def test_api_auth_uses_bearer_only_for_jwt_tokens() -> None:
     assert auth.authorization_header("legacy-token") == {"Authorization": "Token legacy-token"}
     assert auth.authorization_header("header.payload.signature") == {

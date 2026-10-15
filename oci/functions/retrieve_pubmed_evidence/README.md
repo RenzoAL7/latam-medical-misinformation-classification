@@ -25,6 +25,10 @@ La Function exige `llm_status=OK`. En v1 una falla de Embed 4 o traducción
 cambia `evidence_status` a `ERROR`, por lo que nunca se importa a Label Studio
 como evidencia lista. Los scores solo ordenan candidatos: la relación
 `supports`/`contradicts` y el veredicto siguen siendo decisiones humanas.
+Si Gemini bloquea una traducción literal por `RECITATION`, la Function intenta
+en la misma invocación un resumen fiel y lo deja auditado como
+`translation_status=PARAPHRASED` a nivel candidato; si no puede recuperar todos
+los abstracts, el claim sigue en `ERROR`.
 
 ## Configuration
 

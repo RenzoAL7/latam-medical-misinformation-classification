@@ -4,18 +4,20 @@ Esta es la referencia de operación del contrato multi-claim. Un presupuesto es
 un límite interno de trabajo, no una garantía de respuesta de OCI, PubMed,
 Gemini o NewsData.
 
-## Estado de activación
+## Activación segura
 
-Los schedules de captura de las 08:00 y 20:00, los drenajes horarios y el timer
-de Label Studio están pausados durante la migración. Esta documentación describe
-la configuración que se valida antes de reactivarlos; no autoriza por sí sola
-el reprocesamiento de datos existentes.
+Para una corrida v1 limpia, activa el schedule de captura de las 08:00 Lima,
+las reglas Events y el timer de Label Studio del proyecto multi-claim. Mantén
+inactivos el schedule de las 20:00 y los drenajes horarios: su payload global
+puede seleccionar trabajo histórico, mientras que v1 debe avanzar por el
+objeto fuente que dispara cada evento. Esta activación no autoriza borrar ni
+reprocesar datos existentes.
 
 ## Resumen por corrida
 
 | Etapa | Disparador | Trabajo v1 | Presupuesto | Salida |
 | --- | --- | --- | ---: | --- |
-| NewsData | Scheduler (pausado) | hasta 50 noticias nuevas | 150 s + 10 s | `bronze/*.csv` |
+| NewsData | Scheduler 08:00 Lima | hasta 50 noticias nuevas | 150 s + 10 s | `bronze/*.csv` |
 | Body | Event Bronze | hasta 50 cuerpos | 150 s + 10 s | `silver/body/*.csv` |
 | Claims | Event Body | todas las noticias válidas del objeto | 270 s + 20 s | `claims.jsonl` + manifest |
 | Evidence | Event Claims JSONL | todos los claims elegibles del objeto | 285 s + 10 s | `evidence.jsonl` + manifest |
@@ -46,7 +48,7 @@ El ahorro se aplica a los candidatos:
 
 ```text
 PUBMED_CANDIDATES_FETCHED=5
-TRANSLATION_PARALLELISM=1
+TRANSLATION_PARALLELISM=2
 ```
 
 Cada claim consulta hasta cinco PMIDs y Embed 4 procesa todos los candidatos
@@ -86,9 +88,12 @@ modelo de clasificación de noticias. Ni TF-IDF ni embedding validan la verdad,
 y ningún score tiene un umbral de aceptación antes de una calibración humana.
 
 El Function respeta 0.4 s entre consultas PubMed sin API key. Embed 4 usa
-dimensión 512 y trocea solicitudes por inputs/tokens. Las cuotas reales dependen
-del tenancy y región; se revisan en OCI antes de elevar paralelismo o tamaño de
-lote.
+dimensión 512 y trocea solicitudes por inputs/tokens. Con dos claves Gemini
+independientes, la traducción procesa como máximo una fila por clave en cada
+ola (`TRANSLATION_PARALLELISM=2`); esto reduce el tiempo de pared sin aumentar
+la cantidad de abstracts ni el costo unitario. Las cuotas reales dependen del
+tenancy y región; se revisan en OCI antes de elevar más el paralelismo o el
+tamaño de lote.
 
 ## Qué llega a Label Studio
 
@@ -102,6 +107,9 @@ translation_status=OK
 ```
 
 Esto evita tratar como evidencia útil una fila con error de infraestructura.
+Un manifest `PARTIAL` no bloquea los demás claims: el sincronizador importa
+solo las filas que cumplen esta compuerta y conserva las fallidas fuera de
+Label Studio.
 Label Studio no recibe un `final_label`; la persona clasifica materialidad,
 relación de evidencia y veredicto del claim. `aggregate_article_labels.py`
 aplica la regla artículo: un claim central/material refutado implica

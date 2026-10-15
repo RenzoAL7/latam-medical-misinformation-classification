@@ -3,13 +3,15 @@
 Este documento describe la activación coordinada del pipeline multi-claim. Los
 OCID concretos pertenecen a la configuración de OCI, no al repositorio.
 
-## Estado operativo actual
+## Activación segura para una corrida v1
 
-Mientras se termina la migración, están pausados los dos schedules de NewsData,
-los tres schedules históricos de drenaje y el timer de Label Studio. No se
-deben borrar CSV ni reactivar esos recursos durante esta etapa. Las reglas
-Events se conservan para no perder su configuración, pero la regla Claims →
-Evidence debe cambiar junto con el despliegue de las imágenes v1.
+La corrida limpia activa únicamente el schedule de NewsData de las 08:00 Lima,
+las tres reglas Events y el timer del proyecto multi-claim de Label Studio. El
+schedule de las 20:00 y los tres schedules históricos de drenaje permanecen
+inactivos: un drain usa un payload global y podría volver a recorrer objetos
+históricos, mientras que Claims y Evidence v1 deben procesar el objeto que
+disparó el evento. No borres ni reproceses CSV históricos como parte de la
+activación.
 
 ## Cadena de objetos
 
@@ -67,7 +69,7 @@ EVIDENCE_MAX_ROWS=0
 PUBMED_CANDIDATES_FETCHED=5
 EVIDENCE_MAX_SECONDS=285
 EVIDENCE_TIME_BUFFER=10
-TRANSLATION_PARALLELISM=1
+TRANSLATION_PARALLELISM=2
 ```
 
 `MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` son reglas de integridad:
@@ -75,7 +77,9 @@ no se descarta un claim por ser el sexto o por superar un lote arbitrario.
 Cada claim recupera como máximo cinco PMIDs y se embeben todos los candidatos
 con abstract. El embedding del query siempre es por claim; un mismo
 PMID+abstract reaprovecha su embedding y traducción dentro de la misma
-invocación.
+invocación. Con las dos claves Gemini independientes configuradas, la
+traducción puede atender dos filas de claim en paralelo; no cambia el número
+de abstracts traducidos ni el límite de cinco PMIDs por claim.
 
 ## Presupuesto y errores
 
@@ -83,8 +87,9 @@ OCI Functions tiene un timeout de 300 segundos. Claims se detiene a 270 s con
 20 s de margen y Evidence a 285 s con 10 s de margen. El límite se aplica a
 la corrida, no a un claim: si una llamada falla o se acaba el tiempo, el claim
 queda en `ERROR` dentro de `claims.jsonl` o `evidence.jsonl` y el manifest pasa
-a `PARTIAL` o `FAILED`. No hay reintento automático, backlog ni modificación
-de objetos históricos.
+a `PARTIAL` o `FAILED`. Para `RECITATION`, Evidence puede usar en la misma
+invocación un fallback acotado de resumen fiel; no hay reintento automático,
+backlog ni modificación de objetos históricos.
 
 `evidence_status=OK` solo se conserva si `llm_status`, `embedding_status` y
 `translation_status` son `OK`. `NO_RESULTS` y `NO_ABSTRACT` también son
@@ -101,8 +106,9 @@ claves se cargan en tiempo de ejecución y nunca se incorporan a la imagen.
 
 La VM privada de Label Studio usa Instance Principal para listar/leer Objects,
 y un JWT refresh token local protegido para renovar su access token. El
-sincronizador v1 solo consume manifests `evidence.manifest.v1` en estado
-`COMPLETE`.
+sincronizador v1 consume manifests `evidence.manifest.v1` `COMPLETE` o
+`PARTIAL`, pero el importador conserva la compuerta por claim: los cuatro
+estados deben estar en `OK`.
 
 ## Imágenes y activación segura
 

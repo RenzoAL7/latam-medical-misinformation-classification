@@ -146,8 +146,10 @@ humana.
 Los claims sin resultados o con abstracts inutilizables se conservan con su
 estado terminal y una lista `candidates` vacía. Una falla de LLM, Embed 4 o
 traducción hace que `evidence_status=ERROR`, por lo que ese claim no llega a
-Label Studio como si tuviera evidencia lista. No se reintenta en segundo plano:
-la siguiente corrida normal genera un nuevo `run_id`.
+Label Studio como si tuviera evidencia lista. Una respuesta Gemini bloqueada
+por `RECITATION` puede usar, dentro de la misma invocación y con presupuesto de
+tiempo acotado, un resumen fiel marcado `PARAPHRASED`. No se reintenta en
+segundo plano: la siguiente corrida normal genera un nuevo `run_id`.
 
 ## `manifest.json`
 
@@ -192,8 +194,9 @@ por `claim_id`, con claim y evidencia como entrada.
 
 ## Activación coordinada
 
-1. Mantener pausados los schedules de captura, drains históricos y el timer de
-   Label Studio mientras se valida la migración.
+1. Mantener inactivos el schedule de las 20:00 y los drains históricos. Para
+   una corrida v1 limpia, activar solo el schedule de las 08:00 Lima, las reglas
+   Events y el timer de Label Studio del proyecto multi-claim.
 2. Construir y subir las Functions para `linux/amd64`/`GENERIC_X86`; configurar
    `PIPELINE_SCHEMA=v1`, `LLM_MAX_ROWS=0`, `EVIDENCE_MAX_ROWS=0`,
    `PUBMED_CANDIDATES_FETCHED=5`.
@@ -203,7 +206,8 @@ por `claim_id`, con claim y evidencia como entrada.
 4. Crear o migrar explícitamente un proyecto limpio de Label Studio con
    `config_multiclaim.xml`; configurar su sincronizador en formato `jsonl`.
 5. Ejecutar una corrida controlada nueva, revisar ambos manifests y completar
-   la revisión humana. Recién entonces decidir si reactivar los schedules.
+   la revisión humana. El resultado define si se mantiene esa activación, no si
+   se habilitan automáticamente los schedules históricos.
 
 La compatibilidad temporal debe ser explícita y con prefijos separados; los
 artefactos locales generados y los manifiestos con datos no se versionan.
