@@ -1,36 +1,30 @@
 # `extract-claims`
 
-Third OCI Function in the thesis pipeline. It reads the article bodies already
-written under `silver/body/`, skips rows without a body and rows whose body
-extraction status is not `OK`, and extracts a candidate medical claim with
-either OCI Generative AI or the public Gemini API. For Google Gemini, one
-request analyzes several articles and returns one validated JSON item per
-`record_id`, reducing API calls and rate-limit pressure. The Google API key is
-read at invocation time from OCI Vault and is never stored in the image or
-repo.
+Third OCI Function in the thesis pipeline. It reads the triggering Body CSV,
+skips rows without a body or with `extraction_status != OK`, and extracts every
+distinct, verifiable medical claim from each remaining news article with OCI
+Generative AI or Gemini. The Google API key is read at invocation time from OCI
+Vault and is never stored in the image or repository.
 
 The model is used only to structure the article into a candidate claim and to
 prepare a faithful English rendering plus a PubMed search query. It does not
 decide whether the claim is true or false. Human review and evidence are
 required later.
 
-## Diseño objetivo JSONL (multi-claim)
+## Contrato `claims.v1`
 
-La implementación descrita abajo conserva el contrato CSV vigente. El diseño
-objetivo está en [`docs/multiclaim_jsonl_plan.md`](../../../docs/multiclaim_jsonl_plan.md):
-una corrida debe escribir un `claims.jsonl` con una línea por noticia y un
-arreglo `claims` de cero a `N` afirmaciones. Cada afirmación recibe un
-`claim_id`, su texto, la consulta PubMed y su estado de elegibilidad.
+La salida es `silver/claims/run_id=<run_id>/claims.jsonl`: una línea por
+noticia con `claims: []` o un arreglo de claims. Cada elemento recibe
+`claim_id`, `claim_index`, `claim_text`, `claim_text_en`, `pubmed_query_en`,
+`claim_type` y `claim_status=PENDING_EVIDENCE`. El mismo directorio contiene
+`manifest.json` con conteos, duración y fallos. `llm_status=OK` solo confirma
+JSON estructurado válido: jamás asigna `RESPALDADA` ni `REFUTADA`.
 
-La respuesta `llm_status=OK` solo confirma que el JSON estructurado fue válido.
-No asigna `RESPALDADA` ni `REFUTADA`. La fila de una noticia sin claims debe
-conservarse con `claims: []`; `claims_truncated` debe hacer visible cualquier
-límite aplicado por noticia. `manifest.json` debe registrar los conteos de
-noticias, claims, truncamientos y errores de la corrida.
-
-La migración necesita actualizar también la Function de Evidence, los eventos
-de Object Storage y los consumidores de Label Studio. Hasta ese cambio, no se
-debe enviar el `claims.jsonl` objetivo al lector CSV actual.
+En v1 `LLM_MAX_ROWS=0` y `MAX_CLAIMS_PER_ARTICLE=0` son obligatorios: una
+invocación procesa todas las noticias válidas del objeto de Body y conserva
+todos sus claims. Si se agota tiempo o el proveedor falla, cada noticia queda
+representada con `llm_status=ERROR` en la misma salida; no existe drenaje ni
+reintento automático por payload vacío.
 
 ## Configuration
 
@@ -39,16 +33,18 @@ OBJECT_STORAGE_NAMESPACE=idur1kkrru56
 OBJECT_STORAGE_BUCKET=mednews-data
 SILVER_BODY_PREFIX=silver/body
 SILVER_CLAIMS_PREFIX=silver/claims
+PIPELINE_SCHEMA=v1
 LLM_MODEL_ID=google.gemini-2.5-flash
 LLM_REGION=us-ashburn-1
 GENAI_COMPARTMENT_ID=<Cloud compartment OCID>
-LLM_MAX_ROWS=25
-LLM_REQUEST_BATCH_SIZE=10
-LLM_MAX_SECONDS=150
-LLM_TIME_BUFFER=10
+LLM_MAX_ROWS=0
+MAX_CLAIMS_PER_ARTICLE=0
+LLM_REQUEST_BATCH_SIZE=5
+LLM_MAX_SECONDS=270
+LLM_TIME_BUFFER=20
 LLM_MAX_BODY_CHARS=12000
-LLM_MAX_TOKENS=3000
-LLM_REQUEST_TIMEOUT=30
+LLM_MAX_TOKENS=8000
+LLM_REQUEST_TIMEOUT=45
 LLM_TEMPERATURE=0.0
 LLM_TOP_P=0.9
 LLM_MAX_RETRIES=0
@@ -72,47 +68,29 @@ group must be allowed to read both secrets. The request uses the
 key.
 
 An Object Storage Event is scoped to its triggering `silver/body/*.csv` object;
-it never imports rows from an older Body source. An explicit drain invocation
-with an empty payload (`{}`) scans the global backlog and selects the oldest
-source with pending rows. A successful `llm_status=OK` row is terminal; LLM
-errors and time-budget rows remain retryable. `LLM_MAX_ROWS=0` means all
-eligible rows from the selected source; the production value `25` bounds one
-invocation. The output is one deterministic `claims_current_*.csv` per Body
-source, merged by `record_id`, so a retry updates the same object instead of
-creating a duplicate CSV.
-`LLM_REQUEST_BATCH_SIZE` limits the number of rows sent in one Gemini request;
-the recommended value 10 keeps each prompt bounded while the function sends
-the next request in the same invocation. Eligible rows include
-`claim_text_en` and `pubmed_query_en`, so the evidence Function can query
-English PubMed abstracts without another Gemini request. The Function writes
-successful rows when the internal time budget is reached. If Gemini is
-unavailable, the quota is exhausted, or a response does not contain one valid
-item per input row, every affected article is written with `llm_status=ERROR`
-and an explicit reason; it remains pending for a later retry.
-HTTP 4xx, quota, rate-limit, and malformed JSON failures are not retried
-inside the same invocation, so a failed request does not consume a duplicate
-API call.
+it never imports an older Body source. `LLM_REQUEST_BATCH_SIZE` limits only the
+number of articles in an individual LLM prompt; it does not cap claims or
+articles in the invocation. Eligible claims include `claim_text_en` and
+`pubmed_query_en`, so Evidence can query English PubMed abstracts without a
+second extraction call. HTTP, quota and malformed-JSON failures produce an
+auditable `llm_status=ERROR` for every affected article.
 
-The current request batch is 10 rows. With 50 eligible bodies in a source file
-this means five Gemini requests, alternating the two configured project keys.
-The actual time
-is dominated by body length, response tokens and project quota. See
+The recommended request batch is five articles. The actual time is dominated
+by body length, the number of claims returned, response tokens and project
+quota. See
 [`docs/limits_and_timing.md`](../../../docs/limits_and_timing.md) for the
 provider, quota and retry matrix.
 
 ## Output
 
-Successful invocations write a CSV such as:
-
 ```text
-silver/claims/claims_current_<body-source>_<hash>.csv
+silver/claims/run_id=<run_id>/claims.jsonl
+silver/claims/run_id=<run_id>/manifest.json
 ```
 
-The output keeps the Bronze and body columns and adds `claim_text`,
-`claim_text_en`, `pubmed_query_en`, `query_status`, `query_prompt_version`,
-`is_medical`, `is_claim_eligible`, `claim_type`, `llm_reason`,
-`needs_human_review`, `llm_status`, `llm_error`, `llm_raw_json`, `model_id`,
-`llm_key_slot`, `prompt_version`, timestamps, and source object/run identifiers.
+The article envelope retains the metadata needed to join the Body CSV without
+duplicating its full text. The `claims` array holds the many-to-one relation;
+the manifest retains articles with no claims and all LLM error counts.
 
 ## Manual invocation
 
@@ -120,7 +98,7 @@ The output keeps the Bronze and body columns and adds `claim_text`,
 oci fn function invoke \
   --function-id <extract-claims-function-ocid> \
   --file - \
-  --body '{}' \
+  --body '{"data":{"resourceName":"silver/body/body_<run>.csv"}}' \
   --region us-ashburn-1 \
   --read-timeout 360
 ```

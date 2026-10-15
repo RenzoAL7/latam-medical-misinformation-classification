@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Synchronize final Evidence CSVs from OCI Object Storage into Label Studio.
+"""Synchronize final Evidence artifacts from OCI Object Storage into Label Studio.
 
 The program is intended for a private Label Studio VM. It authenticates to
 Object Storage with the VM's Instance Principal, accepts only the immutable
-``silver/evidence/evidence_run_*.csv`` outputs, and invokes the project's
-existing importer one object at a time. Processing objects in name order keeps
-the newest run authoritative when a record appears in more than one run.
+``silver/evidence/run_id=*/manifest.json`` outputs for the multi-claim JSONL
+contract. A compatibility CSV mode remains available only for a legacy
+project. JSONL manifests must be ``COMPLETE`` before importing tasks.
 
 The Label Studio API token is read only from ``LABEL_STUDIO_TOKEN`` at runtime;
 it is never written to the state file or committed to the repository.
@@ -55,6 +55,17 @@ def _evidence_object_name(object_name: str, prefix: str) -> bool:
     )
 
 
+def _evidence_manifest_object_name(object_name: str, prefix: str) -> bool:
+    """Accept only immutable v1 manifests, never a data object by itself."""
+
+    expected_prefix = f"{prefix.strip('/')}/"
+    return (
+        object_name.startswith(expected_prefix)
+        and object_name.endswith("/manifest.json")
+        and "/run_id=" in object_name
+    )
+
+
 def _load_state(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"version": 1, "objects": {}}
@@ -87,6 +98,10 @@ def _local_csv_path(cache_dir: Path, object_name: str) -> Path:
     return cache_dir / f"{digest}-{PurePosixPath(object_name).name}"
 
 
+def _local_input_path(cache_dir: Path, object_name: str) -> Path:
+    return _local_csv_path(cache_dir, object_name)
+
+
 def _object_client() -> Any:
     if oci is None:
         raise RuntimeError("OCI Python SDK is not installed; install oci>=2.0.0 in the VM environment")
@@ -111,6 +126,23 @@ def _list_evidence_objects(client: Any, namespace: str, bucket: str, prefix: str
     )
 
 
+def _list_evidence_manifest_objects(client: Any, namespace: str, bucket: str, prefix: str) -> list[Any]:
+    if oci is None:
+        raise RuntimeError("OCI Python SDK is not installed")
+    response = oci.pagination.list_call_get_all_results(
+        client.list_objects,
+        namespace,
+        bucket,
+        prefix=f"{prefix.strip('/')}/",
+        fields="name,etag",
+    )
+    objects = getattr(response.data, "objects", []) or []
+    return sorted(
+        (item for item in objects if _evidence_manifest_object_name(str(item.name), prefix)),
+        key=lambda item: str(item.name),
+    )
+
+
 def _download_object(client: Any, namespace: str, bucket: str, object_name: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     response = client.get_object(namespace, bucket, object_name)
@@ -123,6 +155,23 @@ def _download_object(client: Any, namespace: str, bucket: str, object_name: str,
         handle.write(content)
         temporary_path = Path(handle.name)
     temporary_path.replace(destination)
+
+
+def _read_v1_manifest(path: Path, prefix: str) -> tuple[str, str]:
+    """Return the Evidence JSONL object only for a completed v1 run."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Invalid evidence manifest: {path}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != "evidence.manifest.v1":
+        raise RuntimeError(f"Unsupported evidence manifest schema: {path}")
+    status = str(payload.get("status", "")).upper()
+    evidence_object = str(payload.get("evidence_object", "")).lstrip("/")
+    expected_prefix = f"{prefix.strip('/')}/"
+    if not evidence_object.startswith(expected_prefix) or not evidence_object.endswith("/evidence.jsonl"):
+        raise RuntimeError(f"Evidence manifest references an invalid object: {evidence_object!r}")
+    return status, evidence_object
 
 
 def _label_studio_request(url: str, token: str, project_id: int, label_config: Path) -> None:
@@ -173,7 +222,7 @@ def _refresh_access_token(url: str, refresh_token: str) -> str:
 
 def _run_importer(
     importer: Path,
-    csv_path: Path,
+    input_path: Path,
     work_dir: Path,
     url: str,
     project_id: int,
@@ -188,7 +237,7 @@ def _run_importer(
         "--project-id",
         str(project_id),
         "--input",
-        str(csv_path),
+        str(input_path),
         "--manifest",
         str(work_dir / "labelstudio-manifest.csv"),
     ]
@@ -212,7 +261,13 @@ def main() -> int:
     parser.add_argument("--token", default=os.getenv("LABEL_STUDIO_TOKEN", ""))
     parser.add_argument("--refresh-token", default=os.getenv("LABEL_STUDIO_REFRESH_TOKEN", ""))
     parser.add_argument("--work-dir", type=Path, default=Path(os.getenv("MEDNEWS_SYNC_WORK_DIR", ".mednews-sync")))
-    parser.add_argument("--label-config", type=Path, default=Path(__file__).with_name("config.xml"))
+    parser.add_argument(
+        "--format",
+        choices=("jsonl", "csv"),
+        default=os.getenv("LABEL_STUDIO_EVIDENCE_FORMAT", "jsonl").strip().lower() or "jsonl",
+        help="jsonl is the multi-claim contract; csv is only for the legacy project",
+    )
+    parser.add_argument("--label-config", type=Path, default=None)
     parser.add_argument("--refresh-existing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--apply-label-config", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
@@ -221,8 +276,11 @@ def main() -> int:
     bucket = _required(args.bucket, "OBJECT_STORAGE_BUCKET / --bucket")
     if args.project_id <= 0:
         raise RuntimeError("LABEL_STUDIO_PROJECT_ID / --project-id must be positive")
-    if not args.label_config.is_file():
-        raise RuntimeError(f"Label Studio configuration not found: {args.label_config}")
+    label_config = args.label_config or Path(__file__).with_name(
+        "config_multiclaim.xml" if args.format == "jsonl" else "config.xml"
+    )
+    if not label_config.is_file():
+        raise RuntimeError(f"Label Studio configuration not found: {label_config}")
     if not args.url.startswith(("http://", "https://")):
         raise RuntimeError("LABEL_STUDIO_URL / --url must be an HTTP(S) URL")
 
@@ -241,40 +299,92 @@ def main() -> int:
         raise RuntimeError("Invalid objects entry in sync state")
 
     if args.apply_label_config:
-        _label_studio_request(args.url, token, args.project_id, args.label_config)
+        _label_studio_request(args.url, token, args.project_id, label_config)
 
     client = _object_client()
-    objects = _list_evidence_objects(client, namespace, bucket, args.prefix)
     downloaded = 0
     imported = 0
     skipped = 0
-    for item in objects:
-        object_name = str(item.name)
-        etag = str(getattr(item, "etag", "") or "")
-        local_path = _local_csv_path(cache_dir, object_name)
-        previous = tracked.get(object_name, {})
-        if (
-            isinstance(previous, dict)
-            and previous.get("imported_etag") == etag
-            and local_path.is_file()
-        ):
-            skipped += 1
-            continue
-        if not local_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
-            _download_object(client, namespace, bucket, object_name, local_path)
-            downloaded += 1
-        _run_importer(
-            Path(__file__).with_name("import_evidence.py"),
-            local_path,
-            work_dir,
-            args.url,
-            args.project_id,
-            token,
-            args.refresh_existing,
-        )
-        tracked[object_name] = {"etag": etag, "imported_etag": etag, "local_path": local_path.name}
-        _write_state(state_path, state)
-        imported += 1
+    skipped_incomplete = 0
+    if args.format == "jsonl":
+        objects = _list_evidence_manifest_objects(client, namespace, bucket, args.prefix)
+        for item in objects:
+            object_name = str(item.name)
+            etag = str(getattr(item, "etag", "") or "")
+            previous = tracked.get(object_name, {})
+            manifest_path = _local_input_path(cache_dir / "manifests", object_name)
+            if (
+                isinstance(previous, dict)
+                and previous.get("imported_etag", previous.get("observed_etag")) == etag
+                and manifest_path.is_file()
+            ):
+                skipped += 1
+                continue
+            if not manifest_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
+                _download_object(client, namespace, bucket, object_name, manifest_path)
+                downloaded += 1
+            status, evidence_object = _read_v1_manifest(manifest_path, args.prefix)
+            if status != "COMPLETE":
+                tracked[object_name] = {
+                    "etag": etag,
+                    "observed_etag": etag,
+                    "manifest_status": status,
+                    "local_path": manifest_path.name,
+                }
+                _write_state(state_path, state)
+                skipped_incomplete += 1
+                continue
+            evidence_path = _local_input_path(cache_dir / "jsonl", evidence_object)
+            if not evidence_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
+                _download_object(client, namespace, bucket, evidence_object, evidence_path)
+                downloaded += 1
+            _run_importer(
+                Path(__file__).with_name("import_evidence.py"),
+                evidence_path,
+                work_dir,
+                args.url,
+                args.project_id,
+                token,
+                args.refresh_existing,
+            )
+            tracked[object_name] = {
+                "etag": etag,
+                "imported_etag": etag,
+                "manifest_status": status,
+                "evidence_object": evidence_object,
+                "local_path": manifest_path.name,
+            }
+            _write_state(state_path, state)
+            imported += 1
+    else:
+        objects = _list_evidence_objects(client, namespace, bucket, args.prefix)
+        for item in objects:
+            object_name = str(item.name)
+            etag = str(getattr(item, "etag", "") or "")
+            local_path = _local_input_path(cache_dir / "csv", object_name)
+            previous = tracked.get(object_name, {})
+            if (
+                isinstance(previous, dict)
+                and previous.get("imported_etag") == etag
+                and local_path.is_file()
+            ):
+                skipped += 1
+                continue
+            if not local_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
+                _download_object(client, namespace, bucket, object_name, local_path)
+                downloaded += 1
+            _run_importer(
+                Path(__file__).with_name("import_evidence.py"),
+                local_path,
+                work_dir,
+                args.url,
+                args.project_id,
+                token,
+                args.refresh_existing,
+            )
+            tracked[object_name] = {"etag": etag, "imported_etag": etag, "local_path": local_path.name}
+            _write_state(state_path, state)
+            imported += 1
 
     print(
         json.dumps(
@@ -282,10 +392,12 @@ def main() -> int:
                 "status": "ok",
                 "bucket": bucket,
                 "prefix": args.prefix.strip("/"),
+                "format": args.format,
                 "objects_seen": len(objects),
                 "downloaded": downloaded,
                 "imported_or_refreshed": imported,
                 "skipped_unchanged": skipped,
+                "skipped_incomplete": skipped_incomplete,
             },
             ensure_ascii=False,
         )

@@ -1,240 +1,123 @@
-# Revisión humana con Label Studio
+# Revisión humana multi-claim con Label Studio
 
-Label Studio es la última revisión humana del pipeline. `silver/evidence/` no
-es todavía Gold: contiene candidatos recuperados de PubMed y puntuaciones de
-similitud. Una persona debe decidir la relación de la evidencia y la etiqueta
-final antes de que una fila entre al conjunto de entrenamiento.
+Label Studio es la decisión humana del pipeline. `evidence.v1` recupera y
+ordena literatura; no prueba que una noticia sea verdadera o falsa. La unidad
+de revisión es un claim, pero la unidad del dataset binario sigue siendo una
+noticia.
 
-El importador y el sincronizador documentados aquí consumen actualmente los
-CSV de Evidence. El plan objetivo multi-claim conserva los claims y candidatos
-en JSONL por corrida; antes de activarlo se debe incorporar un adaptador que
-reconstruya las tareas por `record_id` y `claim_id`. No se debe pasar un
-`claims.jsonl` o `evidence.jsonl` directamente al importador CSV actual. La
-salida de entrenamiento seguirá siendo una fila binaria por noticia.
-
-## 1. Crear un proyecto limpio y ejecutar Label Studio
-
-Con Docker Desktop iniciado:
-
-```bash
-docker run -d --name mednews-labelstudio \
-  -p 8080:8080 \
-  -v "$PWD/labelstudio-data:/label-studio/data" \
-  heartexlabs/label-studio:latest
+```text
+evidence.jsonl (una línea por claim utilizable)
+        |
+        v
+Label Studio (una tarea por record_id + claim_id)
+        |
+        v
+claim_reviews.csv
+        |
+        v
+aggregate_article_labels.py (una noticia, una etiqueta)
+        |
+        v
+validate_gold.py -> gold/reviewed + gold/training
 ```
 
-Abre `http://localhost:8080`, crea una cuenta local y un proyecto. En la
-configuración del proyecto copia el contenido de [`config.xml`](config.xml).
-El proyecto usado durante la prueba fue `MedNews LATAM - Evidence Review`
-(id 1); para un conjunto limpio se puede crear otro proyecto y pasar su id a
-los scripts.
+El sincronizador automático y los schedules de producción están pausados
+mientras se valida la migración. No importes los CSV históricos en el proyecto
+multi-claim ni cambies la configuración de un proyecto que ya tenga
+anotaciones con el XML antiguo.
 
-No reutilices un proyecto que tenga anotaciones creadas con la configuración
-anterior (`claim_text`/`label`). La configuración actual usa
-`claim`/`final_label`; mezclar ambas produce el error de incompatibilidad de
-Label Studio. Para empezar la colaboración, crea un proyecto limpio con la
-configuración actual o migra explícitamente las anotaciones antiguas antes de
-importar más tareas.
+## 1. Crear un proyecto limpio
 
-## 2. Importar evidencia sin duplicar
+Crea un proyecto nuevo en Label Studio y pega el contenido de
+[`config_multiclaim.xml`](config_multiclaim.xml). Esta interfaz pide, por cada
+claim:
 
-Guarda uno o varios CSV de `silver/evidence/` en una carpeta local y ejecuta:
+- `claim_materiality`: `central`, `material` o `secondary`;
+- `evidence_relation`: `supports`, `contradicts` o `unclear`;
+- `claim_verdict`: `RESPALDADO`, `REFUTADO` o `NO_DETERMINABLE`;
+- PMID(s) usados y una justificación humana.
+
+No contiene `final_label`: la etiqueta de noticia se calcula después de que
+todos sus claims centrales o materiales fueron revisados.
+
+## 2. Importar Evidence JSONL
+
+Solo llegan a revisión los registros con `llm_status=OK`,
+`evidence_status=OK`, `embedding_status=OK` y `translation_status=OK`. El
+importador deduplica por `claim_key` (`record_id::claim_id`) y no duplica tareas
+cuando una noticia tiene muchos claims.
 
 ```bash
 export LABEL_STUDIO_TOKEN='token-local-de-label-studio'
 python3 labelstudio/import_evidence.py \
-  --project-id 1 \
-  --input /ruta/a/evidence_1.csv /ruta/a/evidence_2.csv \
-  --manifest /ruta/privada/labelstudio-manifest.csv
+  --project-id <proyecto-nuevo> \
+  --input /ruta/a/evidence.jsonl \
+  --manifest labelstudio/artifacts/import_manifest.csv
 ```
 
-El script conserva la fila más reciente por `record_id`, ignora estados que no
-sean `OK`, consulta las tareas que ya existen en el proyecto y solo importa
-registros nuevos. Se puede ejecutar después de cada corrida de evidence. No
-guardes el token, las API keys ni el manifest con datos en Git.
+Para actualizar texto o candidatos de tareas existentes sin borrar sus
+anotaciones, añade `--refresh-existing`. Guarda tokens, manifests y exportes
+en `labelstudio/artifacts/`, que está ignorado por Git.
 
-Cada tarea conserva `evidence_primary`, `evidence_additional` y `evidence_count`.
-No se guarda una segunda copia completa de la evidencia porque aumenta el
-payload de cada tarea sin ser usada por `config.xml`. La interfaz muestra
-primero el candidato mejor ordenado y deja los demás dentro de un panel
-desplegable. Si ya tienes tareas importadas con la configuración anterior,
-ejecuta el mismo comando con `--refresh-existing` para reducir el payload de
-las tareas correspondientes y conservar sus anotaciones. El importador seguirá
-deduplicando por `record_id`.
+## 3. Revisar un claim
 
-```bash
-python3 labelstudio/import_evidence.py \
-  --project-id 1 \
-  --input /ruta/a/evidence_1.csv \
-  --refresh-existing
-```
+Lee el claim y los abstracts PubMed. Embed 4 y TF-IDF solo ordenan los
+candidatos: no son scores de verdad. Marca `central` cuando el claim sostiene
+la conclusión de la noticia, `material` cuando cambia de forma importante su
+interpretación y `secondary` cuando solo aporta contexto. El PMID y la nota
+deben permitir que otra persona audite la decisión.
 
-`--refresh-existing` usa la actualización de datos de la tarea; no borra ni
-crea otra anotación.
+## 4. Exportar y agregar una etiqueta por noticia
 
-Las nuevas filas de Evidence conservan también `body`, `topic` y los campos de
-extracción. El importador mantiene `body` fuera de los datos de la tarea para
-que el payload y la interfaz sigan siendo ligeros; el exportador lo une por
-`record_id` desde los CSV de Evidence.
-
-## 3. Anotar
-
-Para cada tarea compara el claim en español con la evidencia principal y abre
-los candidatos adicionales solo cuando sea necesario. Marca `supports`,
-`contradicts` o `unclear`, marca `RESPALDADA`, `REFUTADA`,
-`NO_DETERMINABLE` o `EXCLUIDA`, y escribe una justificación verificable.
-`EXCLUIDA` y `NO_DETERMINABLE` se conservan para auditoría, pero no entran al
-Gold binario de entrenamiento. La decisión humana prevalece sobre la
-puntuación de embedding.
-
-## 4. Exportar las etiquetas
-
-El flujo local recomendado no necesita consultar la API de Label Studio. Desde
-la interfaz usa **Export > JSON**, guarda el archivo en
-`labelstudio/artifacts/` y ejecuta:
+En Label Studio usa **Export > JSON**. Luego ejecuta:
 
 ```bash
 python3 labelstudio/export_annotations.py \
-  --input-json labelstudio/artifacts/labelstudio_export_2026-10-11.json \
-  --output labelstudio/artifacts/gold_labels_2026-10-11.csv \
-  --evidence-input labelstudio/artifacts/evidence/
+  --mode multiclaim \
+  --input-json labelstudio/artifacts/labelstudio_export.json \
+  --output labelstudio/artifacts/claim_reviews.csv
+
+python3 labelstudio/aggregate_article_labels.py \
+  --claims-input labelstudio/artifacts/claim_reviews.csv \
+  --body-input /ruta/a/silver/body/ \
+  --output labelstudio/artifacts/article_labels.csv
 ```
 
-En este modo no necesitas `--project-id`, `--url` ni un token. El JSON local
-se usa como entrada, y `--evidence-input` permite recuperar `body`, `topic` y
-la metadata que no viaja en el payload liviano de Label Studio. Si omites esa
-carpeta, el script igual genera el CSV, pero reporta `missing_body` y el
-validador no permitirá usar esas filas para entrenamiento.
+La agregación es determinista:
 
-`labelstudio/artifacts/` está ignorado por Git. Guarda allí el JSON, los CSV y
-los resultados locales, pero no los agregues ni los subas al repositorio.
+- algún claim `central` o `material` `REFUTADO` → `REFUTADA`;
+- todos los claims `central` o `material` `RESPALDADOS` → `RESPALDADA`;
+- cualquier caso restante → `NO_DETERMINABLE`.
 
-Si alguna vez necesitas ejecutar la exportación contra la API, conserva este
-modo alternativo:
+Una noticia nunca se duplica por tener varios claims. El cuerpo se recupera
+desde el CSV de Body porque no se incluye en la tarea de Label Studio para
+mantener la interfaz ligera.
 
-```bash
-python3 labelstudio/export_annotations.py \
-  --project-id 1 \
-  --evidence-input /ruta/a/evidence_1.csv /ruta/a/evidence_2.csv \
-  --output /ruta/privada/gold_labels.csv \
-  --raw-export /ruta/privada/labelstudio-export.json
-```
-
-El exportador toma la anotación completada más reciente por `record_id` y
-produce una fila Gold por noticia. El control `final_label` de la interfaz se
-exporta como la columna canónica `label`. El CSV resultante debe revisarse
-antes de generar el split 70/15/15. `annotation_id` permite volver a la tarea
-exacta.
-
-## Cuándo importar y cuánto demora
-
-La importación se puede ejecutar después de cada CSV de evidence o en lotes
-diarios. No depende de los cron de OCI: Label Studio es la etapa humana y no
-tiene el timeout síncrono de una Function. El manifest local y la consulta del
-`record_id` existente hacen que volver a ejecutar el comando sea seguro. Una
-fila que todavía no esté en estado `OK` se deja fuera hasta que evidence la
-complete en una corrida posterior. Los tiempos de las Functions, el drenaje
-horario y los límites de PubMed/Gemini/Embed están en
-[`docs/limits_and_timing.md`](../docs/limits_and_timing.md).
-
-### Sincronización automática en una VM OCI
-
-Para una instancia privada de Label Studio,
-[`sync_evidence_from_object_storage.py`](sync_evidence_from_object_storage.py)
-lee con el *Instance Principal* de la VM únicamente los objetos
-`silver/evidence/evidence_run_*.csv`. Ignora expresamente los CSV históricos
-`evidence_translated_*` y los objetos rechazados. Antes de importar, aplica
-esta misma `config.xml`; después ejecuta `import_evidence.py` con
-`--refresh-existing`, por lo que corrige una importación directa anterior sin
-borrar anotaciones.
-
-Instala `oci>=2.0.0` en un entorno virtual bajo
-`/opt/mednews-labelstudio-sync/` (no bajo `/home`: una VM con SELinux puede
-impedir que systemd ejecute código desde allí), copia los tres archivos de
-`labelstudio/systemd/` a `/etc/systemd/system/` y crea
-`/etc/mednews-labelstudio-sync.env` desde el ejemplo con el **JWT refresh
-token** de Label Studio. El sincronizador intercambia ese secreto por un access
-token nuevo en cada ciclo; no guardes un access token de corta vida. El token
-nunca debe estar en Git. Finalmente habilita el timer:
+## 5. Validar Gold y preparar entrenamiento
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now mednews-labelstudio-sync.timer
-sudo systemctl start mednews-labelstudio-sync.service
-sudo journalctl -u mednews-labelstudio-sync.service -n 50 --no-pager
-```
-
-El timer revisa Object Storage cada cinco minutos. No requiere abrir Label
-Studio al exterior ni añadir otro schedule al pipeline OCI.
-
-## 5. Trabajo entre dos personas
-
-Para colaborar en la misma instancia, el dueño del proyecto invita al otro
-usuario desde **Members** y ambos usan el mismo `project_id`. La instancia debe
-ser accesible para ambos: `localhost` solo sirve en la computadora que ejecuta
-el contenedor. Cada importación se deduplica por `record_id`; las
-reimportaciones no crean una segunda tarea.
-
-Una división simple es que tu amigo revise las tareas cuyo `evidence_run_id`
-proviene de la corrida de las 08:00 Lima y tú las de las 20:00 Lima. Antes de
-empezar, registren esa asignación en una lista compartida de `record_id`; el
-manifest controla importaciones, no asignaciones de revisor. Si se necesita
-doble anotación, ambos revisan la misma tarea y resuelven el desacuerdo antes
-de exportar.
-
-## 6. Validar antes de publicar Gold
-
-No copies ni edites a mano un CSV de `silver/evidence/` para crear Gold. Primero
-exporta las anotaciones humanas y luego valida la exportación:
-
-```bash
-python3 labelstudio/export_annotations.py \
-  --input-json labelstudio/artifacts/labelstudio_export_2026-10-11.json \
-  --output labelstudio/artifacts/gold_labels_2026-10-11.csv \
-  --evidence-input labelstudio/artifacts/evidence/
-
 python3 labelstudio/validate_gold.py \
-  --input labelstudio/artifacts/gold_labels_2026-10-11.csv \
-  --reviewed-output labelstudio/artifacts/gold_reviewed_2026-10-11.csv \
-  --training-output labelstudio/artifacts/gold_training_2026-10-11.csv \
-  --rejected-output labelstudio/artifacts/gold_rejected_2026-10-11.csv \
+  --input labelstudio/artifacts/article_labels.csv \
+  --reviewed-output labelstudio/artifacts/gold_reviewed.csv \
+  --training-output labelstudio/artifacts/gold_training.csv \
+  --rejected-output labelstudio/artifacts/gold_rejected.csv \
   --fail-on-reject
 ```
 
-El validador exige trazabilidad de la anotación humana y una combinación
-coherente entre relación y etiqueta: `RESPALDADA/supports`,
-`REFUTADA/contradicts` o `NO_DETERMINABLE/unclear`. Mantiene todas las filas
-válidas en el CSV de auditoría (`gold/reviewed/`), pero solo deja
-`RESPALDADA` y `REFUTADA` en el CSV de entrenamiento (`gold/training/`). Las
-filas rechazadas requieren corrección en Label Studio; con `--fail-on-reject`
-no debes publicarlas.
+`gold/reviewed` conserva la auditoría de la agregación. `gold/training` solo
+incluye `RESPALDADA` y `REFUTADA`, una fila por `record_id`, con `title + body`
+como entrada del modelo de clasificación de noticias. Claims, PMIDs y
+similitudes quedan como trazabilidad, no como variables del primer modelo.
 
-Después de una validación sin rechazados, publica explícitamente los dos CSV
-generados —no el CSV Silver ni el export JSON crudo— en Object Storage:
+## Sincronización desde Object Storage
 
-```bash
-oci os object put --namespace "$OBJECT_STORAGE_NAMESPACE" \
-  --bucket-name mednews-data \
-  --name "gold/reviewed/gold_reviewed_2026-10-07.csv" \
-  --file labelstudio/artifacts/gold_reviewed_2026-10-07.csv
+En una VM privada, `sync_evidence_from_object_storage.py --format jsonl`
+acepta únicamente manifests `evidence.manifest.v1` con estado `COMPLETE`,
+descarga el `evidence.jsonl` referido y aplica `config_multiclaim.xml` antes de
+importar. Usa un JWT refresh token de Label Studio en un archivo protegido y
+el Instance Principal de la VM para Object Storage; nunca guardes access tokens
+ni secretos en Git.
 
-oci os object put --namespace "$OBJECT_STORAGE_NAMESPACE" \
-  --bucket-name mednews-data \
-  --name "gold/training/gold_training_2026-10-07.csv" \
-  --file labelstudio/artifacts/gold_training_2026-10-07.csv
-```
-
-Guarda el export JSON y el CSV de rechazados como evidencia privada de auditoría;
-no forman parte del conjunto binario de entrenamiento.
-
-```text
-silver/evidence/*.csv
-        |
-        | import_evidence.py (dedupe record_id)
-        v
-Label Studio: relación + etiqueta + nota humana
-        |
-        | export_annotations.py + validate_gold.py
-        v
-gold/reviewed (auditoría) + gold/training (binario)
-```
+El unit de systemd describe este modo, pero su timer debe seguir deshabilitado
+hasta completar una corrida controlada y decidir la reactivación de los
+schedules.

@@ -12,52 +12,61 @@ Las Functions desplegadas en OCI separan las etapas de datos:
 1. `fetch-newsdata` consulta NewsData por países de Latinoamérica, incluye
    Puerto Rico (`pr`) y escribe lotes deduplicados en `bronze/`.
 2. `extract-news-body` procesa el objeto Bronze que disparó el evento y escribe
-   los cuerpos en `silver/body/`; el drenaje horario toma lotes globales de hasta
-   50 filas pendientes.
-3. `extract-claims` toma solo cuerpos válidos del Body disparador, genera una
-   afirmación candidata en español y añade `claim_text_en` y `pubmed_query_en`.
-   El drenaje horario procesa hasta 25 filas de una fuente Body por vez. El modo
-   `enrich_queries` migra CSV de claims creados antes de esos campos.
-4. `retrieve-pubmed-evidence` procesa solo el Claims disparador, consulta PubMed
-   para cada claim elegible y conserva hasta 20 claims por invocación; el drenaje
-   horario continúa las fuentes pendientes. Guarda hasta diez artículos por fila
-   en `silver/evidence/`, los ordena con `cohere.embed-v4.0` de OCI y conserva
-   el TF-IDF en español como diagnóstico.
-5. La revisión humana verifica la afirmación y la evidencia, asigna la etiqueta
-   binaria y decide qué filas pasan a Gold.
+   el cuerpo técnico en `silver/body/`.
+3. `extract-claims` toma cada cuerpo válido y genera **todos** los claims
+   médicos verificables: una línea JSONL por noticia con un arreglo `claims`.
+   Cada claim tiene `claim_id`, texto en español e inglés y su consulta PubMed.
+4. `retrieve-pubmed-evidence` procesa todos los claims elegibles del
+   `claims.jsonl` disparador. Recupera como máximo cinco candidatos PubMed por
+   claim, ordena el resultado y hace Embed 4 sobre todos los abstracts
+   utilizables; reutiliza la traducción y el embedding de un PMID/abstract
+   idéntico dentro de la corrida.
+   La salida es una línea JSONL por claim con sus candidatos y estados.
+5. Label Studio crea una tarea por `record_id + claim_id`. La persona revisora
+   decide materialidad, relación y veredicto de cada claim; luego se agrega una
+   única etiqueta de noticia para Gold y entrenamiento.
 
-Los artefactos operativos del pipeline se guardan en Object Storage:
-`bronze/`, `silver/body/`, `silver/claims/` y `silver/evidence/`. Los nombres
-son cortos y uniformes: `newsdata_<run_id>.csv`, `body_<run_id>.csv`,
-`claims_<run_id>.csv` y `evidence_<run_id>.csv`. Los CSV de evidencia son
-candidatos de recuperación, no etiquetas automáticas: `evidence_status=OK`
-solo significa que PubMed devolvió artículos.
+Los artefactos operativos se guardan en Object Storage: `bronze/`,
+`silver/body/`, `silver/claims/` y `silver/evidence/`. Bronze y Body siguen
+siendo CSV; Claims y Evidence usan rutas inmutables por corrida:
+`silver/claims/run_id=<run_id>/claims.jsonl` y
+`silver/evidence/run_id=<run_id>/evidence.jsonl`, cada una con su
+`manifest.json`. `evidence_status=OK` significa únicamente que la recuperación,
+el embedding y la traducción produjeron candidatos utilizables; no es una
+etiqueta de verdad.
 
 La extracción del cuerpo conserva estados `OK`, `CUERPO_INSUFICIENTE` y errores
 HTTP para que una URL bloqueada no desaparezca del registro. El Function deja
 un margen interno antes del límite de 300 segundos y continúa con las filas
 pendientes en la siguiente ejecución.
 
-## Plan multi-claim y JSONL
+## Multi-claim, JSONL y criterio de etiqueta
 
-El contrato operativo actual de las Functions todavía usa CSV y una fila de
-Claims por noticia. El diseño objetivo para soportar varias afirmaciones por
-noticia está documentado en
-[`docs/multiclaim_jsonl_plan.md`](docs/multiclaim_jsonl_plan.md): una corrida
-escribe un `claims.jsonl` con una línea por noticia y un arreglo `claims` de
-cero a `N` elementos, además de un `manifest.json`. Evidence conserva el
-estado de cada claim y sus candidatos PubMed en JSONL, sin convertir una
-similitud en una etiqueta de verdad.
+Una noticia puede tener cero, uno o muchos claims. No se recorta por defecto:
+`MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` obligan a conservar y
+procesar todos los claims del objeto disparador. El límite de cinco minutos se
+protege reduciendo candidatos por claim, no descartando claims. Los manifiestos
+registran `COMPLETE`, `PARTIAL` o `FAILED`; no hay drenaje ni reprocesamiento
+automático de una corrida v1.
 
-La migración todavía requiere actualizar los productores, consumidores,
-selectores de OCI Events y herramientas de Label Studio de forma coordinada.
-Mientras tanto, los nombres CSV de las secciones operativas describen el
-comportamiento desplegado y no deben mezclarse con los prefijos JSONL.
+La agregación humana aplica esta regla explícita: un claim central o material
+refutado vuelve la noticia `REFUTADA`; si todos los claims centrales/materiales
+están respaldados, queda `RESPALDADA`; cualquier evidencia insuficiente o
+conflicto queda `NO_DETERMINABLE`. Solo la primera y la segunda entran al
+dataset binario, una vez por `record_id`.
+
+El contrato, los ejemplos JSONL y la compatibilidad temporal están en
+[`docs/multiclaim_jsonl_plan.md`](docs/multiclaim_jsonl_plan.md).
 
 ## Automatización OCI
 
-Resource Scheduler inicia `fetch-newsdata` a las 08:00 y 20:00, hora de Lima.
-OCI Events encadena el proceso cuando aparece un CSV nuevo:
+Los schedules de producción y el timer de sincronización de Label Studio están
+**pausados mientras se ordena la migración**. OCI Events permanecerá como el
+encadenamiento por objeto una vez desplegados de forma coordinada los selectores
+JSONL y las dos imágenes v1. No se deben reactivar schedules ni crear datos de
+prueba productivos hasta verificar una corrida controlada.
+
+Con la configuración v1, OCI Events encadena el proceso así:
 
 ```text
 fetch-newsdata -> bronze/*.csv
@@ -66,40 +75,27 @@ fetch-newsdata -> bronze/*.csv
                extract-news-body -> silver/body/*.csv
                                       |
                                       v
-                              extract-claims -> silver/claims/*.csv
+                              extract-claims -> silver/claims/run_id=*/claims.jsonl
                                                    |
                                                    v
-                              retrieve-pubmed-evidence -> silver/evidence/*.csv
+                              retrieve-pubmed-evidence -> silver/evidence/run_id=*/evidence.jsonl
 ```
 
-Los tres pasos Silver también tienen una invocación horaria de drenaje con
-payload vacío (`{}`). Los eventos procesan únicamente el objeto que los disparó;
-el drenaje selecciona una fuente pendiente y avanza hasta su tope: Body 50,
-Claims 25 y Evidence 20. Claims agrupa diez filas por solicitud Gemini y Evidence
-conserva hasta 10 artículos PubMed por claim. Si una etapa llega a su presupuesto
-de tiempo, cuota o error transitorio, la siguiente hora continúa con lo pendiente.
-
-Las Functions mantienen el estado en los CSV y deduplican por `record_id`. Un
-error temporal de red, PubMed o extracción queda auditado y puede reintentarse
-en una ejecución posterior; un resultado terminal no se vuelve a procesar.
+Events procesa únicamente el objeto que lo disparó. Claims y Evidence v1 no
+aceptan un payload vacío como drenaje global: escriben resultados y errores
+auditables en la misma corrida, sin mezclar objetos históricos ni reintentar
+automáticamente por horario.
 
 ## Duración, límites y consumo
 
-Los valores actuales son presupuestos por invocación: NewsData recolecta hasta
-50 filas con un máximo normal de ocho solicitudes por corrida; body procesa 50
-filas; claims procesa hasta 25 filas por invocación en solicitudes de 10;
-evidence procesa hasta 20 claims y conserva hasta 10 artículos PubMed por
-claim. Cada Function tiene un presupuesto interno de
-aproximadamente 150 segundos y deja 10 segundos antes del límite síncrono de
-OCI Functions y del límite práctico del Scheduler. Si una etapa no termina, escribe el trabajo
-completado y el drenaje horario continúa con las filas pendientes.
-
-El tiempo extremo a extremo no es un único timeout: un CSV Bronze de 50 filas
-requiere hasta 5 solicitudes Gemini de claims. Evidence avanza por lotes; si las
-búsquedas PubMed, embeddings o traducciones no caben en el presupuesto, el
-drenaje horario cubre lo que quede pendiente. La duración real se mide con
-`elapsed_seconds`,
-`row_count` y los objetos escritos.
+Los presupuestos son por invocación: NewsData recolecta hasta 50 noticias y
+Body procesa hasta 50 filas. Claims v1 procesa todas las filas válidas del
+Body disparador y Evidence v1 todos sus claims, con un presupuesto interno de
+270--285 segundos y margen de escritura. Cada claim consulta cinco PMIDs como
+máximo y se embeben todos los candidatos con abstract; los objetos compartidos
+se cachean dentro de la invocación. La duración real se audita con el manifest,
+`elapsed_seconds`, conteos de claims y candidatos, no por un número fijo de
+filas.
 
 NewsData trabaja con una ventana reciente, por lo que la misma URL puede
 aparecer en dos corridas. Bronze deduplica por `record_id`; `row_count` y
@@ -143,17 +139,18 @@ filas candidatas, páginas y slots de API utilizados para auditar cada ejecució
 
 ## Revisión humana y Gold
 
-Después de `silver/evidence/`, importa las filas `evidence_status=OK` a Label
-Studio con [`labelstudio/import_evidence.py`](labelstudio/import_evidence.py).
-El script consulta las tareas existentes y no duplica un `record_id`. Tu amigo
-puede usar el mismo proyecto, revisar la relación `supports/contradicts/unclear`
-y la etiqueta final, y exportar con
-[`labelstudio/export_annotations.py`](labelstudio/export_annotations.py). Antes
-de publicar a Object Storage,
-[`labelstudio/validate_gold.py`](labelstudio/validate_gold.py) separa el
-conjunto auditado de `gold/reviewed/` y el binario apto para entrenamiento de
-`gold/training/`; nunca se sube un CSV Silver directamente a Gold. La guía
-completa está en [`labelstudio/README.md`](labelstudio/README.md).
+Después de `silver/evidence/`, importa solo los claims con `evidence_status`,
+`llm_status`, `embedding_status` y `translation_status` en `OK` mediante
+[`labelstudio/import_evidence.py`](labelstudio/import_evidence.py). El script
+deduplica por `claim_key` (`record_id::claim_id`), no por noticia. Exporta las
+revisiones por claim con
+[`labelstudio/export_annotations.py`](labelstudio/export_annotations.py),
+agrega una sola fila por noticia con
+[`labelstudio/aggregate_article_labels.py`](labelstudio/aggregate_article_labels.py)
+y valida Gold con
+[`labelstudio/validate_gold.py`](labelstudio/validate_gold.py). Nunca se sube
+un JSONL Silver directamente a Gold. La guía completa está en
+[`labelstudio/README.md`](labelstudio/README.md).
 
 Solo las filas revisadas por una persona, con evidencia trazable y etiqueta
 binaria final, pasan a Gold y al split de entrenamiento.
@@ -167,14 +164,15 @@ tests/
   ...                             pruebas automatizadas
 docs/
   data_schema.md                 columnas de Bronze, Silver, claims, evidencia y Gold
-  multiclaim_jsonl_plan.md        diseño objetivo multi-claim, JSONL y migración
+  multiclaim_jsonl_plan.md        contrato multi-claim JSONL y migración coordinada
   limits_and_timing.md            duración, cuotas, límites y operación del pipeline
   oci_automation.md               Scheduler, Events, lotes y reintentos
   training_baseline.md            contrato y ejecución del primer modelo
 labelstudio/
-  config.xml                     interfaz de revisión humana
-  import_evidence.py             importa evidencia sin duplicar
-  export_annotations.py          exporta etiquetas Gold
+  config_multiclaim.xml          interfaz de revisión por claim
+  import_evidence.py             importa JSONL sin duplicar claim_key
+  export_annotations.py          exporta revisiones humanas por claim
+  aggregate_article_labels.py    agrega revisiones a una etiqueta por noticia
   validate_gold.py               valida y separa auditoría/entrenamiento Gold
   README.md                      guía para el equipo
 oci/functions/                   Functions desplegadas en OCI

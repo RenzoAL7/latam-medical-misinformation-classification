@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Import one deduplicated evidence task per record_id into Label Studio.
+"""Import one deduplicated evidence task per claim into Label Studio.
 
-The script is intentionally standard-library only. It is safe to rerun: task
-record_ids already visible in the project are skipped before importing.
+The current JSONL contract creates one review task for ``record_id + claim_id``.
+The legacy CSV reader remains available only to preserve existing projects.
 """
 
 from __future__ import annotations
@@ -67,7 +67,16 @@ def _list_tasks(base_url: str, project_id: int, token: str) -> list[dict[str, An
     return []
 
 
-def _candidates(row: dict[str, str]) -> list[dict[str, Any]]:
+def _as_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value or "").strip()
+
+
+def _candidates(row: dict[str, Any]) -> list[dict[str, Any]]:
+    direct = row.get("candidates")
+    if isinstance(direct, list):
+        return [candidate for candidate in direct if isinstance(candidate, dict)]
     try:
         candidates = json.loads(row.get("pubmed_results_json", "[]") or "[]")
     except json.JSONDecodeError:
@@ -75,7 +84,7 @@ def _candidates(row: dict[str, str]) -> list[dict[str, Any]]:
     return [candidate for candidate in candidates if isinstance(candidate, dict)] if isinstance(candidates, list) else []
 
 
-def _candidate_text(row: dict[str, str], start: int = 0, end: int | None = None) -> str:
+def _candidate_text(row: dict[str, Any], start: int = 0, end: int | None = None) -> str:
     candidates = _candidates(row)[start:end]
     chunks: list[str] = []
     for index, candidate in enumerate(candidates, start=start + 1):
@@ -92,10 +101,18 @@ def _candidate_text(row: dict[str, str], start: int = 0, end: int | None = None)
     return "\n\n".join(chunks) or "No hay abstracts disponibles."
 
 
-def _task_from_row(row: dict[str, str]) -> dict[str, Any]:
+def _claim_key(row: dict[str, Any]) -> str:
+    record_id = _as_text(row.get("record_id"))
+    claim_id = _as_text(row.get("claim_id"))
+    return f"{record_id}::{claim_id}" if claim_id else record_id
+
+
+def _task_from_row(row: dict[str, Any]) -> dict[str, Any]:
     candidates = _candidates(row)
     data = {
         "record_id": row.get("record_id", ""),
+        "claim_id": row.get("claim_id", ""),
+        "claim_key": _claim_key(row),
         "country": row.get("country", ""),
         "source_name": row.get("source_name", ""),
         "topic": row.get("topic", ""),
@@ -112,6 +129,9 @@ def _task_from_row(row: dict[str, str]) -> dict[str, Any]:
         "best_tfidf_similarity": row.get("best_tfidf_similarity", ""),
         "ranking_method": row.get("ranking_method", ""),
         "embedding_model": row.get("embedding_model", ""),
+        "embedding_status": row.get("embedding_status", ""),
+        "translation_status": row.get("translation_status", ""),
+        "claim_type": row.get("claim_type", ""),
         # Keep one copy of the candidate text in the fields used by config.xml.
         # Storing a second complete ``evidence_text`` copy makes every task
         # unnecessarily large and slows Label Studio as the corpus grows.
@@ -123,9 +143,70 @@ def _task_from_row(row: dict[str, str]) -> dict[str, Any]:
     return {"data": data}
 
 
+def _flatten_jsonl_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Flatten the lightweight article envelope used by evidence.v1."""
+
+    article = record.get("article", {})
+    if not isinstance(article, dict):
+        article = {}
+    row = {str(key): value for key, value in article.items()}
+    row.update({str(key): value for key, value in record.items() if key != "article"})
+    row["pubmed_results_json"] = json.dumps(_candidates(row), ensure_ascii=False)
+    return row
+
+
+def _rows_from_path(path: Path) -> list[dict[str, Any]]:
+    if path.suffix.lower() == ".jsonl":
+        rows: list[dict[str, Any]] = []
+        for number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Invalid JSONL in {path} at line {number}") from exc
+            if not isinstance(record, dict):
+                raise RuntimeError(f"JSONL record {number} in {path} is not an object")
+            if _as_text(record.get("schema_version")) != "evidence.v1":
+                raise RuntimeError(f"Unsupported evidence schema in {path} at line {number}")
+            rows.append(_flatten_jsonl_record(record))
+        return rows
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        return [
+            {str(key): str(value or "") for key, value in row.items() if key}
+            for row in csv.DictReader(handle)
+            if row
+        ]
+
+
+def _input_paths(values: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    for value in values:
+        path = Path(value)
+        if path.is_dir():
+            paths.extend(sorted(path.glob("*.csv")))
+            paths.extend(sorted(path.glob("*.jsonl")))
+        elif path.is_file():
+            paths.append(path)
+        else:
+            raise FileNotFoundError(f"Input does not exist: {path}")
+    return sorted(set(paths))
+
+
+def _ready_for_review(row: dict[str, Any]) -> bool:
+    if _as_text(row.get("evidence_status")).upper() != "OK":
+        return False
+    if _as_text(row.get("schema_version")) != "evidence.v1":
+        return True
+    return all(
+        _as_text(row.get(field)).upper() == "OK"
+        for field in ("llm_status", "embedding_status", "translation_status")
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, nargs="+", help="Evidence CSV file(s) or directories")
+    parser.add_argument("--input", required=True, nargs="+", help="Evidence CSV/JSONL file(s) or directories")
     parser.add_argument("--url", default=os.getenv("LABEL_STUDIO_URL", "http://localhost:8080"))
     parser.add_argument("--project-id", type=int, required=True)
     parser.add_argument("--token", default=os.getenv("LABEL_STUDIO_TOKEN", ""))
@@ -133,48 +214,45 @@ def main() -> int:
     parser.add_argument(
         "--refresh-existing",
         action="store_true",
-        help="Update task data for matching record_id values without changing annotations",
+        help="Update task data for matching claim_key values without changing annotations",
     )
     args = parser.parse_args()
 
-    csv_paths: list[Path] = []
-    for value in args.input:
-        path = Path(value)
-        if path.is_dir():
-            csv_paths.extend(sorted(path.glob("*.csv")))
-        elif path.is_file():
-            csv_paths.append(path)
-        else:
-            parser.error(f"Input does not exist: {path}")
-    csv_paths = sorted(set(csv_paths))
-    if not csv_paths:
-        parser.error("No CSV files found")
+    try:
+        input_paths = _input_paths(args.input)
+    except FileNotFoundError as exc:
+        parser.error(str(exc))
+    if not input_paths:
+        parser.error("No CSV or JSONL evidence files found")
 
     existing = _list_tasks(args.url, args.project_id, args.token)
     existing_ids = {
-        str(item.get("data", {}).get("record_id", "")).strip()
+        _as_text(item.get("data", {}).get("claim_key"))
+        or _as_text(item.get("data", {}).get("record_id"))
         for item in existing
         if isinstance(item.get("data"), dict)
     }
     existing_task_ids = {
-        str(item.get("data", {}).get("record_id", "")).strip(): item.get("id")
+        (
+            _as_text(item.get("data", {}).get("claim_key"))
+            or _as_text(item.get("data", {}).get("record_id"))
+        ): item.get("id")
         for item in existing
         if isinstance(item.get("data"), dict) and item.get("id") is not None
     }
 
-    latest_by_id: dict[str, dict[str, str]] = {}
-    for path in csv_paths:
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            for row in csv.DictReader(handle):
-                record_id = str(row.get("record_id", "")).strip()
-                if not record_id or row.get("evidence_status", "").strip().upper() != "OK":
-                    continue
-                latest_by_id[record_id] = {str(key): str(value or "") for key, value in row.items()}
+    latest_by_key: dict[str, dict[str, Any]] = {}
+    for path in input_paths:
+        for row in _rows_from_path(path):
+            key = _claim_key(row)
+            if not key or not _ready_for_review(row):
+                continue
+            latest_by_key[key] = row
 
     refreshed_count = 0
     if args.refresh_existing:
-        for record_id, row in sorted(latest_by_id.items()):
-            task_id = existing_task_ids.get(record_id)
+        for claim_key, row in sorted(latest_by_key.items()):
+            task_id = existing_task_ids.get(claim_key)
             if task_id is None:
                 continue
             _request(
@@ -188,11 +266,11 @@ def main() -> int:
 
     tasks = [
         _task_from_row(row)
-        for record_id, row in sorted(latest_by_id.items())
-        if record_id not in existing_ids
+        for claim_key, row in sorted(latest_by_key.items())
+        if claim_key not in existing_ids
     ]
     if not tasks:
-        print(json.dumps({"status": "ok", "imported": 0, "refreshed": refreshed_count, "skipped_existing": len(latest_by_id) - refreshed_count}, ensure_ascii=False))
+        print(json.dumps({"status": "ok", "imported": 0, "refreshed": refreshed_count, "skipped_existing": len(latest_by_key) - refreshed_count}, ensure_ascii=False))
         return 0
 
     result = _request(
@@ -210,21 +288,26 @@ def main() -> int:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     exists = manifest_path.exists()
     with manifest_path.open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["record_id", "project_id", "imported_at", "source_files"])
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=["claim_key", "record_id", "claim_id", "project_id", "imported_at", "source_files"],
+        )
         if not exists:
             writer.writeheader()
-        for record_id in sorted(latest_by_id):
-            if record_id in existing_ids:
+        for claim_key, row in sorted(latest_by_key.items()):
+            if claim_key in existing_ids:
                 continue
             writer.writerow(
                 {
-                    "record_id": record_id,
+                    "claim_key": claim_key,
+                    "record_id": _as_text(row.get("record_id")),
+                    "claim_id": _as_text(row.get("claim_id")),
                     "project_id": args.project_id,
                     "imported_at": datetime.now(timezone.utc).isoformat(),
-                    "source_files": ";".join(str(path) for path in csv_paths),
+                    "source_files": ";".join(str(path) for path in input_paths),
                 }
             )
-    print(json.dumps({"status": "ok", "imported": imported_count, "refreshed": refreshed_count, "skipped_existing": len(existing_ids), "candidate_records": len(latest_by_id), "project_id": args.project_id}, ensure_ascii=False))
+    print(json.dumps({"status": "ok", "imported": imported_count, "refreshed": refreshed_count, "skipped_existing": len(existing_ids), "candidate_claims": len(latest_by_key), "project_id": args.project_id}, ensure_ascii=False))
     return 0
 
 

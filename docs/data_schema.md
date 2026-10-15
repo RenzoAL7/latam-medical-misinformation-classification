@@ -1,14 +1,13 @@
-# Esquema de datos vigente
+# Esquema de datos v1
 
 Object Storage es el espacio operativo del pipeline cloud. El flujo sigue una
 organización Medallion con los prefijos `bronze/`, `silver/` y `gold/`; las
 tablas de revisión pueden exportarse a Google Sheets o Label Studio sin perder
 los identificadores de trazabilidad.
 
-Este documento conserva el contrato CSV actualmente desplegado y añade el
-contrato objetivo JSONL para la migración multi-claim. La diferencia es
-intencional: hasta que se actualicen las Functions y los consumidores, los
-objetos operativos siguen siendo CSV. El diseño objetivo completo está en
+Bronze y Body siguen siendo CSV; Claims y Evidence v1 son JSONL inmutables por
+corrida. El despliegue remoto se activa solo de forma coordinada con Events y
+Label Studio; el contrato completo está en
 [`multiclaim_jsonl_plan.md`](multiclaim_jsonl_plan.md).
 
 ## Bronze
@@ -33,9 +32,10 @@ La Function elimina duplicados dentro de la corrida y vuelve a consultar los
 ## Silver
 
 `silver/body/` conserva el resultado técnico de extracción. `silver/claims/`
-recibe únicamente cuerpos válidos y añade el claim candidato. `silver/evidence/`
-guarda candidatos PubMed para los claims elegibles. Conserva la trazabilidad
-anterior y añade:
+recibe cuerpos válidos y guarda todos los claims dentro de un registro JSONL
+por noticia. `silver/evidence/` guarda un registro JSONL por claim con sus
+candidatos PubMed. Los CSV heredados solo existen para la compatibilidad de
+datos antiguos y no se mezclan con v1.
 
 | Campo | Uso |
 | --- | --- |
@@ -45,13 +45,14 @@ anterior y añade:
 | `extraction_method` | `trafilatura`, respaldo con BeautifulSoup o ausencia de extracción. |
 | `extraction_status` | `OK`, `CUERPO_INSUFICIENTE` o error de descarga. |
 | `extracted_at` | Fecha UTC de extracción. |
+| `claim_id`, `claim_index` | Identidad estable de un claim dentro de su noticia y corrida. |
 | `claim_text` | Afirmación candidata en español. |
 | `claim_text_en` | Traducción fiel usada para buscar literatura biomédica. |
 | `pubmed_query_en` | Consulta PubMed en inglés generada para el claim. |
 | `query_status` | `OK`, `ERROR` o `SKIPPED_NOT_ELIGIBLE`. |
 | `llm_key_slot` | Slot cargado de las claves Gemini 1/2 que produjo la fila; no contiene la clave. |
 | `pubmed_results_json` | Hasta diez artículos candidatos con PMID, abstract original en inglés, traducción al español, URL, similitud de OCI Embed 4 y score TF-IDF auxiliar. |
-| `evidence_status` | `OK`, `NO_RESULTS`, `NO_ABSTRACT` o `ERROR`. |
+| `evidence_status` | `OK`, `NO_RESULTS`, `NO_ABSTRACT` o `ERROR`. `OK` requiere LLM, embedding y traducción en `OK`. |
 | `translation_status` | `OK`, `PARTIAL`, `ERROR`, `NO_ABSTRACTS` o estado de omisión. Un candidato puede marcarse `PARAPHRASED` si Gemini bloquea la traducción literal por recitación. |
 | `translation_key_slot` | Slot cargado de las claves Gemini 3/4 que produjo la traducción; no contiene la clave. |
 | `best_cosine_similarity` | Alias histórico del score coseno elegido para ordenar; con Embed 4 normalmente coincide con `best_embedding_similarity`, por lo que no es una tercera señal independiente. |
@@ -60,11 +61,8 @@ anterior y añade:
 | `embedding_status` | Estado de la llamada a OCI Embed 4 (`OK`, `ERROR`, `NO_CANDIDATES` o `SKIPPED_NO_EVIDENCE`). |
 | `embedding_model`, `embedding_query_field` | Modelo usado y campo del claim enviado a Embed 4 (`claim_text_en` o `claim_text`). |
 | `ranking_method` | `oci_cohere_embed_v4` cuando Embed 4 rankea los candidatos; `tfidf_v1_es` si se usa el fallback. |
-| `main_medical_claim` | Afirmación médica principal delimitada manualmente. |
-| `label` | `PENDIENTE`, `RESPALDADA`, `REFUTADA`, `NO_DETERMINABLE` o `EXCLUIDA`. |
-| `evidence_url` | Fuente especializada usada para contrastar la afirmación. |
-| `verification_note` | Explicación breve de por qué la evidencia respalda, refuta o no permite concluir. |
-| `reviewer`, `validation_status` | Responsable y estado `PENDIENTE` o `COMPLETADA`. |
+| `claim_materiality`, `claim_verdict` | Campos humanos de Label Studio; el primero determina si el claim influye en la etiqueta final. |
+| `evidence_relation`, `verification_note` | Decisión y explicación humana sobre la evidencia. |
 
 La extracción del cuerpo no asigna una etiqueta. Si el texto no alcanza el
 mínimo, `silver/body/` conserva una fila con `CUERPO_INSUFICIENTE` para la
@@ -72,20 +70,25 @@ auditoría y no se crea una fila posterior en `silver/claims/`; Bronze puede
 marcarse como `EXCLUIR_SIN_TEXTO` durante la revisión. Las decisiones médicas
 y de veracidad siguen siendo humanas y basadas en evidencia.
 
-### Contrato objetivo JSONL
+### JSONL por corrida
 
-En la migración, `silver/claims/run_id=<run_id>/claims.jsonl` tendrá una línea
-por noticia y `claims: []` cuando no se produzcan afirmaciones. Cada elemento
-llevará un `claim_id` y los campos necesarios para consultar PubMed. La etapa
-Evidence escribirá `silver/evidence/run_id=<run_id>/evidence.jsonl`, una línea
-por claim con sus candidatos y estados de recuperación, traducción y
-embedding. Los manifests conservarán los conteos que no pueden inferirse al
-contar únicamente candidatos.
+`silver/claims/run_id=<run_id>/claims.jsonl` tiene una línea por noticia y
+`claims: []` cuando no hay afirmaciones. Cada claim lleva `claim_id` y la
+consulta PubMed. Evidence escribe
+`silver/evidence/run_id=<run_id>/evidence.jsonl`, una línea por `claim_id`,
+con candidatos, recuperación, traducción, embedding y ranking. Ambos directorios
+incluyen un `manifest.json` con conteos, duración, configuración y errores.
+
+Todos los claims del objeto de entrada se procesan en la misma invocación v1.
+Cada claim recupera como máximo `PUBMED_CANDIDATES_FETCHED=5` PMIDs y genera
+embeddings y traducciones para todos los candidatos con abstract utilizable.
+La caché por PMID+abstract reduce duplicados dentro de la corrida; no se
+omiten claims ni candidatos recuperados para cumplir el tiempo.
 
 El contrato JSONL no crea varias filas de entrenamiento para una noticia. La
-relación entre `record_id`, `claim_id` y candidatos de evidencia se conserva
-para auditoría y revisión humana; `gold/training` sigue siendo una fila por
-noticia.
+relación entre `record_id`, `claim_id` y candidatos se conserva para auditoría;
+la agregación humana transforma las tareas por claim en una sola etiqueta por
+noticia antes de `gold/training`.
 
 ## Gold
 
@@ -96,15 +99,16 @@ Es una salida generada y no debe editarse manualmente. Solo incluye noticias de 
 - `body`, `claim_text` y `best_pmid` no vacíos;
 - relación de evidencia, nota y metadatos de anotación completos.
 
-Una fila por `record_id` conserva la trazabilidad de la noticia y de su
-revisión. El CSV `gold/reviewed` incluye como mínimo `record_id`, `country`,
+Una fila por `record_id` conserva la trazabilidad de la noticia y de sus
+claims revisados. El CSV `gold/reviewed` incluye como mínimo `record_id`, `country`,
 `source_name`, `topic`, `canonical_url`, `published_at`, `title`, `body`,
 `claim_text`, `best_pmid`, `best_embedding_similarity`,
 `best_cosine_similarity`, `best_tfidf_similarity`, `ranking_method`,
 `embedding_model`, `evidence_status`, `evidence_run_id`, `evidence_relation`,
 `label`, `verification_note`, `annotation_id`, `annotator`, `annotated_at`,
-`final_training_eligible`,
-`validation_status` y `dataset_split`.
+`claims_total`, `decisive_claims_total`, `aggregation_status`,
+`aggregation_reason`, `final_training_eligible`, `validation_status` y
+`dataset_split`.
 
 `gold/reviewed` conserva también las filas válidas `NO_DETERMINABLE` y
 `EXCLUIDA` para auditoría; `gold/training` deja solamente `RESPALDADA` y

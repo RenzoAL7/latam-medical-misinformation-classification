@@ -58,6 +58,10 @@ OUTPUT_FIELDS = (
     "annotation_id",
     "annotator",
     "annotated_at",
+    "claims_total",
+    "decisive_claims_total",
+    "aggregation_status",
+    "aggregation_reason",
     "final_training_eligible",
     "validation_status",
     "dataset_split",
@@ -78,6 +82,8 @@ def _clean(row: dict[str, str]) -> dict[str, str]:
 
 def _issues(row: dict[str, str], seen_ids: set[str]) -> list[str]:
     issues = [f"missing_{field}" for field in COMMON_REQUIRED_FIELDS if not row.get(field, "")]
+    if row.get("aggregation_status", "") and row["aggregation_status"] != "COMPLETADA":
+        issues.append("aggregation_not_completed")
     record_id = row.get("record_id", "")
     if record_id and record_id in seen_ids:
         issues.append("duplicate_record_id")

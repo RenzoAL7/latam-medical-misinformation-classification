@@ -41,6 +41,8 @@ QUERY_PROMPT_VERSION = "pubmed-query-v1"
 DEFAULT_MODEL_ID = "google.gemini-2.5-flash"
 DEFAULT_GOOGLE_MODEL_ID = "gemini-3.5-flash-lite"
 CLAIM_TYPES = {"tratamiento", "prevención", "diagnóstico", "riesgo", "causa", "síntoma", "otro"}
+CLAIMS_SCHEMA_VERSION = "claims.v1"
+CLAIMS_MANIFEST_SCHEMA_VERSION = "claims.manifest.v1"
 
 BRONZE_FIELDS = [
     "record_id",
@@ -922,7 +924,7 @@ def _write_claims(
     return object_name
 
 
-def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
+def _handler_legacy(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
     started = time.monotonic()
     now = datetime.now(timezone.utc)
     run_id = f"run_{now.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
@@ -1142,3 +1144,533 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             status_code=500,
             headers={"Content-Type": "application/json"},
         )
+
+
+# ---------------------------------------------------------------------------
+# JSONL v1 multi-claim contract
+# ---------------------------------------------------------------------------
+
+
+def _claims_v1_object_names(prefix: str, run_id: str) -> tuple[str, str]:
+    """Return immutable Claims data and manifest names for one invocation."""
+
+    base = f"{prefix.strip('/')}/run_id={run_id}"
+    return f"{base}/claims.jsonl", f"{base}/manifest.json"
+
+
+def _write_jsonl_object(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    object_name: str,
+    records: list[dict[str, Any]],
+) -> None:
+    payload = "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records)
+    client.put_object(
+        namespace_name=namespace,
+        bucket_name=bucket,
+        object_name=object_name,
+        put_object_body=io.BytesIO(payload.encode("utf-8")),
+        content_type="application/x-ndjson; charset=utf-8",
+    )
+
+
+def _write_json_object(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    object_name: str,
+    document: dict[str, Any],
+) -> None:
+    client.put_object(
+        namespace_name=namespace,
+        bucket_name=bucket,
+        object_name=object_name,
+        put_object_body=io.BytesIO(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")),
+        content_type="application/json; charset=utf-8",
+    )
+
+
+def _multiclaim_prompt(rows: list[dict[str, str]], max_body_chars: int) -> str:
+    """Ask for every distinct, verifiable medical claim in each article.
+
+    The article remains the JSONL line.  Claims belong in an array so no
+    assertion is silently overwritten when an article contains more than one.
+    """
+
+    articles: list[str] = []
+    for index, row in enumerate(rows, start=1):
+        articles.append(
+            f"""ARTÍCULO {index}
+record_id (copia exactamente): {row.get('record_id', '')}
+Título: {row.get('title', '')}
+Subtítulo: {row.get('subtitle_or_bajada', '')}
+Texto:
+<<<
+{row.get('body', '')[:max_body_chars]}
+>>>"""
+        )
+
+    return f"""Eres un extractor de afirmaciones médicas para un corpus académico en español.
+
+Analiza todos los artículos. Devuelve únicamente JSON válido con esta forma:
+{{
+  "items": [
+    {{
+      "record_id": "el record_id de entrada",
+      "is_medical": true,
+      "reason": "explicación breve, máximo 160 caracteres",
+      "claims": [
+        {{
+          "claim_text": "una afirmación médica concreta en español",
+          "claim_text_en": "faithful English translation",
+          "pubmed_query_en": "concise PubMed query in English using Boolean terms",
+          "claim_type": "tratamiento|prevención|diagnóstico|riesgo|causa|síntoma|otro",
+          "is_claim_eligible": true,
+          "needs_human_review": true
+        }}
+      ]
+    }}
+  ]
+}}
+
+Reglas obligatorias:
+- Devuelve exactamente un item por artículo de entrada, mantiene el orden y conserva cada record_id.
+- claims debe incluir TODAS las afirmaciones médicas distintas, concretas y verificables que aparezcan en el artículo; no elijas solo la principal ni impongas un máximo.
+- Si no hay afirmaciones verificables, devuelve "claims": [].
+- No inventes datos, no completes información ausente y no decidas si una afirmación es verdadera o falsa.
+- Un claim debe ser una sola oración y no debe fusionar dos afirmaciones independientes.
+- Para cada claim elegible, claim_text_en es una traducción fiel y pubmed_query_en solo busca esa afirmación; ambos van en inglés.
+- Si no hay claim elegible, no agregues objetos vacíos dentro de claims.
+- claim_text máximo 350 caracteres; claim_text_en 500; pubmed_query_en 600; reason 160.
+
+Artículos:
+{chr(10).join(articles)}
+"""
+
+
+def _ordered_multiclaim_items(document: Any, rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Validate the one-article-per-item envelope before expanding claims."""
+
+    items = _ordered_claim_items(document, rows)
+    for item in items:
+        claims = item.get("claims", [])
+        if not isinstance(claims, list) or not all(isinstance(claim, dict) for claim in claims):
+            raise ValueError("LLM item must contain a claims array of objects")
+    return items
+
+
+def _claim_identifier(record_id: str, index: int, claim_text: str) -> str:
+    digest = hashlib.sha256(f"{record_id}\n{index}\n{claim_text}".encode("utf-8")).hexdigest()[:10]
+    return f"{record_id}_c{index:02d}_{digest}"
+
+
+def _normalize_multiclaim_item(
+    payload: dict[str, Any],
+    record_id: str,
+    max_claims: int,
+) -> tuple[list[dict[str, Any]], bool, str, bool]:
+    """Normalize every returned claim while retaining query failures for audit."""
+
+    article_is_medical = _as_bool(payload.get("is_medical"), default=bool(payload.get("claims")))
+    article_reason = re.sub(r"\s+", " ", str(payload.get("reason", "") or "")).strip()[:2000]
+    raw_claims = payload.get("claims", [])
+    if not article_is_medical:
+        raw_claims = []
+
+    normalized_claims: list[dict[str, Any]] = []
+    seen_texts: set[str] = set()
+    for raw_claim in raw_claims:
+        if not isinstance(raw_claim, dict):
+            continue
+        candidate = dict(raw_claim)
+        candidate.setdefault("is_medical", article_is_medical)
+        candidate.setdefault("is_claim_eligible", True)
+        candidate.setdefault("needs_human_review", True)
+        normalized = _normalize_claim(candidate)
+        claim_text = normalized["claim_text"]
+        if not claim_text:
+            continue
+        duplicate_key = re.sub(r"\s+", " ", claim_text).casefold()
+        if duplicate_key in seen_texts:
+            continue
+        seen_texts.add(duplicate_key)
+        index = len(normalized_claims) + 1
+        query_status = normalized["query_status"]
+        normalized_claims.append(
+            {
+                "claim_id": _claim_identifier(record_id, index, claim_text),
+                "claim_index": index,
+                "claim_text": claim_text,
+                "claim_text_en": normalized["claim_text_en"],
+                "pubmed_query_en": normalized["pubmed_query_en"],
+                "query_status": query_status,
+                "query_prompt_version": QUERY_PROMPT_VERSION,
+                "is_medical": normalized["is_medical"] == "true",
+                "is_claim_eligible": normalized["is_claim_eligible"] == "true",
+                "claim_type": normalized["claim_type"],
+                "needs_human_review": normalized["needs_human_review"] == "true",
+                "claim_status": (
+                    "PENDING_EVIDENCE"
+                    if normalized["is_claim_eligible"] == "true" and query_status == "OK"
+                    else "QUERY_ERROR"
+                    if normalized["is_claim_eligible"] == "true"
+                    else "NOT_ELIGIBLE"
+                ),
+            }
+        )
+
+    truncated = max_claims > 0 and len(normalized_claims) > max_claims
+    if truncated:
+        normalized_claims = normalized_claims[:max_claims]
+    return normalized_claims, truncated, article_reason, article_is_medical
+
+
+def _call_multiclaim_llm_batch(
+    client: Any,
+    rows: list[dict[str, str]],
+    model_id: str,
+    max_body_chars: int,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    retries: int,
+    deadline: float,
+    provider: str,
+    google_api_key: str,
+    request_timeout: float,
+) -> list[tuple[dict[str, str], dict[str, Any], str]]:
+    prompt = _multiclaim_prompt(rows, max_body_chars)
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("LLM batch time budget reached")
+        try:
+            if provider == "google":
+                result = _google_gemini_request(
+                    google_api_key,
+                    model_id,
+                    prompt,
+                    max_tokens,
+                    temperature,
+                    top_p,
+                    request_timeout,
+                )
+            else:
+                result = client.chat(
+                    chat_details=_chat_request(model_id, prompt, max_tokens, temperature, top_p),
+                    retry_strategy=oci.retry.NoneRetryStrategy(),
+                )
+            raw_text = _find_response_text(result)
+            if not raw_text:
+                raise ValueError(f"{provider} returned an empty response")
+            document = _json_document(raw_text)
+            items = _ordered_multiclaim_items(document, rows)
+            return [(row, item, json.dumps(item, ensure_ascii=False)) for row, item in zip(rows, items)]
+        except Exception as exc:  # noqa: BLE001 - preserve the final row-level error
+            last_error = exc
+            if attempt < retries and _retryable_llm_error(exc) and time.monotonic() + 1.0 < deadline:
+                time.sleep(1.0)
+    raise RuntimeError(f"LLM call failed: {type(last_error).__name__}: {last_error}") from last_error
+
+
+def _article_metadata(source_row: dict[str, str]) -> dict[str, str]:
+    """Keep metadata in Claims but leave the full body in its source object."""
+
+    return {
+        field: source_row.get(field, "")
+        for field in BRONZE_FIELDS + BODY_FIELDS
+        if field not in {"record_id", "body"}
+    }
+
+
+def _claims_v1_record(
+    source_row: dict[str, str],
+    payload: dict[str, Any],
+    raw_json: str,
+    run_id: str,
+    model_id: str,
+    key_slot: str,
+    max_claims: int,
+) -> dict[str, Any]:
+    record_id = source_row.get("record_id", "").strip()
+    claims, truncated, reason, is_medical = _normalize_multiclaim_item(payload, record_id, max_claims)
+    processed_at = datetime.now(timezone.utc).isoformat()
+    body = source_row.get("body", "")
+    return {
+        "schema_version": CLAIMS_SCHEMA_VERSION,
+        "run_id": run_id,
+        "record_id": record_id,
+        "source_body_object": source_row.get("source_silver_object", ""),
+        "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "article": _article_metadata(source_row),
+        "llm_status": "OK",
+        "llm_error": "",
+        "llm_raw_json": raw_json[:16000],
+        "model_id": model_id,
+        "llm_provider": os.getenv("LLM_PROVIDER", "oci").strip().lower() or "oci",
+        "llm_key_slot": key_slot,
+        "prompt_version": PROMPT_VERSION,
+        "llm_processed_at": processed_at,
+        "is_medical": is_medical,
+        "llm_reason": reason,
+        "claims_count": len(claims),
+        "claims_truncated": truncated,
+        "claims": claims,
+    }
+
+
+def _failed_claims_v1_record(
+    source_row: dict[str, str],
+    run_id: str,
+    model_id: str,
+    error: str,
+) -> dict[str, Any]:
+    body = source_row.get("body", "")
+    return {
+        "schema_version": CLAIMS_SCHEMA_VERSION,
+        "run_id": run_id,
+        "record_id": source_row.get("record_id", "").strip(),
+        "source_body_object": source_row.get("source_silver_object", ""),
+        "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "article": _article_metadata(source_row),
+        "llm_status": "ERROR",
+        "llm_error": error[:2000],
+        "llm_raw_json": "",
+        "model_id": model_id,
+        "llm_provider": os.getenv("LLM_PROVIDER", "oci").strip().lower() or "oci",
+        "llm_key_slot": "",
+        "prompt_version": PROMPT_VERSION,
+        "llm_processed_at": datetime.now(timezone.utc).isoformat(),
+        "is_medical": None,
+        "llm_reason": "",
+        "claims_count": 0,
+        "claims_truncated": False,
+        "claims": [],
+    }
+
+
+def _v1_body_rows(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    object_name: str,
+) -> tuple[list[dict[str, str]], dict[str, int]]:
+    """Select every valid article from the triggering Body object, once."""
+
+    selected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    stats: Counter[str] = Counter()
+    for source_row in _read_csv_object(client, namespace, bucket, object_name):
+        stats["body_rows_seen"] += 1
+        record_id = source_row.get("record_id", "").strip()
+        if not record_id or not source_row.get("body", "").strip():
+            stats["skipped_no_body"] += 1
+            continue
+        if source_row.get("extraction_status", "").strip().upper() != "OK":
+            stats["skipped_extraction_error"] += 1
+            continue
+        if record_id in seen:
+            stats["skipped_duplicate"] += 1
+            continue
+        seen.add(record_id)
+        selected.append(
+            {
+                field: source_row.get(field, "").strip()
+                for field in BRONZE_FIELDS + BODY_FIELDS
+            }
+            | {"source_silver_object": object_name}
+        )
+    stats["selected"] = len(selected)
+    return selected, dict(stats)
+
+
+def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
+    """Extract all claims from one Body event and write immutable JSONL output."""
+
+    started = time.monotonic()
+    now = datetime.now(timezone.utc)
+    run_id = f"run_{now.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+    try:
+        namespace = _required_env("OBJECT_STORAGE_NAMESPACE")
+        bucket = _required_env("OBJECT_STORAGE_BUCKET")
+        body_prefix = os.getenv("SILVER_BODY_PREFIX", "silver/body").strip("/")
+        claims_prefix = os.getenv("SILVER_CLAIMS_PREFIX", "silver/claims").strip("/")
+        provider = os.getenv("LLM_PROVIDER", "oci").strip().lower() or "oci"
+        if provider not in {"oci", "google"}:
+            raise RuntimeError("LLM_PROVIDER must be either 'oci' or 'google'")
+        configured_max_rows = _env_int("LLM_MAX_ROWS", 0, minimum=0)
+        if configured_max_rows:
+            raise RuntimeError("LLM_MAX_ROWS must be 0 in claims.v1; one event must process every valid article")
+        max_claims = _env_int("MAX_CLAIMS_PER_ARTICLE", 0, minimum=0)
+        default_model_id = DEFAULT_GOOGLE_MODEL_ID if provider == "google" else DEFAULT_MODEL_ID
+        model_id = os.getenv("LLM_MODEL_ID", default_model_id).strip() or default_model_id
+        region = os.getenv("LLM_REGION", os.getenv("OCI_REGION", "us-ashburn-1")).strip()
+        request_batch_size = _env_int("LLM_REQUEST_BATCH_SIZE", 5, minimum=1)
+        max_seconds = _env_float("LLM_MAX_SECONDS", 270.0, minimum=30.0)
+        time_buffer = _env_float("LLM_TIME_BUFFER", 20.0, minimum=1.0)
+        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 12_000, minimum=500)
+        max_tokens = _env_int("LLM_MAX_TOKENS", 8_000, minimum=500)
+        request_timeout = _env_float("LLM_REQUEST_TIMEOUT", 45.0, minimum=5.0)
+        temperature = _env_float("LLM_TEMPERATURE", 0.0, minimum=0.0)
+        top_p = _env_float("LLM_TOP_P", 0.9, minimum=0.0)
+        retries = _env_int("LLM_MAX_RETRIES", 0, minimum=0)
+        if time_buffer >= max_seconds:
+            raise RuntimeError("LLM_TIME_BUFFER must be smaller than LLM_MAX_SECONDS")
+
+        storage = _object_storage_client()
+        source_object = _event_object_name(data, bucket, body_prefix)
+        pending, scan = _v1_body_rows(storage, namespace, bucket, source_object)
+        deadline = started + max_seconds - time_buffer
+        records: list[dict[str, Any]] = []
+        statuses: Counter[str] = Counter()
+        last_error = ""
+        llm_requests = 0
+        google_api_keys: list[str] = []
+        google_key_cursor = 0
+
+        if pending:
+            if provider == "google":
+                secret_ids = _secret_ids("GOOGLE_GEMINI_SECRET_OCIDS", "GOOGLE_GEMINI_SECRET_OCID")
+                if not secret_ids:
+                    raise RuntimeError("GOOGLE_GEMINI_SECRET_OCIDS or GOOGLE_GEMINI_SECRET_OCID is required")
+                for secret_id in secret_ids:
+                    try:
+                        value = _vault_secret_value(secret_id)
+                    except Exception as exc:  # noqa: BLE001 - retain other usable keys
+                        LOGGER.warning("Unable to read Gemini claim secret: %s", type(exc).__name__)
+                        continue
+                    if value and value not in google_api_keys:
+                        google_api_keys.append(value)
+                if not google_api_keys:
+                    raise RuntimeError("No usable Google Gemini Vault secret was found")
+                llm = None
+            else:
+                llm = _generative_ai_client(region, request_timeout)
+
+            for offset in range(0, len(pending), request_batch_size):
+                request_rows = pending[offset : offset + request_batch_size]
+                if time.monotonic() >= deadline:
+                    for source_row in pending[offset:]:
+                        records.append(_failed_claims_v1_record(source_row, run_id, model_id, "LLM_TIME_BUDGET"))
+                        statuses["ERROR"] += 1
+                    break
+                try:
+                    def invoke_batch(key: str) -> list[tuple[dict[str, str], dict[str, Any], str]]:
+                        return _call_multiclaim_llm_batch(
+                            llm,
+                            request_rows,
+                            model_id,
+                            max_body_chars,
+                            max_tokens,
+                            temperature,
+                            top_p,
+                            retries,
+                            deadline,
+                            provider,
+                            key,
+                            request_timeout,
+                        )
+
+                    if provider == "google":
+                        batch_results, used_slot = _call_with_google_key_failover(
+                            google_api_keys, google_key_cursor, invoke_batch
+                        )
+                        google_key_cursor = (used_slot + 1) % len(google_api_keys)
+                        key_slot = str(used_slot + 1)
+                    else:
+                        batch_results = invoke_batch("")
+                        key_slot = "oci"
+                    llm_requests += 1
+                    for source_row, payload, raw_json in batch_results:
+                        records.append(
+                            _claims_v1_record(
+                                source_row, payload, raw_json, run_id, model_id, key_slot, max_claims
+                            )
+                        )
+                        statuses["OK"] += 1
+                except Exception as exc:  # noqa: BLE001 - all input rows receive an auditable outcome
+                    error = f"{type(exc).__name__}: {exc}"[:2000]
+                    last_error = error
+                    LOGGER.warning("Multi-claim extraction failed for batch: %s", error)
+                    for source_row in request_rows:
+                        records.append(_failed_claims_v1_record(source_row, run_id, model_id, error))
+                        statuses["ERROR"] += 1
+                    if _quota_disabled(exc):
+                        for source_row in pending[offset + len(request_rows) :]:
+                            records.append(_failed_claims_v1_record(source_row, run_id, model_id, "LLM_NOT_ATTEMPTED"))
+                            statuses["ERROR"] += 1
+                        break
+
+        claims_object, manifest_object = _claims_v1_object_names(claims_prefix, run_id)
+        _write_jsonl_object(storage, namespace, bucket, claims_object, records)
+        article_statuses = Counter(str(record.get("llm_status", "")) for record in records)
+        claims_total = sum(int(record.get("claims_count", 0) or 0) for record in records)
+        truncated_articles = sum(bool(record.get("claims_truncated")) for record in records)
+        manifest_status = "COMPLETE"
+        if article_statuses.get("ERROR"):
+            manifest_status = "FAILED" if article_statuses.get("OK", 0) == 0 else "PARTIAL"
+        manifest = {
+            "schema_version": CLAIMS_MANIFEST_SCHEMA_VERSION,
+            "stage": "claims",
+            "run_id": run_id,
+            "status": manifest_status,
+            "source_object": source_object,
+            "claims_object": claims_object,
+            "started_at": now.isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "articles_processed": len(records),
+            "articles_with_claims": sum(int(record.get("claims_count", 0) or 0) > 0 for record in records),
+            "articles_without_claims": sum(int(record.get("claims_count", 0) or 0) == 0 for record in records),
+            "claims_total": claims_total,
+            "articles_with_truncated_claims": truncated_articles,
+            "llm_status_counts": dict(article_statuses),
+            "scan": scan,
+            "configuration": {
+                "llm_provider": provider,
+                "model_id": model_id,
+                "request_batch_size": request_batch_size,
+                "max_claims_per_article": max_claims,
+                "max_rows": "all",
+            },
+        }
+        _write_json_object(storage, namespace, bucket, manifest_object, manifest)
+        result = {
+            "status": manifest_status.lower(),
+            "mode": "claims.v1",
+            "run_id": run_id,
+            "source_object": source_object,
+            "object_name": claims_object,
+            "manifest_object": manifest_object,
+            "articles_processed": len(records),
+            "claims_total": claims_total,
+            "llm_requests": llm_requests,
+            "llm_error": last_error,
+            "elapsed_seconds": f"{time.monotonic() - started:.2f}",
+        }
+        LOGGER.info("Claims JSONL written: %s (%s articles, %s claims)", claims_object, len(records), claims_total)
+        return response.Response(
+            ctx,
+            response_data=json.dumps(result, ensure_ascii=False),
+            headers={"Content-Type": "application/json"},
+        )
+    except Exception as exc:  # noqa: BLE001 - make configuration failure visible to OCI Events
+        LOGGER.exception("extract-claims v1 failed")
+        return response.Response(
+            ctx,
+            response_data=json.dumps({"status": "error", "run_id": run_id, "message": str(exc)}),
+            status_code=500,
+            headers={"Content-Type": "application/json"},
+        )
+
+
+def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
+    """Dispatch explicitly between the retired CSV contract and claims.v1."""
+
+    schema = os.getenv("PIPELINE_SCHEMA", "v1").strip().lower()
+    if schema in {"v1", "claims.v1", "jsonl"}:
+        return _handler_v1(ctx, data)
+    if schema in {"legacy", "csv"}:
+        return _handler_legacy(ctx, data)
+    raise RuntimeError("PIPELINE_SCHEMA must be v1/jsonl or legacy/csv")
