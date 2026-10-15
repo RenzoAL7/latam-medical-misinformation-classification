@@ -27,7 +27,6 @@ def test_task_payload_does_not_duplicate_full_evidence_text() -> None:
         "pubmed_query_en": "Claim",
         "evidence_status": "OK",
         "best_pmid": "123",
-        "best_cosine_similarity": "0.8",
         "best_embedding_similarity": "0.8",
         "best_tfidf_similarity": "0.4",
         "ranking_method": "oci_cohere_embed_v4",
@@ -49,6 +48,7 @@ def test_task_payload_does_not_duplicate_full_evidence_text() -> None:
 
     assert "evidence_text" not in data
     assert data["topic"] == "health"
-    assert data["best_cosine_similarity"] == "0.8"
+    assert data["best_embedding_similarity"] == "0.8"
+    assert "best_cosine_similarity" not in data
     assert data["evidence_primary"] != "No hay abstracts disponibles."
     assert data["evidence_count"] == "1"

@@ -39,7 +39,6 @@ OUTPUT_FIELDS = (
     "body",
     "claim_text",
     "best_pmid",
-    "best_cosine_similarity",
     "best_embedding_similarity",
     "best_tfidf_similarity",
     "ranking_method",

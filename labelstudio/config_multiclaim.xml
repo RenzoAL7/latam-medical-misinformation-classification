@@ -46,7 +46,7 @@
         <Text name="query" value="Consulta PubMed: $pubmed_query_en" />
         <Text name="claim-en" value="Claim en inglés: $claim_text_en" />
         <Text name="status" value="Evidence: $evidence_status | Embed: $embedding_status | Traducción: $translation_status" />
-        <Text name="scores" value="Mejor PMID: $best_pmid | Embed 4: $best_embedding_similarity | TF-IDF: $best_tfidf_similarity" />
+        <Text name="scores" value="PMID mejor rankeado: $best_pmid | Score semántico de ese PMID (Embed 4): $best_embedding_similarity | Máximo TF-IDF entre candidatos: $best_tfidf_similarity" />
       </View>
     </Panel>
   </Collapse>

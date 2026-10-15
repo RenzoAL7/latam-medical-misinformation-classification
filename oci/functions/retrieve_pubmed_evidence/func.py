@@ -77,7 +77,6 @@ OUTPUT_FIELDS = [
     "evidence_error",
     "pubmed_result_count",
     "best_pmid",
-    "best_cosine_similarity",
     "best_embedding_similarity",
     "best_tfidf_similarity",
     "pubmed_results_json",
@@ -1106,13 +1105,10 @@ def _rerank_candidates(row: dict[str, str]) -> int:
         row["best_pmid"] = str(candidates[0].get("pmid", ""))
         if embedding_candidates:
             row["best_embedding_similarity"] = str(candidates[0].get("embedding_similarity", ""))
-            row["best_cosine_similarity"] = row["best_embedding_similarity"]
         else:
             row["best_embedding_similarity"] = ""
-            row["best_cosine_similarity"] = str(candidates[0].get("cosine_similarity", ""))
     else:
         row["best_pmid"] = ""
-        row["best_cosine_similarity"] = ""
         row["best_embedding_similarity"] = ""
     return len(scored)
 
@@ -1756,7 +1752,6 @@ def _apply_embeddings(
         if candidates and candidates[0].get("embedding_similarity") is not None:
             row["best_pmid"] = str(candidates[0].get("pmid", ""))
             row["best_embedding_similarity"] = str(candidates[0]["embedding_similarity"])
-            row["best_cosine_similarity"] = str(candidates[0]["embedding_similarity"])
             row["cosine_method"] = EMBEDDING_METHOD
         stats["rows_ranked"] += 1
         stats["candidates_ranked"] += len(candidates)
@@ -1798,7 +1793,6 @@ def _base_output_row(row: dict[str, str], run_id: str, retrieved_at: str) -> dic
         "evidence_error": "",
         "pubmed_result_count": "0",
         "best_pmid": "",
-        "best_cosine_similarity": "",
         "best_embedding_similarity": "",
         "best_tfidf_similarity": "",
         "pubmed_results_json": "[]",
@@ -2488,7 +2482,6 @@ def _evidence_v1_record(row: dict[str, str], run_id: str) -> dict[str, Any]:
         "pubmed_result_count": int(row.get("pubmed_result_count", "0") or 0),
         "usable_candidate_count": len(candidates),
         "best_pmid": row.get("best_pmid", ""),
-        "best_cosine_similarity": row.get("best_cosine_similarity", ""),
         "best_embedding_similarity": row.get("best_embedding_similarity", ""),
         "best_tfidf_similarity": row.get("best_tfidf_similarity", ""),
         "cosine_method": row.get("cosine_method", ""),

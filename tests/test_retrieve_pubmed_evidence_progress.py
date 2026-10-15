@@ -69,6 +69,7 @@ def test_evidence_output_carries_training_text_and_audit_fields() -> None:
     assert row["topic"] == "health"
     assert row["extraction_status"] == "OK"
     assert set(("body", "topic", "extraction_status")).issubset(module.OUTPUT_FIELDS)
+    assert "best_cosine_similarity" not in module.OUTPUT_FIELDS
 
 
 def test_embedding_ranking_sets_best_pmid_even_before_translation(monkeypatch) -> None:
@@ -99,3 +100,5 @@ def test_embedding_ranking_sets_best_pmid_even_before_translation(monkeypatch) -
 
     assert result["status"] == "ok"
     assert row["best_pmid"] == "high"
+    assert row["best_embedding_similarity"]
+    assert "best_cosine_similarity" not in row

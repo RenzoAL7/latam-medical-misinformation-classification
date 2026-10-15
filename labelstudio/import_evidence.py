@@ -119,7 +119,6 @@ def _task_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "pubmed_query_en": row.get("pubmed_query_en", ""),
         "evidence_status": row.get("evidence_status", ""),
         "best_pmid": row.get("best_pmid", ""),
-        "best_cosine_similarity": row.get("best_cosine_similarity", ""),
         "best_embedding_similarity": row.get("best_embedding_similarity", ""),
         "best_tfidf_similarity": row.get("best_tfidf_similarity", ""),
         "ranking_method": row.get("ranking_method", ""),

@@ -112,9 +112,10 @@ The embedding query is `claim_text_en` and the document input is the English
 title plus abstract. Scores are ranking aids, never truth probabilities or
 automatic labels. The original English abstract remains for audit.
 
-`best_cosine_similarity` is the OCI Embed 4 score when the embedding call
-succeeds; `best_embedding_similarity` stores the same value explicitly and
-`best_tfidf_similarity` records the post-translation TF-IDF score. The
+`best_embedding_similarity` is the OCI Embed 4 cosine score of the PMID that
+heads the ranking. `best_tfidf_similarity` is the maximum post-translation
+TF-IDF score across candidates, so it can belong to a different PMID and must
+not be compared numerically with the embedding score. The
 `embedding_status`, `embedding_model`, `embedding_query_field`, and
 `ranking_method` columns make a failed or skipped embedding call visible
 instead of silently mixing ranking methods.
