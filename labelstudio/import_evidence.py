@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""Import one deduplicated evidence task per claim into Label Studio.
-
-The current JSONL contract creates one review task for ``record_id + claim_id``.
-The legacy CSV reader remains available only to preserve existing projects.
-"""
+"""Import one deduplicated Evidence JSONL task per claim into Label Studio."""
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import sys
@@ -124,7 +119,6 @@ def _task_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "pubmed_query_en": row.get("pubmed_query_en", ""),
         "evidence_status": row.get("evidence_status", ""),
         "best_pmid": row.get("best_pmid", ""),
-        "best_cosine_similarity": row.get("best_cosine_similarity", ""),
         "best_embedding_similarity": row.get("best_embedding_similarity", ""),
         "best_tfidf_similarity": row.get("best_tfidf_similarity", ""),
         "ranking_method": row.get("ranking_method", ""),
@@ -132,7 +126,7 @@ def _task_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "embedding_status": row.get("embedding_status", ""),
         "translation_status": row.get("translation_status", ""),
         "claim_type": row.get("claim_type", ""),
-        # Keep one copy of the candidate text in the fields used by config.xml.
+        # Keep one copy of the candidate text in the multi-claim interface.
         # Storing a second complete ``evidence_text`` copy makes every task
         # unnecessarily large and slows Label Studio as the corpus grows.
         "evidence_primary": _candidate_text(row, 0, 1),
@@ -156,27 +150,22 @@ def _flatten_jsonl_record(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _rows_from_path(path: Path) -> list[dict[str, Any]]:
-    if path.suffix.lower() == ".jsonl":
-        rows: list[dict[str, Any]] = []
-        for number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"Invalid JSONL in {path} at line {number}") from exc
-            if not isinstance(record, dict):
-                raise RuntimeError(f"JSONL record {number} in {path} is not an object")
-            if _as_text(record.get("schema_version")) != "evidence.v1":
-                raise RuntimeError(f"Unsupported evidence schema in {path} at line {number}")
-            rows.append(_flatten_jsonl_record(record))
-        return rows
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        return [
-            {str(key): str(value or "") for key, value in row.items() if key}
-            for row in csv.DictReader(handle)
-            if row
-        ]
+    if path.suffix.lower() != ".jsonl":
+        raise RuntimeError(f"Evidence input must be JSONL, not {path}")
+    rows: list[dict[str, Any]] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Invalid JSONL in {path} at line {number}") from exc
+        if not isinstance(record, dict):
+            raise RuntimeError(f"JSONL record {number} in {path} is not an object")
+        if _as_text(record.get("schema_version")) != "evidence.v1":
+            raise RuntimeError(f"Unsupported evidence schema in {path} at line {number}")
+        rows.append(_flatten_jsonl_record(record))
+    return rows
 
 
 def _input_paths(values: list[str]) -> list[Path]:
@@ -184,7 +173,6 @@ def _input_paths(values: list[str]) -> list[Path]:
     for value in values:
         path = Path(value)
         if path.is_dir():
-            paths.extend(sorted(path.glob("*.csv")))
             paths.extend(sorted(path.glob("*.jsonl")))
         elif path.is_file():
             paths.append(path)
@@ -196,9 +184,7 @@ def _input_paths(values: list[str]) -> list[Path]:
 def _ready_for_review(row: dict[str, Any]) -> bool:
     if _as_text(row.get("evidence_status")).upper() != "OK":
         return False
-    if _as_text(row.get("schema_version")) != "evidence.v1":
-        return True
-    return all(
+    return _as_text(row.get("schema_version")) == "evidence.v1" and all(
         _as_text(row.get(field)).upper() == "OK"
         for field in ("llm_status", "embedding_status", "translation_status")
     )
@@ -206,7 +192,7 @@ def _ready_for_review(row: dict[str, Any]) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, nargs="+", help="Evidence CSV/JSONL file(s) or directories")
+    parser.add_argument("--input", required=True, nargs="+", help="Evidence JSONL file(s) or directories")
     parser.add_argument("--url", default=os.getenv("LABEL_STUDIO_URL", "http://localhost:8080"))
     parser.add_argument("--project-id", type=int, required=True)
     parser.add_argument("--token", default=os.getenv("LABEL_STUDIO_TOKEN", ""))
@@ -223,7 +209,7 @@ def main() -> int:
     except FileNotFoundError as exc:
         parser.error(str(exc))
     if not input_paths:
-        parser.error("No CSV or JSONL evidence files found")
+        parser.error("No Evidence JSONL files found")
 
     existing = _list_tasks(args.url, args.project_id, args.token)
     existing_ids = {

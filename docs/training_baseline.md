@@ -2,8 +2,9 @@
 
 ## Contrato de entrada
 
-El archivo debe ser el CSV `gold/training` producido después de exportar y
-validar las anotaciones humanas. Debe contener, como mínimo:
+El archivo debe ser `output/training.csv`, producido por
+`scripts/04_build_training_dataset.py` después de reunir Evidence, las
+anotaciones humanas y el Body de la misma corrida. Debe contener, como mínimo:
 
 | Columna | Papel |
 | --- | --- |
@@ -13,10 +14,11 @@ validar las anotaciones humanas. Debe contener, como mínimo:
 | `label` | Objetivo: `RESPALDADA` o `REFUTADA`. |
 | `dataset_split` | Se completa en el manifiesto de la corrida. |
 
-La validación conserva las columnas de auditoría en `gold/reviewed`, pero el
-CSV `gold/training` que consume este script queda reducido a esas cinco
-columnas. `NO_DETERMINABLE`, `EXCLUIDA` y `PENDIENTE` nunca entran al
-entrenamiento binario.
+El builder conserva los claims en `claim_reviews.csv` y la decisión por noticia
+en `article_labels.csv`, pero el CSV `training.csv` que consume este script
+queda reducido a esas cinco columnas. `NO_DETERMINABLE`, `EXCLUIDA` y
+`PENDIENTE_REVISION` y `PENDIENTE_EVIDENCIA` nunca entran al entrenamiento
+binario.
 
 ## Modelo piloto
 

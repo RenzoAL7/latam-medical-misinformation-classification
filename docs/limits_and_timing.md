@@ -111,10 +111,12 @@ Un manifest `PARTIAL` no bloquea los demás claims: el sincronizador importa
 solo las filas que cumplen esta compuerta y conserva las fallidas fuera de
 Label Studio.
 Label Studio no recibe un `final_label`; la persona clasifica materialidad,
-relación de evidencia y veredicto del claim. `aggregate_article_labels.py`
-aplica la regla artículo: un claim central/material refutado implica
-`REFUTADA`; todos respaldados implica `RESPALDADA`; los otros casos quedan
-`NO_DETERMINABLE`.
+relación de evidencia y veredicto del claim. Al construir Gold,
+`scripts/04_build_training_dataset.py` usa el Evidence JSONL como inventario
+de todos los claims: si uno no fue revisable o no tiene revisión humana, bloquea
+la noticia. Solo entonces aplica la regla artículo: un claim central/material
+refutado implica `REFUTADA`; todos respaldados implica `RESPALDADA`; los
+otros casos quedan `NO_DETERMINABLE`.
 
 ## Dataset y modelo
 

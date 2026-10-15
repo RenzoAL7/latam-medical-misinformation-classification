@@ -4,9 +4,8 @@
 The program is intended for a private Label Studio VM. It authenticates to
 Object Storage with the VM's Instance Principal, accepts only the immutable
 ``silver/evidence/run_id=*/manifest.json`` outputs for the multi-claim JSONL
-contract. A compatibility CSV mode remains available only for a legacy
-project. JSONL manifests can be ``COMPLETE`` or ``PARTIAL``: the importer
-still accepts only individual claims whose four review states are ``OK``.
+contract. Manifests can be ``COMPLETE`` or ``PARTIAL``: the importer still
+accepts only individual claims whose four review states are ``OK``.
 
 The Label Studio API token is read only from ``LABEL_STUDIO_TOKEN`` at runtime;
 it is never written to the state file or committed to the repository.
@@ -43,18 +42,6 @@ def _required(value: str, name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} is required")
     return value
-
-
-def _evidence_object_name(object_name: str, prefix: str) -> bool:
-    """Accept only current terminal Evidence outputs, never legacy drains."""
-
-    expected_prefix = f"{prefix.strip('/')}/"
-    filename = PurePosixPath(object_name).name
-    return (
-        object_name.startswith(expected_prefix)
-        and filename.startswith("evidence_run_")
-        and filename.endswith(".csv")
-    )
 
 
 def _evidence_manifest_object_name(object_name: str, prefix: str) -> bool:
@@ -109,23 +96,6 @@ def _object_client() -> Any:
         raise RuntimeError("OCI Python SDK is not installed; install oci>=2.0.0 in the VM environment")
     signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
     return oci.object_storage.ObjectStorageClient(config={}, signer=signer)
-
-
-def _list_evidence_objects(client: Any, namespace: str, bucket: str, prefix: str) -> list[Any]:
-    if oci is None:
-        raise RuntimeError("OCI Python SDK is not installed")
-    response = oci.pagination.list_call_get_all_results(
-        client.list_objects,
-        namespace,
-        bucket,
-        prefix=f"{prefix.strip('/')}/",
-        fields="name,etag",
-    )
-    objects = getattr(response.data, "objects", []) or []
-    return sorted(
-        (item for item in objects if _evidence_object_name(str(item.name), prefix)),
-        key=lambda item: str(item.name),
-    )
 
 
 def _list_evidence_manifest_objects(client: Any, namespace: str, bucket: str, prefix: str) -> list[Any]:
@@ -282,12 +252,6 @@ def main() -> int:
     parser.add_argument("--token", default=os.getenv("LABEL_STUDIO_TOKEN", ""))
     parser.add_argument("--refresh-token", default=os.getenv("LABEL_STUDIO_REFRESH_TOKEN", ""))
     parser.add_argument("--work-dir", type=Path, default=Path(os.getenv("MEDNEWS_SYNC_WORK_DIR", ".mednews-sync")))
-    parser.add_argument(
-        "--format",
-        choices=("jsonl", "csv"),
-        default=os.getenv("LABEL_STUDIO_EVIDENCE_FORMAT", "jsonl").strip().lower() or "jsonl",
-        help="jsonl is the multi-claim contract; csv is only for the legacy project",
-    )
     parser.add_argument("--label-config", type=Path, default=None)
     parser.add_argument("--refresh-existing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--apply-label-config", action=argparse.BooleanOptionalAction, default=True)
@@ -297,9 +261,7 @@ def main() -> int:
     bucket = _required(args.bucket, "OBJECT_STORAGE_BUCKET / --bucket")
     if args.project_id <= 0:
         raise RuntimeError("LABEL_STUDIO_PROJECT_ID / --project-id must be positive")
-    label_config = args.label_config or Path(__file__).with_name(
-        "config_multiclaim.xml" if args.format == "jsonl" else "config.xml"
-    )
+    label_config = args.label_config or Path(__file__).with_name("config_multiclaim.xml")
     if not label_config.is_file():
         raise RuntimeError(f"Label Studio configuration not found: {label_config}")
     if not args.url.startswith(("http://", "https://")):
@@ -328,87 +290,57 @@ def main() -> int:
     skipped = 0
     skipped_incomplete = 0
     partial_manifests_imported = 0
-    if args.format == "jsonl":
-        objects = _list_evidence_manifest_objects(client, namespace, bucket, args.prefix)
-        for item in objects:
-            object_name = str(item.name)
-            etag = str(getattr(item, "etag", "") or "")
-            previous = tracked.get(object_name, {})
-            manifest_path = _local_input_path(cache_dir / "manifests", object_name)
-            if (
-                isinstance(previous, dict)
-                and _manifest_was_handled(previous, etag)
-                and manifest_path.is_file()
-            ):
-                skipped += 1
-                continue
-            if not manifest_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
-                _download_object(client, namespace, bucket, object_name, manifest_path)
-                downloaded += 1
-            status, evidence_object = _read_v1_manifest(manifest_path, args.prefix)
-            if not _manifest_has_reviewable_rows(status):
-                tracked[object_name] = {
-                    "etag": etag,
-                    "observed_etag": etag,
-                    "skipped_etag": etag,
-                    "manifest_status": status,
-                    "local_path": manifest_path.name,
-                }
-                _write_state(state_path, state)
-                skipped_incomplete += 1
-                continue
-            evidence_path = _local_input_path(cache_dir / "jsonl", evidence_object)
-            if not evidence_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
-                _download_object(client, namespace, bucket, evidence_object, evidence_path)
-                downloaded += 1
-            _run_importer(
-                Path(__file__).with_name("import_evidence.py"),
-                evidence_path,
-                work_dir,
-                args.url,
-                args.project_id,
-                token,
-                args.refresh_existing,
-            )
+    objects = _list_evidence_manifest_objects(client, namespace, bucket, args.prefix)
+    for item in objects:
+        object_name = str(item.name)
+        etag = str(getattr(item, "etag", "") or "")
+        previous = tracked.get(object_name, {})
+        manifest_path = _local_input_path(cache_dir / "manifests", object_name)
+        if (
+            isinstance(previous, dict)
+            and _manifest_was_handled(previous, etag)
+            and manifest_path.is_file()
+        ):
+            skipped += 1
+            continue
+        if not manifest_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
+            _download_object(client, namespace, bucket, object_name, manifest_path)
+            downloaded += 1
+        status, evidence_object = _read_v1_manifest(manifest_path, args.prefix)
+        if not _manifest_has_reviewable_rows(status):
             tracked[object_name] = {
                 "etag": etag,
-                "imported_etag": etag,
+                "observed_etag": etag,
+                "skipped_etag": etag,
                 "manifest_status": status,
-                "evidence_object": evidence_object,
                 "local_path": manifest_path.name,
             }
             _write_state(state_path, state)
-            imported += 1
-            partial_manifests_imported += int(status == "PARTIAL")
-    else:
-        objects = _list_evidence_objects(client, namespace, bucket, args.prefix)
-        for item in objects:
-            object_name = str(item.name)
-            etag = str(getattr(item, "etag", "") or "")
-            local_path = _local_input_path(cache_dir / "csv", object_name)
-            previous = tracked.get(object_name, {})
-            if (
-                isinstance(previous, dict)
-                and previous.get("imported_etag") == etag
-                and local_path.is_file()
-            ):
-                skipped += 1
-                continue
-            if not local_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
-                _download_object(client, namespace, bucket, object_name, local_path)
-                downloaded += 1
-            _run_importer(
-                Path(__file__).with_name("import_evidence.py"),
-                local_path,
-                work_dir,
-                args.url,
-                args.project_id,
-                token,
-                args.refresh_existing,
-            )
-            tracked[object_name] = {"etag": etag, "imported_etag": etag, "local_path": local_path.name}
-            _write_state(state_path, state)
-            imported += 1
+            skipped_incomplete += 1
+            continue
+        evidence_path = _local_input_path(cache_dir / "jsonl", evidence_object)
+        if not evidence_path.is_file() or not isinstance(previous, dict) or previous.get("etag") != etag:
+            _download_object(client, namespace, bucket, evidence_object, evidence_path)
+            downloaded += 1
+        _run_importer(
+            Path(__file__).with_name("import_evidence.py"),
+            evidence_path,
+            work_dir,
+            args.url,
+            args.project_id,
+            token,
+            args.refresh_existing,
+        )
+        tracked[object_name] = {
+            "etag": etag,
+            "imported_etag": etag,
+            "manifest_status": status,
+            "evidence_object": evidence_object,
+            "local_path": manifest_path.name,
+        }
+        _write_state(state_path, state)
+        imported += 1
+        partial_manifests_imported += int(status == "PARTIAL")
 
     print(
         json.dumps(
@@ -416,7 +348,7 @@ def main() -> int:
                 "status": "ok",
                 "bucket": bucket,
                 "prefix": args.prefix.strip("/"),
-                "format": args.format,
+                "format": "jsonl",
                 "objects_seen": len(objects),
                 "downloaded": downloaded,
                 "imported_or_refreshed": imported,

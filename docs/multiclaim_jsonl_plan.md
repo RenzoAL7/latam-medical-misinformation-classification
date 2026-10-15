@@ -1,11 +1,10 @@
 # Contrato v1: múltiples claims y artefactos JSONL
 
-> Estado de migración (2026-10-14): el contrato `claims.v1`/`evidence.v1`, el
-> importador y la agregación de Label Studio ya están implementados y cubiertos
-> por pruebas locales. La infraestructura remota sigue en pausa hasta desplegar
-> las dos imágenes x86, actualizar de forma coordinada la regla Events de
-> Evidence y aplicar `config_multiclaim.xml` a un proyecto limpio. No mezclar
-> objetos CSV históricos con los selectores JSONL.
+> Estado de migración (2026-10-15): el contrato `claims.v1`/`evidence.v1`, las
+> Functions x86, la regla Events Claims -> Evidence y el proyecto multi-claim
+> de Label Studio están activos. El sincronizador consume solo manifests JSONL
+> `COMPLETE` o `PARTIAL`; no se reactivan los drains históricos ni el schedule
+> de las 20:00. No mezclar objetos CSV históricos con los selectores JSONL.
 
 ## Decisión de diseño
 
@@ -174,8 +173,11 @@ archivo de candidatos.
 Label Studio importa una tarea por `record_id + claim_id`. La persona revisora
 marca `claim_materiality` (`central`, `material` o `secondary`),
 `evidence_relation` y `claim_verdict`. Después,
-`aggregate_article_labels.py` genera una sola fila por `record_id` con esta
-regla:
+`scripts/04_build_training_dataset.py` genera una sola fila por `record_id`
+solo cuando reúne el Evidence JSONL completo, la exportación de Label Studio y
+el Body de la misma corrida. Si Evidence contiene un claim no revisable o falta
+su tarea/revisión humana, la noticia queda fuera del CSV binario. Con el lote
+completo, aplica esta regla:
 
 - algún claim `central`/`material` `REFUTADO` → `REFUTADA`;
 - todos los claims `central`/`material` `RESPALDADOS` → `RESPALDADA`;

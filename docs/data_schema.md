@@ -34,15 +34,15 @@ La Function elimina duplicados dentro de la corrida y vuelve a consultar los
 `silver/body/` conserva el resultado técnico de extracción. `silver/claims/`
 recibe cuerpos válidos y guarda todos los claims dentro de un registro JSONL
 por noticia. `silver/evidence/` guarda un registro JSONL por claim con sus
-candidatos PubMed. Los CSV heredados solo existen para la compatibilidad de
-datos antiguos y no se mezclan con v1.
+candidatos PubMed. Los CSV de Bronze y Body son insumos operativos actuales;
+Claims y Evidence v1 no se mezclan con el contrato CSV histórico.
 
 | Campo | Uso |
 | --- | --- |
 | `record_id`, `source_name`, `topic`, `title`, `canonical_url` | Identidad y trazabilidad mínima de la noticia. |
 | `body` | Texto principal descargado desde la URL pública. |
 | `http_status` | Código HTTP obtenido. |
-| `extraction_method` | `trafilatura`, respaldo con BeautifulSoup o ausencia de extracción. |
+| `extraction_method` | Extracción HTML con BeautifulSoup o ausencia de extracción. |
 | `extraction_status` | `OK`, `CUERPO_INSUFICIENTE` o error de descarga. |
 | `extracted_at` | Fecha UTC de extracción. |
 | `claim_id`, `claim_index` | Identidad estable de un claim dentro de su noticia y corrida. |
@@ -55,9 +55,8 @@ datos antiguos y no se mezclan con v1.
 | `evidence_status` | `OK`, `NO_RESULTS`, `NO_ABSTRACT` o `ERROR`. `OK` requiere LLM, embedding y traducción en `OK`. |
 | `translation_status` | `OK`, `PARTIAL`, `ERROR`, `NO_ABSTRACTS` o estado de omisión. Un candidato puede marcarse `PARAPHRASED` si Gemini bloquea la traducción literal por recitación. |
 | `translation_key_slot` | Slot cargado de las claves Gemini 3/4 que produjo la traducción; no contiene la clave. |
-| `best_cosine_similarity` | Alias histórico del score coseno elegido para ordenar; con Embed 4 normalmente coincide con `best_embedding_similarity`, por lo que no es una tercera señal independiente. |
-| `best_embedding_similarity` | Mejor similitud coseno calculada con `cohere.embed-v4.0`; es un apoyo de ranking y no una etiqueta. |
-| `best_tfidf_similarity` | Mejor similitud TF-IDF entre claim y abstract traducido al español; sirve como score auxiliar. |
+| `best_embedding_similarity` | Similitud coseno Embed 4 del PMID que encabezó el ranking (`best_pmid`); es un apoyo de ranking y no una etiqueta. |
+| `best_tfidf_similarity` | Máxima similitud TF-IDF entre el claim y los abstracts traducidos al español; sirve como diagnóstico léxico auxiliar y puede corresponder a otro candidato. |
 | `embedding_status` | Estado de la llamada a OCI Embed 4 (`OK`, `ERROR`, `NO_CANDIDATES` o `SKIPPED_NO_EVIDENCE`). |
 | `embedding_model`, `embedding_query_field` | Modelo usado y campo del claim enviado a Embed 4 (`claim_text_en` o `claim_text`). |
 | `ranking_method` | `oci_cohere_embed_v4` cuando Embed 4 rankea los candidatos; `tfidf_v1_es` si se usa el fallback. |
@@ -103,7 +102,7 @@ Una fila por `record_id` conserva la trazabilidad de la noticia y de sus
 claims revisados. El CSV `gold/reviewed` incluye como mínimo `record_id`, `country`,
 `source_name`, `topic`, `canonical_url`, `published_at`, `title`, `body`,
 `claim_text`, `best_pmid`, `best_embedding_similarity`,
-`best_cosine_similarity`, `best_tfidf_similarity`, `ranking_method`,
+`best_tfidf_similarity`, `ranking_method`,
 `embedding_model`, `evidence_status`, `evidence_run_id`, `evidence_relation`,
 `label`, `verification_note`, `annotation_id`, `annotator`, `annotated_at`,
 `claims_total`, `decisive_claims_total`, `aggregation_status`,

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Train the first reproducible Spanish-news baseline locally.
 
-The input must be the human-validated binary Gold CSV produced by
-``labelstudio/validate_gold.py``.  Only ``title`` and ``body`` become model
+The input must be the human-validated binary CSV produced by
+``scripts/04_build_training_dataset.py``. Only ``title`` and ``body`` become model
 features; claims, evidence, similarity scores, source and topic remain audit
 metadata.  The default pilot requires at least 100 eligible records and uses a
 stratified 70/15/15 train/validation/test split.

@@ -30,6 +30,9 @@ def test_legacy_local_collector_is_not_present() -> None:
         "data/00_control",
         "data/01_candidates",
         "reports/runs",
+        "labelstudio/config.xml",
+        "labelstudio/LOCAL_WORKFLOW.md",
+        "tests/fixtures/labelstudio_multiclaim.fixture",
     ]
 
     assert all(not (REPOSITORY_ROOT / path).exists() for path in obsolete_paths)
