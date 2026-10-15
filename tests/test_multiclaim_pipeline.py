@@ -328,10 +328,10 @@ def test_v1_claim_loader_explicitly_excludes_llm_failures() -> None:
     assert stats["skipped_llm_not_ok"] == 1
 
 
-def test_labelstudio_csv_fixture_creates_one_task_per_claim_and_xml_has_no_article_label() -> None:
-    fixture = ROOT / "tests/fixtures/labelstudio_multiclaim.fixture"
+def test_labelstudio_jsonl_creates_one_task_per_claim_and_xml_has_no_article_label() -> None:
+    fixture = ROOT / "tests/fixtures/evidence_multiclaim.jsonl"
     rows = IMPORTER._rows_from_path(fixture)
-    tasks = [IMPORTER._task_from_row(row) for row in rows]
+    tasks = [IMPORTER._task_from_row(row) for row in rows if IMPORTER._ready_for_review(row)]
 
     assert [task["data"]["claim_key"] for task in tasks] == [
         "news_001::news_001_c01_a1",

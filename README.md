@@ -146,13 +146,11 @@ Después de `silver/evidence/`, importa solo los claims con `evidence_status`,
 `llm_status`, `embedding_status` y `translation_status` en `OK` mediante
 [`labelstudio/import_evidence.py`](labelstudio/import_evidence.py). El script
 deduplica por `claim_key` (`record_id::claim_id`), no por noticia. Exporta las
-revisiones por claim con
-[`labelstudio/export_annotations.py`](labelstudio/export_annotations.py),
-agrega una sola fila por noticia con
-[`labelstudio/aggregate_article_labels.py`](labelstudio/aggregate_article_labels.py)
-y valida Gold con
-[`labelstudio/validate_gold.py`](labelstudio/validate_gold.py). Nunca se sube
-un JSONL Silver directamente a Gold. La guía completa está en
+anotaciones completadas desde Label Studio y coloca ese archivo junto al
+`evidence.jsonl` completo y al Body CSV de la misma corrida. Un solo comando local,
+[`scripts/04_build_training_dataset.py`](scripts/04_build_training_dataset.py),
+genera los CSV por claim, por noticia y el CSV binario de entrenamiento. Nunca
+se sube un JSONL Silver directamente a Gold. La guía completa está en
 [`labelstudio/README.md`](labelstudio/README.md).
 
 Solo las filas revisadas por una persona, con evidencia trazable y etiqueta
@@ -163,6 +161,7 @@ binaria final, pasan a Gold y al split de entrenamiento.
 ```text
 scripts/
   03_train_baseline.py           baseline local TF-IDF + regresión logística
+  04_build_training_dataset.py   Evidence + export de Label Studio + Body a CSVs Gold
 tests/
   ...                             pruebas automatizadas
 docs/
@@ -174,9 +173,9 @@ docs/
 labelstudio/
   config_multiclaim.xml          interfaz de revisión por claim
   import_evidence.py             importa JSONL sin duplicar claim_key
-  export_annotations.py          exporta revisiones humanas por claim
-  aggregate_article_labels.py    agrega revisiones a una etiqueta por noticia
-  validate_gold.py               valida y separa auditoría/entrenamiento Gold
+  export_annotations.py          parser interno de revisiones por claim
+  aggregate_article_labels.py    regla de agregación reutilizada por el builder
+  validate_gold.py               validación reutilizada por el builder
   README.md                      guía para el equipo
 oci/functions/                   Functions desplegadas en OCI
 ```
@@ -185,8 +184,8 @@ Los CSV, credenciales y artefactos generados no se versionan en Git.
 
 ## Primer modelo local
 
-El entrenamiento empieza únicamente con el CSV compacto `gold/training`
-generado por `validate_gold.py`, no con `silver/evidence`. Ese CSV contiene
+El entrenamiento empieza únicamente con el CSV compacto `training.csv`
+generado por `04_build_training_dataset.py`, no con `silver/evidence`. Ese CSV contiene
 `record_id`, `title`, `body`, `label` y `dataset_split`; el piloto exige al menos 100
 filas binarias revisadas por una persona, con `title` y `body` completos. Usa
 `title + body` como texto, `RESPALDADA=1` y `REFUTADA=0`; no usa claims,

@@ -1,4 +1,3 @@
-import csv
 import importlib.util
 from pathlib import Path
 
@@ -67,20 +66,3 @@ def test_validate_rows_rejects_inconsistent_and_duplicate_records() -> None:
         "missing_best_pmid_for_binary_label",
     ]
     assert all(row["validation_status"] == "REQUIERE_CORRECCION" for row in rejected)
-
-
-def test_write_csv_includes_eligible_flag(tmp_path: Path) -> None:
-    reviewed, training, rejected = validate_gold.validate_rows([_row("a", "RESPALDADA", "supports")])
-    reviewed_path = tmp_path / "reviewed.csv"
-    training_path = tmp_path / "training.csv"
-    rejected_path = tmp_path / "rejected.csv"
-    validate_gold._write_csv(reviewed_path, validate_gold.OUTPUT_FIELDS, reviewed)
-    validate_gold._write_csv(training_path, validate_gold.TRAINING_FIELDS, training)
-    validate_gold._write_csv(rejected_path, validate_gold.REJECT_FIELDS, rejected)
-
-    assert len(list(csv.DictReader(reviewed_path.open(encoding="utf-8-sig")))) == 1
-    training_rows = list(csv.DictReader(training_path.open(encoding="utf-8-sig")))
-    assert len(training_rows) == 1
-    assert list(training_rows[0]) == list(validate_gold.TRAINING_FIELDS)
-    assert set(training_rows[0]) == {"record_id", "title", "body", "label", "dataset_split"}
-    assert not list(csv.DictReader(rejected_path.open(encoding="utf-8-sig")))

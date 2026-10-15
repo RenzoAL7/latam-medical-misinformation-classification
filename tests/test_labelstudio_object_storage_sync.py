@@ -18,29 +18,14 @@ auth = importlib.util.module_from_spec(AUTH_SPEC)
 AUTH_SPEC.loader.exec_module(auth)
 
 
-def test_sync_accepts_only_current_evidence_outputs() -> None:
-    assert sync._evidence_object_name(
-        "silver/evidence/evidence_run_20261009T130636Z_8a27e68e.csv", "silver/evidence"
-    )
-    assert sync._evidence_object_name(
-        "silver/evidence/evidence_run_zz_current_claims_current_a_123456789abc.csv",
-        "silver/evidence",
-    )
-    assert not sync._evidence_object_name(
-        "silver/evidence/evidence_translated_run_20261009T020412Z_02085de4.csv", "silver/evidence"
-    )
-    assert not sync._evidence_object_name(
-        "silver/rejected/evidence/rejected_evidence_run.csv", "silver/evidence"
-    )
-
-
 def test_sync_cache_path_is_stable_and_flat(tmp_path: Path) -> None:
-    first = sync._local_csv_path(tmp_path, "silver/evidence/evidence_run_20261009T130636Z_a.csv")
-    second = sync._local_csv_path(tmp_path, "silver/evidence/evidence_run_20261009T130636Z_a.csv")
+    object_name = "silver/evidence/run_id=run_1/evidence.jsonl"
+    first = sync._local_input_path(tmp_path, object_name)
+    second = sync._local_input_path(tmp_path, object_name)
 
     assert first == second
     assert first.parent == tmp_path
-    assert first.name.endswith("evidence_run_20261009T130636Z_a.csv")
+    assert first.name.endswith("evidence.jsonl")
 
 
 def test_sync_accepts_only_completed_v1_manifest_reference(tmp_path: Path) -> None:

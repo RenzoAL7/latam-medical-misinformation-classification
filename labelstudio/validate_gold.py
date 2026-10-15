@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-"""Validate a Label Studio export and create auditable Gold CSVs.
+"""Validate aggregated article labels before binary training.
 
-The script never infers a medical label. It accepts completed human annotations
-exported by ``export_annotations.py`` and separates the complete auditable
-review set from the binary-training subset. Invalid records are written
-separately, so they cannot accidentally reach ``gold/training``.
+This module is called by ``scripts/04_build_training_dataset.py``. It never
+infers a medical label; it only separates valid audited rows from the binary
+subset and rejects anything incomplete or inconsistent.
 """
 
 from __future__ import annotations
 
-import argparse
-import csv
-import json
-import sys
-from pathlib import Path
 from typing import Iterable
 
 
@@ -117,14 +111,6 @@ def _output_row(
     return result
 
 
-def _write_csv(path: Path, fields: Iterable[str], rows: list[dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(fields), extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def validate_rows(rows: Iterable[dict[str, str]]) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
     """Return reviewed rows, binary-training rows, and rejected rows."""
 
@@ -149,49 +135,3 @@ def validate_rows(rows: Iterable[dict[str, str]]) -> tuple[list[dict[str, str]],
         if is_binary:
             training.append(accepted)
     return reviewed, training, rejected
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="CSV created by export_annotations.py")
-    parser.add_argument("--reviewed-output", required=True, help="Validated audit CSV for gold/reviewed")
-    parser.add_argument("--training-output", required=True, help="Binary-only CSV for gold/training")
-    parser.add_argument("--rejected-output", required=True, help="Rows that require human correction")
-    parser.add_argument(
-        "--fail-on-reject",
-        action="store_true",
-        help="Return a non-zero status if any row fails validation; use before uploading Gold.",
-    )
-    args = parser.parse_args()
-
-    input_path = Path(args.input)
-    with input_path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if not reader.fieldnames:
-            parser.error("Input CSV has no header")
-        reviewed, training, rejected = validate_rows(reader)
-
-    _write_csv(Path(args.reviewed_output), OUTPUT_FIELDS, reviewed)
-    # Keep the model input intentionally small. The complete evidence and
-    # similarity audit remains available in reviewed_output and Silver.
-    _write_csv(Path(args.training_output), TRAINING_FIELDS, training)
-    _write_csv(Path(args.rejected_output), REJECT_FIELDS, rejected)
-    print(
-        json.dumps(
-            {
-                "status": "rejected" if rejected else "ok",
-                "reviewed_records": len(reviewed),
-                "training_records": len(training),
-                "rejected_records": len(rejected),
-                "reviewed_output": args.reviewed_output,
-                "training_output": args.training_output,
-                "rejected_output": args.rejected_output,
-            },
-            ensure_ascii=False,
-        )
-    )
-    return 2 if args.fail_on_reject and rejected else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

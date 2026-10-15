@@ -34,15 +34,15 @@ La Function elimina duplicados dentro de la corrida y vuelve a consultar los
 `silver/body/` conserva el resultado técnico de extracción. `silver/claims/`
 recibe cuerpos válidos y guarda todos los claims dentro de un registro JSONL
 por noticia. `silver/evidence/` guarda un registro JSONL por claim con sus
-candidatos PubMed. Los CSV heredados solo existen para la compatibilidad de
-datos antiguos y no se mezclan con v1.
+candidatos PubMed. Los CSV de Bronze y Body son insumos operativos actuales;
+Claims y Evidence v1 no se mezclan con el contrato CSV histórico.
 
 | Campo | Uso |
 | --- | --- |
 | `record_id`, `source_name`, `topic`, `title`, `canonical_url` | Identidad y trazabilidad mínima de la noticia. |
 | `body` | Texto principal descargado desde la URL pública. |
 | `http_status` | Código HTTP obtenido. |
-| `extraction_method` | `trafilatura`, respaldo con BeautifulSoup o ausencia de extracción. |
+| `extraction_method` | Extracción HTML con BeautifulSoup o ausencia de extracción. |
 | `extraction_status` | `OK`, `CUERPO_INSUFICIENTE` o error de descarga. |
 | `extracted_at` | Fecha UTC de extracción. |
 | `claim_id`, `claim_index` | Identidad estable de un claim dentro de su noticia y corrida. |

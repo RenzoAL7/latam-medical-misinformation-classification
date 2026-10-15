@@ -1,24 +1,20 @@
 #!/usr/bin/env python3
 """Aggregate reviewed claims into one auditable label per news article.
 
-This is deliberately separate from Label Studio. Reviewers label evidence at
-claim level; this script applies the documented article-level rule:
+This module is used by ``scripts/04_build_training_dataset.py``. Reviewers
+label evidence at claim level; this helper applies the documented article rule:
 
 * one contradicted central/material claim => ``REFUTADA``;
 * all central/material claims supported => ``RESPALDADA``;
 * otherwise => ``NO_DETERMINABLE``.
 
-Claims never become duplicate training rows.  The output has one row per
-``record_id`` and can be passed to ``validate_gold.py``.
+Claims never become duplicate training rows. The builder owns input discovery,
+CSV writing, and the final validation gate.
 """
 
 from __future__ import annotations
 
-import argparse
-import csv
-import json
 from collections import defaultdict
-from pathlib import Path
 from typing import Iterable
 
 
@@ -55,34 +51,6 @@ OUTPUT_FIELDS = (
 
 def _clean(row: dict[str, str]) -> dict[str, str]:
     return {str(key): str(value or "").strip() for key, value in row.items() if key}
-
-
-def _csv_paths(values: Iterable[str]) -> list[Path]:
-    paths: list[Path] = []
-    for value in values:
-        path = Path(value)
-        if path.is_dir():
-            paths.extend(sorted(path.glob("*.csv")))
-        elif path.is_file():
-            paths.append(path)
-        else:
-            raise FileNotFoundError(f"Input does not exist: {path}")
-    return sorted(set(paths))
-
-
-def _body_rows(values: Iterable[str]) -> dict[str, dict[str, str]]:
-    rows_by_id: dict[str, dict[str, str]] = {}
-    for path in _csv_paths(values):
-        with path.open("r", encoding="utf-8-sig", newline="") as handle:
-            for source in csv.DictReader(handle):
-                row = _clean(source)
-                record_id = row.get("record_id", "")
-                if not record_id:
-                    continue
-                existing = rows_by_id.get(record_id, {})
-                if not existing or row.get("body") or not existing.get("body"):
-                    rows_by_id[record_id] = row
-    return rows_by_id
 
 
 def _claim_issues(row: dict[str, str]) -> list[str]:
@@ -220,44 +188,3 @@ def aggregate_rows(
             grouped[record_id].append(row)
     body_rows = body_rows or {}
     return [_aggregate_record(record_id, grouped[record_id], body_rows) for record_id in sorted(grouped)]
-
-
-def _write(path: Path, rows: Iterable[dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=OUTPUT_FIELDS, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--claims-input", required=True, help="CSV exported with export_annotations.py --mode multiclaim")
-    parser.add_argument("--body-input", nargs="*", default=[], help="Body CSV file(s) or directories to restore title/body")
-    parser.add_argument("--output", required=True, help="One article-level CSV for validate_gold.py")
-    args = parser.parse_args()
-
-    with Path(args.claims_input).open("r", encoding="utf-8-sig", newline="") as handle:
-        claims = [_clean(row) for row in csv.DictReader(handle)]
-    try:
-        bodies = _body_rows(args.body_input) if args.body_input else {}
-    except FileNotFoundError as exc:
-        parser.error(str(exc))
-    rows = aggregate_rows(claims, bodies)
-    _write(Path(args.output), rows)
-    print(
-        json.dumps(
-            {
-                "status": "requires_correction" if any(row["aggregation_status"] != "COMPLETADA" for row in rows) else "ok",
-                "articles": len(rows),
-                "requires_correction": sum(row["aggregation_status"] != "COMPLETADA" for row in rows),
-                "output": args.output,
-            },
-            ensure_ascii=False,
-        )
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
