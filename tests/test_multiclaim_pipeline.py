@@ -84,6 +84,38 @@ def test_claim_extraction_preserves_all_distinct_claims_without_default_cap() ->
     assert all(claim["claim_status"] == "PENDING_EVIDENCE" for claim in claims)
 
 
+def test_controlled_body_retry_suppresses_only_same_record_exact_claim_texts() -> None:
+    records = [
+        {
+            "record_id": "news_001",
+            "llm_status": "OK",
+            "claims_count": 2,
+            "claims": [
+                {"claim_text": "La vacuna reduce el riesgo de enfermedad."},
+                {"claim_text": "El seguimiento posterior es necesario."},
+            ],
+        },
+        {
+            "record_id": "news_002",
+            "llm_status": "OK",
+            "claims_count": 1,
+            "claims": [{"claim_text": "La vacuna reduce el riesgo de enfermedad."}],
+        },
+    ]
+
+    stats = EXTRACT._suppress_existing_claim_texts(
+        records,
+        {"news_001": {"  LA VACUNA REDUCE EL RIESGO DE ENFERMEDAD.  "}},
+    )
+
+    assert stats == {"claims_suppressed": 1, "articles_with_suppressed_claims": 1}
+    assert records[0]["claims_count"] == 1
+    assert [claim["claim_text"] for claim in records[0]["claims"]] == [
+        "El seguimiento posterior es necesario."
+    ]
+    assert records[1]["claims_count"] == 1
+
+
 def test_v1_claim_handler_recovers_a_malformed_batch_by_retrying_singletons(monkeypatch) -> None:
     class FakeStorage:
         def __init__(self, objects: dict[str, bytes]) -> None:
@@ -186,6 +218,51 @@ def test_google_key_failover_treats_transient_server_overload_as_switchable() ->
         RuntimeError("Gemini HTTP 503: model is experiencing high demand (UNAVAILABLE)")
     )
     assert not EXTRACT._google_key_switchable(RuntimeError("Gemini HTTP 400: invalid request"))
+
+
+def test_multiclaim_call_retries_a_transient_503_with_backoff(monkeypatch) -> None:
+    row = {"record_id": "news_001", "title": "Noticia", "body": "Texto médico."}
+    calls = 0
+
+    def fake_request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("Gemini HTTP 503: temporarily unavailable")
+        return {
+            "text": json.dumps(
+                {
+                    "items": [
+                        {
+                            "record_id": "news_001",
+                            "is_medical": True,
+                            "reason": "Claim médico.",
+                            "claims": [],
+                        }
+                    ]
+                }
+            )
+        }
+
+    monkeypatch.setattr(EXTRACT, "_google_gemini_request", fake_request)
+    results = EXTRACT._call_multiclaim_llm_batch(
+        None,
+        [row],
+        "model",
+        24000,
+        8000,
+        0.0,
+        0.9,
+        retries=1,
+        deadline=float("inf"),
+        provider="google",
+        google_api_key="key",
+        request_timeout=30,
+        retry_backoff_seconds=0.0,
+    )
+
+    assert calls == 2
+    assert results[0][0]["record_id"] == "news_001"
 
 
 def test_evidence_excludes_pubmed_results_without_abstract() -> None:

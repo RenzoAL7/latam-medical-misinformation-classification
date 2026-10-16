@@ -74,8 +74,20 @@ Function usa un máximo interno de 270 segundos con un buffer de 20 segundos;
 si una respuesta de varios artículos no respeta el arreglo `claims`, conserva
 la validación estricta y reintenta solo esos artículos de forma individual. El
 manifest deja auditables ambos contadores de recuperación.
-si la respuesta es inválida o el tiempo se agota, la noticia se conserva con
+
+Ante un 5xx transitorio de Gemini, rota entre las claves disponibles y aplica
+backoff exponencial acotado antes de declarar el grupo como error. La cantidad
+de reintentos y la pausa inicial se controlan con `LLM_MAX_RETRIES` y
+`LLM_RETRY_BACKOFF_SECONDS`; no reducen `MAX_CLAIMS_PER_ARTICLE`.
+Si la respuesta es inválida o el tiempo se agota, la noticia se conserva con
 `llm_status=ERROR` y explicación.
+
+Para recuperar de manera excepcional un cuerpo que antes fue recortado, se
+puede activar temporalmente `CLAIMS_DEDUPLICATE_EXISTING_TEXTS=true`. Solo en
+ese reintento compara `record_id` y texto exacto normalizado contra Claims v1
+ya emitidos: conserva los claims nuevos del tramo recuperado y evita volver a
+enviar a Label Studio los ya existentes. El manifest deja el conteo y el
+criterio; la opción vuelve a `false` al terminar el reintento.
 
 Un `llm_status=OK` confirma estructura válida, no veracidad. El modelo LLM no
 asigna `RESPALDADA`, `REFUTADA` ni la etiqueta final de la noticia. El manifest

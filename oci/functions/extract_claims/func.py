@@ -124,6 +124,17 @@ def _env_float(name: str, default: float, minimum: float | None = None) -> float
     return value
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a strict Boolean Function configuration value."""
+
+    value = os.getenv(name, str(default)).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean")
+
+
 def _object_storage_client() -> Any:
     signer = oci.auth.signers.get_resource_principals_signer()
     return oci.object_storage.ObjectStorageClient(config={}, signer=signer)
@@ -1195,6 +1206,145 @@ def _write_json_object(
     )
 
 
+def _list_jsonl_objects(client: Any, namespace: str, bucket: str, prefix: str) -> list[str]:
+    """List immutable JSONL objects below one Object Storage prefix."""
+
+    list_prefix = f"{prefix.strip('/')}/" if prefix.strip("/") else ""
+    names: list[str] = []
+    start: str | None = None
+    while True:
+        result = client.list_objects(
+            namespace_name=namespace,
+            bucket_name=bucket,
+            prefix=list_prefix,
+            start=start,
+            fields="name",
+            limit=1000,
+        )
+        for item in result.data.objects:
+            name = str(item.name)
+            if name.endswith(".jsonl"):
+                names.append(name)
+        start = result.data.next_start_with
+        if not start:
+            break
+    return sorted(set(names))
+
+
+def _read_jsonl_object(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    object_name: str,
+) -> list[dict[str, Any]]:
+    """Read a JSONL Object Storage artifact with a strict object-per-line contract."""
+
+    result = client.get_object(
+        namespace_name=namespace,
+        bucket_name=bucket,
+        object_name=object_name,
+    )
+    content = result.data.content
+    if hasattr(content, "read"):
+        content = content.read()
+    if not isinstance(content, (bytes, bytearray)):
+        raise RuntimeError(f"Object Storage returned non-byte content for {object_name}")
+    records: list[dict[str, Any]] = []
+    for line_number, line in enumerate(bytes(content).decode("utf-8-sig", errors="strict").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Invalid JSONL in {object_name} at line {line_number}") from exc
+        if not isinstance(record, dict):
+            raise RuntimeError(f"JSONL record in {object_name} at line {line_number} is not an object")
+        records.append(record)
+    return records
+
+
+def _claim_text_key(value: Any) -> str:
+    """Return the conservative exact-text key used only for controlled retries."""
+
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _existing_v1_claim_texts(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    prefix: str,
+    record_ids: set[str],
+) -> dict[str, set[str]]:
+    """Find previously emitted Claim text for only the records being retried.
+
+    This is intentionally scoped by ``record_id`` and compares normalized exact
+    text only.  It is off in normal event processing and exists so a deliberate
+    full-body retry can add claims from a formerly omitted tail without sending
+    an unchanged claim twice to Label Studio.
+    """
+
+    texts_by_record: dict[str, set[str]] = {record_id: set() for record_id in record_ids}
+    if not texts_by_record:
+        return texts_by_record
+    for object_name in _list_jsonl_objects(client, namespace, bucket, prefix):
+        for record in _read_jsonl_object(client, namespace, bucket, object_name):
+            if str(record.get("schema_version", "")).strip() != CLAIMS_SCHEMA_VERSION:
+                continue
+            if str(record.get("llm_status", "")).strip().upper() != "OK":
+                continue
+            record_id = str(record.get("record_id", "")).strip()
+            if record_id not in texts_by_record:
+                continue
+            claims = record.get("claims", [])
+            if not isinstance(claims, list):
+                LOGGER.warning("Ignoring non-list claims in prior object %s for %s", object_name, record_id)
+                continue
+            for claim in claims:
+                if isinstance(claim, dict):
+                    key = _claim_text_key(claim.get("claim_text"))
+                    if key:
+                        texts_by_record[record_id].add(key)
+    return texts_by_record
+
+
+def _suppress_existing_claim_texts(
+    records: list[dict[str, Any]],
+    existing_texts_by_record: dict[str, set[str]],
+) -> dict[str, int]:
+    """Remove only exact duplicate claims from controlled full-body retries."""
+
+    stats: Counter[str] = Counter()
+    for record in records:
+        if str(record.get("llm_status", "")).strip().upper() != "OK":
+            continue
+        record_id = str(record.get("record_id", "")).strip()
+        previous_texts = {
+            key
+            for value in existing_texts_by_record.get(record_id, set())
+            if (key := _claim_text_key(value))
+        }
+        if not previous_texts:
+            continue
+        claims = record.get("claims", [])
+        if not isinstance(claims, list):
+            continue
+        kept_claims: list[dict[str, Any]] = []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            key = _claim_text_key(claim.get("claim_text"))
+            if key and key in previous_texts:
+                stats["claims_suppressed"] += 1
+                continue
+            kept_claims.append(claim)
+        if len(kept_claims) != len(claims):
+            stats["articles_with_suppressed_claims"] += 1
+            record["claims"] = kept_claims
+            record["claims_count"] = len(kept_claims)
+    return dict(stats)
+
+
 def _multiclaim_prompt(rows: list[dict[str, str]], max_body_chars: int) -> str:
     """Ask for every distinct, verifiable medical claim in each article.
 
@@ -1366,6 +1516,7 @@ def _call_multiclaim_llm_batch(
     provider: str,
     google_api_key: str,
     request_timeout: float,
+    retry_backoff_seconds: float = 1.0,
 ) -> list[tuple[dict[str, str], dict[str, Any], str]]:
     prompt = _multiclaim_prompt(rows, max_body_chars)
     last_error: Exception | None = None
@@ -1396,8 +1547,9 @@ def _call_multiclaim_llm_batch(
             return [(row, item, json.dumps(item, ensure_ascii=False)) for row, item in zip(rows, items)]
         except Exception as exc:  # noqa: BLE001 - preserve the final row-level error
             last_error = exc
-            if attempt < retries and _retryable_llm_error(exc) and time.monotonic() + 1.0 < deadline:
-                time.sleep(1.0)
+            delay = retry_backoff_seconds * (2**attempt)
+            if attempt < retries and _retryable_llm_error(exc) and time.monotonic() + delay < deadline:
+                time.sleep(delay)
     raise RuntimeError(f"LLM call failed: {type(last_error).__name__}: {last_error}") from last_error
 
 
@@ -1562,6 +1714,8 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         temperature = _env_float("LLM_TEMPERATURE", 0.0, minimum=0.0)
         top_p = _env_float("LLM_TOP_P", 0.9, minimum=0.0)
         retries = _env_int("LLM_MAX_RETRIES", 0, minimum=0)
+        retry_backoff_seconds = _env_float("LLM_RETRY_BACKOFF_SECONDS", 5.0, minimum=0.1)
+        deduplicate_existing_texts = _env_bool("CLAIMS_DEDUPLICATE_EXISTING_TEXTS", False)
         if time_buffer >= max_seconds:
             raise RuntimeError("LLM_TIME_BUFFER must be smaller than LLM_MAX_SECONDS")
 
@@ -1618,6 +1772,7 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                         provider,
                         key,
                         request_timeout,
+                        retry_backoff_seconds,
                     )
 
                 if provider == "google":
@@ -1688,6 +1843,29 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                             statuses["ERROR"] += 1
                         break
 
+        deduplication: dict[str, Any] = {
+            "enabled": deduplicate_existing_texts,
+            "comparison": "record_id + normalized_exact_claim_text",
+            "existing_claim_texts_considered": 0,
+            "claims_suppressed": 0,
+            "articles_with_suppressed_claims": 0,
+        }
+        if deduplicate_existing_texts and records:
+            prior_texts = _existing_v1_claim_texts(
+                storage,
+                namespace,
+                bucket,
+                claims_prefix,
+                {
+                    str(record.get("record_id", "")).strip()
+                    for record in records
+                    if str(record.get("llm_status", "")).strip().upper() == "OK"
+                    and str(record.get("record_id", "")).strip()
+                },
+            )
+            deduplication["existing_claim_texts_considered"] = sum(len(texts) for texts in prior_texts.values())
+            deduplication.update(_suppress_existing_claim_texts(records, prior_texts))
+
         claims_object, manifest_object = _claims_v1_object_names(claims_prefix, run_id)
         _write_jsonl_object(storage, namespace, bucket, claims_object, records)
         article_statuses = Counter(str(record.get("llm_status", "")) for record in records)
@@ -1716,6 +1894,7 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                 "malformed_batches_split": split_recovery_batches,
                 "articles_retried_individually": split_recovery_articles,
             },
+            "deduplication": deduplication,
             "scan": scan,
             "configuration": {
                 "llm_provider": provider,
