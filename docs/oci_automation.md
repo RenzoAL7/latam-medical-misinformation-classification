@@ -24,6 +24,9 @@ fetch-newsdata
   -> silver/claims/run_id=<run_id>/claims.jsonl + manifest.json
   -> retrieve-pubmed-evidence (evidence.v1)
   -> silver/evidence/run_id=<run_id>/evidence.jsonl + manifest.json
+  -> [solo traducción pendiente] silver/evidence-translation-jobs/*.job.json
+  -> continue-evidence-translation (mismo image, otro modo)
+  -> silver/evidence/run_id=<parent>_translation_final/evidence.jsonl + manifest.json
   -> revisión humana por claim en Label Studio
   -> una fila de Gold por noticia
 ```
@@ -38,11 +41,18 @@ porque una noticia puede tener muchos claims y cada claim muchos candidatos.
 | `CreateObject` | `bronze/*.csv` | `extract-news-body` |
 | `CreateObject` | `silver/body/*.csv` | `extract-claims` |
 | `CreateObject` | `silver/claims/run_id=*/claims.jsonl` | `retrieve-pubmed-evidence` |
+| `CreateObject` | `silver/evidence-translation-jobs/*.job.json` | `continue-evidence-translation` |
 
 La tercera regla no debe seguir coincidiendo con `silver/claims/*.csv` después
 de activar v1. La Function de Evidence rechaza un evento que no identifica
 exactamente un `claims.jsonl`; por ello un selector amplio de prefijo causaría
 errores al crear también `manifest.json`.
+
+La cuarta regla debe limitarse al prefijo
+`silver/evidence-translation-jobs/` y al sufijo `.job.json`. No debe apuntar al
+prefijo de staging ni a `silver/evidence/`, porque esos objetos no son entrada
+de recuperación. El destino usa la misma imagen x86 que Evidence pero tiene
+`PIPELINE_MODE=translation_continuation`.
 
 Cada Function recibe el objeto que disparó el evento. `extract-claims` y
 `retrieve-pubmed-evidence` v1 no aceptan `{}` como drenaje global: procesan
@@ -70,6 +80,14 @@ PUBMED_CANDIDATES_FETCHED=5
 EVIDENCE_MAX_SECONDS=285
 EVIDENCE_TIME_BUFFER=10
 TRANSLATION_PARALLELISM=2
+TRANSLATION_CONTINUATION_ENABLED=true
+SILVER_TRANSLATION_JOB_PREFIX=silver/evidence-translation-jobs
+SILVER_TRANSLATION_STAGE_PREFIX=silver/evidence-translation-stage
+TRANSLATION_CONTINUATION_MAX_CLAIMS=4
+TRANSLATION_CONTINUATION_MAX_ATTEMPTS=3
+TRANSLATION_CONTINUATION_MAX_SECONDS=285
+TRANSLATION_CONTINUATION_TIME_BUFFER=10
+TRANSLATION_CONTINUATION_PARALLELISM=1
 ```
 
 `MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` son reglas de integridad:
@@ -88,8 +106,10 @@ OCI Functions tiene un timeout de 300 segundos. Claims se detiene a 270 s con
 la corrida, no a un claim: si una llamada falla o se acaba el tiempo, el claim
 queda en `ERROR` dentro de `claims.jsonl` o `evidence.jsonl` y el manifest pasa
 a `PARTIAL` o `FAILED`. Para `RECITATION`, Evidence puede usar en la misma
-invocación un fallback acotado de resumen fiel; no hay reintento automático,
-backlog ni modificación de objetos históricos.
+invocación un fallback acotado de resumen fiel. Si tras ello solo queda
+traducción transitoria, deja un job de continuación con los candidatos ya
+recuperados; la Function nueva no consulta nuevamente PubMed ni Embed 4 y
+publica una revisión final del mismo conjunto de claims.
 
 `evidence_status=OK` solo se conserva si `llm_status`, `embedding_status` y
 `translation_status` son `OK`. `NO_RESULTS` y `NO_ABSTRACT` también son
@@ -116,14 +136,16 @@ La forma de OCI Functions es `GENERIC_X86`; desde Apple Silicon la imagen debe
 construirse para `linux/amd64`, por ejemplo con:
 
 ```bash
-DOCKER_DEFAULT_PLATFORM=linux/amd64 fn deploy --local
+DOCKER_DEFAULT_PLATFORM=linux/amd64 fn deploy --no-bump
 ```
 
 El orden de activación es:
 
-1. Ejecutar las pruebas locales y construir ambas imágenes x86.
-2. Subir/desplegar las Functions con la configuración v1.
-3. Actualizar el selector Claims → Evidence al sufijo `claims.jsonl`.
+1. Ejecutar las pruebas locales y construir la imagen x86.
+2. Subir/desplegar Evidence y crear `continue-evidence-translation` con esa
+   misma imagen y `PIPELINE_MODE=translation_continuation`.
+3. Mantener el selector Claims → Evidence al sufijo `claims.jsonl` y añadir la
+   regla Jobs → continuación al sufijo `.job.json`.
 4. Crear un proyecto nuevo de Label Studio con `config_multiclaim.xml` y
    configurar su sincronizador en formato `jsonl`.
 5. Hacer una corrida controlada nueva, inspeccionar ambos manifests y revisar

@@ -1,10 +1,11 @@
 # Contrato v1: múltiples claims y artefactos JSONL
 
 > Estado de migración (2026-10-15): el contrato `claims.v1`/`evidence.v1`, las
-> Functions x86, la regla Events Claims -> Evidence y el proyecto multi-claim
-> de Label Studio están activos. El sincronizador consume solo manifests JSONL
-> `COMPLETE` o `PARTIAL`; no se reactivan los drains históricos ni el schedule
-> de las 20:00. No mezclar objetos CSV históricos con los selectores JSONL.
+> Functions x86, las reglas Events Claims -> Evidence y Jobs -> continuación,
+> y el proyecto multi-claim de Label Studio están activos. El sincronizador
+> consume manifests JSONL `COMPLETE` o `PARTIAL`; no se reactivan los drains
+> históricos ni el schedule de las 20:00. No mezclar objetos CSV históricos con
+> los selectores JSONL.
 
 ## Decisión de diseño
 
@@ -41,9 +42,11 @@ silver/
 `JSONL` significa que cada línea es un objeto JSON independiente. No se crea
 un archivo por noticia ni por claim: se crea un archivo por etapa y corrida.
 Esto permite comparar versiones del prompt y mantener la trazabilidad sin
-mezclar resultados de ejecuciones distintas. La v1 no hace drenajes ni
-reprocesamientos automáticos: todo el objeto disparador se procesa en una sola
-invocación y cualquier degradación queda explícita en el manifest.
+mezclar resultados de ejecuciones distintas. La v1 no hace drenajes globales:
+todo el objeto disparador se procesa en una sola invocación y cualquier
+degradación queda explícita en el manifest. La excepción acotada es una cola de
+traducción que usa el Evidence parcial ya persistido; no vuelve a procesar
+Claims, PubMed ni embeddings.
 
 ## `claims.jsonl`
 
@@ -147,8 +150,11 @@ estado terminal y una lista `candidates` vacía. Una falla de LLM, Embed 4 o
 traducción hace que `evidence_status=ERROR`, por lo que ese claim no llega a
 Label Studio como si tuviera evidencia lista. Una respuesta Gemini bloqueada
 por `RECITATION` puede usar, dentro de la misma invocación y con presupuesto de
-tiempo acotado, un resumen fiel marcado `PARAPHRASED`. No se reintenta en
-segundo plano: la siguiente corrida normal genera un nuevo `run_id`.
+tiempo acotado, un resumen fiel marcado `PARAPHRASED`. Si al finalizar quedan
+solo errores de traducción temporales, se crea un job con esos `candidates`
+para `continue-evidence-translation`; al acabar publica un Evidence final con
+un nuevo `run_id` derivado del padre. Los errores de LLM, PubMed o Embed 4 no
+entran en esa cola.
 
 ## `manifest.json`
 
@@ -202,9 +208,10 @@ por `claim_id`, con claim y evidencia como entrada.
 2. Construir y subir las Functions para `linux/amd64`/`GENERIC_X86`; configurar
    `PIPELINE_SCHEMA=v1`, `LLM_MAX_ROWS=0`, `EVIDENCE_MAX_ROWS=0`,
    `PUBMED_CANDIDATES_FETCHED=5`.
-3. Cambiar **solo** la regla Events Claims → Evidence para que acepte
-   `silver/claims/run_id=*/claims.jsonl`; Body → Claims mantiene el CSV de
-   Body como entrada.
+3. Mantener la regla Events Claims → Evidence para
+   `silver/claims/run_id=*/claims.jsonl` y agregar la regla Jobs → continuación
+   para `silver/evidence-translation-jobs/*.job.json`; Body → Claims mantiene
+   el CSV de Body como entrada.
 4. Crear o migrar explícitamente un proyecto limpio de Label Studio con
    `config_multiclaim.xml`; configurar su sincronizador en formato `jsonl`.
 5. Ejecutar una corrida controlada nueva, revisar ambos manifests y completar
