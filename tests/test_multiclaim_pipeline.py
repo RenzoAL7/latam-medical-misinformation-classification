@@ -116,6 +116,56 @@ def test_controlled_body_retry_suppresses_only_same_record_exact_claim_texts() -
     assert records[1]["claims_count"] == 1
 
 
+def test_controlled_body_retry_reads_prior_claims_only_for_the_same_record() -> None:
+    class FakeStorage:
+        def __init__(self) -> None:
+            self.objects = {
+                "silver/claims/run_id=old/claims.jsonl": (
+                    json.dumps(
+                        {
+                            "schema_version": "claims.v1",
+                            "record_id": "news_001",
+                            "llm_status": "OK",
+                            "claims": [{"claim_text": "Una afirmación previa."}],
+                        }
+                    )
+                    + "\n"
+                    + json.dumps(
+                        {
+                            "schema_version": "claims.v1",
+                            "record_id": "news_002",
+                            "llm_status": "OK",
+                            "claims": [{"claim_text": "No debe compararse."}],
+                        }
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            }
+
+        def list_objects(self, **_kwargs):
+            return types.SimpleNamespace(
+                data=types.SimpleNamespace(
+                    objects=[types.SimpleNamespace(name=name) for name in self.objects],
+                    next_start_with=None,
+                )
+            )
+
+        def get_object(self, namespace_name, bucket_name, object_name):
+            return types.SimpleNamespace(
+                data=types.SimpleNamespace(content=io.BytesIO(self.objects[object_name]))
+            )
+
+    existing = EXTRACT._existing_v1_claim_texts(
+        FakeStorage(),
+        "namespace",
+        "bucket",
+        "silver/claims",
+        {"news_001"},
+    )
+
+    assert existing == {"news_001": {"una afirmación previa."}}
+
+
 def test_v1_claim_handler_recovers_a_malformed_batch_by_retrying_singletons(monkeypatch) -> None:
     class FakeStorage:
         def __init__(self, objects: dict[str, bytes]) -> None:
