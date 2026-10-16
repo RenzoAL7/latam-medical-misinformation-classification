@@ -34,6 +34,13 @@ El sincronizador de la VM acepta únicamente manifests `evidence.manifest.v1`
 `llm_status=OK`, `evidence_status=OK`, `embedding_status=OK` y
 `translation_status=OK`. Deduplica por `record_id::claim_id`.
 
+Si una corrida Evidence deja traducciones pendientes, puede aparecer primero un
+manifest parcial y después un manifest final
+`run_id=<parent>_translation_final`. Ambos describen los mismos claims; el
+importador deduplica por `record_id::claim_id`, conserva cualquier anotación
+humana existente y añade únicamente los claims que la continuación dejó listos.
+No crea una tarea nueva por cada intento de traducción.
+
 ```bash
 export LABEL_STUDIO_TOKEN='token-local-de-label-studio'
 python3 labelstudio/import_evidence.py \
@@ -78,6 +85,12 @@ motivo en `rejected.csv`. Esto evita entrenar con Gold parcial. El Evidence
 JSONL es obligatorio: permite detectar claims que nunca llegaron a Label
 Studio por `NO_RESULTS` o un error. Por sí solo no sirve para crear el CSV
 porque no contiene la anotación humana ni repite el body para cada claim.
+
+Si se descargan la salida parcial y su salida final de continuación en la misma
+carpeta, `scripts/04_build_training_dataset.py` consolida revisiones por
+`record_id::claim_id`: prefiere la revisión más nueva que sí sea revisable y
+registra el número de revisiones sustituidas en `summary.json`. Así el
+inventario sigue teniendo una sola decisión por claim.
 
 La agregación es determinista una vez que todas las tareas de la noticia están
 completas:

@@ -201,6 +201,43 @@ def test_builder_blocks_an_article_when_evidence_contains_an_unreviewable_claim(
     assert article["final_training_eligible"] == "NO"
 
 
+def test_builder_prefers_a_recovered_evidence_revision_for_the_same_claim(tmp_path: Path) -> None:
+    export_path = tmp_path / "labelstudio_export.json"
+    export_path.write_text(
+        json.dumps([_task("news_001", "c01", "RESPALDADO", "supports", "central")]),
+        encoding="utf-8",
+    )
+    body_path = tmp_path / "body.csv"
+    _write_body(body_path)
+    initial = tmp_path / "evidence_initial.jsonl"
+    _write_evidence(
+        initial,
+        [
+            (
+                "news_001",
+                "c01",
+                {
+                    "evidence_status": "ERROR",
+                    "translation_status": "TIME_BUDGET",
+                    "retrieved_at": "2026-10-16T13:14:00Z",
+                },
+            )
+        ],
+    )
+    recovered = tmp_path / "evidence_recovered.jsonl"
+    _write_evidence(
+        recovered,
+        [("news_001", "c01", {"retrieved_at": "2026-10-16T13:20:00Z"})],
+    )
+
+    summary = builder.build_dataset(export_path, [initial, recovered], [body_path], tmp_path / "output")
+
+    assert summary["status"] == "ok"
+    assert summary["evidence_revisions_superseded"] == 1
+    assert summary["claims_without_reviewable_evidence"] == 0
+    assert summary["training_records"] == 1
+
+
 def test_builder_rejects_a_label_studio_export_not_covered_by_evidence(tmp_path: Path) -> None:
     export_path = tmp_path / "labelstudio_export.json"
     export_path.write_text(

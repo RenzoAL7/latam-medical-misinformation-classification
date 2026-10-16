@@ -7,6 +7,11 @@ translates returned abstracts with a separate Gemini secret, and writes one
 JSONL record per claim under `silver/evidence/`. An Object Storage event
 processes only its triggering Claims object; v1 has no global drain.
 
+The same x86 image is also deployed as the separate OCI Function
+`continue-evidence-translation`, with `PIPELINE_MODE=translation_continuation`.
+It is not another retrieval pass: it consumes only durable translation jobs
+created by this Function after a bounded partial run.
+
 This Function does not assign a truth label. `evidence_status=OK` means that
 PubMed returned candidate records, not that the news claim is supported. The
 relation (`supports`, `contradicts`, or `unclear`) and the final binary label
@@ -57,6 +62,14 @@ TRANSLATION_BATCH_MAX_ABSTRACTS=6
 TRANSLATION_MAX_TOKENS=8000
 TRANSLATION_REQUEST_TIMEOUT=30
 TRANSLATION_PARALLELISM=2
+TRANSLATION_CONTINUATION_ENABLED=true
+SILVER_TRANSLATION_JOB_PREFIX=silver/evidence-translation-jobs
+SILVER_TRANSLATION_STAGE_PREFIX=silver/evidence-translation-stage
+TRANSLATION_CONTINUATION_MAX_CLAIMS=4
+TRANSLATION_CONTINUATION_MAX_ATTEMPTS=3
+TRANSLATION_CONTINUATION_MAX_SECONDS=285
+TRANSLATION_CONTINUATION_TIME_BUFFER=10
+TRANSLATION_CONTINUATION_PARALLELISM=1
 EMBEDDINGS_ENABLED=true
 GENAI_COMPARTMENT_ID=<OCI compartment OCID allowed to use Generative AI>
 EMBEDDING_REGION=us-ashburn-1
@@ -102,6 +115,32 @@ six-abstract ceilings force a larger claim to remain in a batch of one. The
 manifest records the effective batch limits, request/cache statistics, and
 abstract character counts, so a future tuning decision can use observed work
 rather than lower `TRANSLATION_MAX_TOKENS` blindly.
+
+## Continuación de traducción sin recomputar evidencia
+
+Después de escribir el resultado normal, Evidence identifica solamente los
+claims con `llm_status=OK`, `embedding_status=OK` y una traducción transitoria
+(`TIME_BUDGET`, `PARTIAL` o error temporal). Para ellos escribe un único job
+inmutable en:
+
+```text
+silver/evidence-translation-jobs/run_id=<evidence_run>/job-0001.job.json
+```
+
+La regla Object Storage correspondiente invoca
+`continue-evidence-translation`. Cada invocación procesa como máximo
+`TRANSLATION_CONTINUATION_MAX_CLAIMS=4` claims, conserva los PMIDs,
+`candidates`, scores y embeddings presentes en el job y llama solo a Gemini
+para los abstracts que aún no tienen `abstract_es`. La siguiente invocación se
+encadena mediante otro `*.job.json`; los resultados intermedios se guardan bajo
+`silver/evidence-translation-stage/` y no son leídos por Label Studio.
+
+Al terminar, se publica un `silver/evidence/run_id=<parent>_translation_final/`
+normal, con `evidence.jsonl` y `manifest.json`. El sincronizador existente lo
+consume como cualquier otro manifest: la deduplicación por `record_id::claim_id`
+evita duplicados y las tareas ya anotadas no se reemplazan. Errores de PubMed,
+LLM o Embed 4 no entran en este mecanismo y nunca se enmascaran como una
+traducción pendiente.
 
 ## Output
 

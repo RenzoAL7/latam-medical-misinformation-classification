@@ -21,12 +21,15 @@ reprocesar datos existentes.
 | Body | Event Bronze | hasta 50 cuerpos | 150 s + 10 s | `silver/body/*.csv` |
 | Claims | Event Body | todas las noticias válidas del objeto | 270 s + 20 s | `claims.jsonl` + manifest |
 | Evidence | Event Claims JSONL | todos los claims elegibles del objeto | 285 s + 10 s | `evidence.jsonl` + manifest |
+| Continuación traducción | Event `*.job.json` | hasta 4 claims ya recuperados | 285 s + 10 s | Evidence final consolidado |
 | Revisión | Persona | una tarea por claim | sin timeout OCI | Gold por noticia |
 
 Claims y Evidence no usan un drenaje de payload vacío en v1. Si no alcanzan
 tiempo o un proveedor falla, guardan el estado por artículo o claim y el
-manifest queda `PARTIAL` o `FAILED`; no existe una cola automática que vuelva
-a tocar el objeto histórico.
+manifest queda `PARTIAL` o `FAILED`. La única continuación automática es la
+de traducción: consume el `evidence.jsonl` parcial ya escrito, nunca el objeto
+histórico de Claims ni Body, y solo se programa para errores transitorios con
+LLM y Embed 4 ya correctos.
 
 ## Cardinalidad: qué se limita y qué no
 
@@ -121,6 +124,28 @@ cantidad de abstracts ni el costo unitario. Las cuotas reales dependen del
 tenancy y región; se revisan en OCI antes de elevar más el paralelismo o el
 tamaño de lote.
 
+## Continuación de traducciones
+
+La continuación evita que un lote con muchos claims pierda evidencia por el
+límite de cinco minutos. Evidence escribe un job solo para claims con
+`translation_status=TIME_BUDGET`, `PARTIAL` o un error temporal de Gemini y
+con `llm_status=OK` y `embedding_status=OK`. Cada job conserva los candidatos
+con sus PMIDs, abstracts originales, scores y vectores ya calculados.
+
+`continue-evidence-translation` procesa un máximo de cuatro claims por
+invocación, con una sola ola de Gemini (`TRANSLATION_CONTINUATION_PARALLELISM=1`)
+para reducir errores 429/503. Si todavía hay trabajo, escribe un único job
+siguiente; si termina, fusiona sus resultados con el Evidence padre y publica
+un nuevo `evidence.jsonl` estándar bajo
+`run_id=<parent>_translation_final`. Los intentos se limitan a tres por claim;
+si los tres fallan, el claim sigue visible como `ERROR`, no se afirma que esté
+verificado.
+
+Los costos adicionales son exclusivamente de Gemini para abstracts que no
+tengan `abstract_es`; no hay nueva búsqueda PubMed ni nuevas llamadas Embed 4.
+Los objetos intermedios bajo `silver/evidence-translation-stage/` son de
+auditoría y no llegan a Label Studio.
+
 ## Qué llega a Label Studio
 
 Un claim se importa solo si simultáneamente:
@@ -135,7 +160,9 @@ translation_status=OK
 Esto evita tratar como evidencia útil una fila con error de infraestructura.
 Un manifest `PARTIAL` no bloquea los demás claims: el sincronizador importa
 solo las filas que cumplen esta compuerta y conserva las fallidas fuera de
-Label Studio.
+Label Studio. Cuando aparece el manifest final de continuación, el importador
+deduplica por `record_id::claim_id`: añade solo los claims recuperados y no
+duplica ni sobrescribe una anotación humana existente.
 Label Studio no recibe un `final_label`; la persona clasifica materialidad,
 relación de evidencia y veredicto del claim. Al construir Gold,
 `scripts/04_build_training_dataset.py` usa el Evidence JSONL como inventario

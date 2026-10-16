@@ -22,7 +22,13 @@ Las Functions desplegadas en OCI separan las etapas de datos:
    utilizables; reutiliza la traducción y el embedding de un PMID/abstract
    idéntico dentro de la corrida.
    La salida es una línea JSONL por claim con sus candidatos y estados.
-5. Label Studio crea una tarea por `record_id + claim_id`. La persona revisora
+5. Si solo falla o se agota el tiempo de **traducción**, Evidence deja un job
+   JSON inmutable. `continue-evidence-translation` reutiliza exactamente los
+   candidatos/PMIDs y embeddings ya guardados, traduce como máximo cuatro
+   claims por invocación y encadena el siguiente job hasta publicar un Evidence
+   final consolidado. No vuelve a consultar NewsData, Body, Claims, PubMed ni
+   Embed 4.
+6. Label Studio crea una tarea por `record_id + claim_id`. La persona revisora
    decide materialidad, relación y veredicto de cada claim; luego se agrega una
    única etiqueta de noticia para Gold y entrenamiento.
 
@@ -46,10 +52,11 @@ Una noticia puede tener cero, uno o muchos claims. No se recorta por defecto:
 `MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` obligan a conservar y
 procesar todos los claims del objeto disparador. El límite de cinco minutos se
 protege reduciendo candidatos por claim, no descartando claims. Los manifiestos
-registran `COMPLETE`, `PARTIAL` o `FAILED`; no hay drenaje ni reprocesamiento
-automático de una corrida v1. Si un manifiesto queda `PARTIAL`, el
-sincronizador puede entregar a Label Studio sus claims ya listos; la fila con
-error sigue excluida por sus propios estados.
+registran `COMPLETE`, `PARTIAL` o `FAILED`. Si la parte pendiente es únicamente
+una traducción transitoria o por presupuesto, se crea un job de continuación
+específico; una falla de LLM, PubMed o embedding sigue quedando explícita y no
+se reprocesa implícitamente. Mientras tanto, el sincronizador puede entregar a
+Label Studio los claims ya listos.
 
 La agregación humana aplica esta regla explícita: un claim central o material
 refutado vuelve la noticia `REFUTADA`; si todos los claims centrales/materiales
@@ -82,6 +89,13 @@ fetch-newsdata -> bronze/*.csv
                                                    |
                                                    v
                               retrieve-pubmed-evidence -> silver/evidence/run_id=*/evidence.jsonl
+                                                   |
+                              (solo traducción pendiente)
+                                                   v
+                              silver/evidence-translation-jobs/*.job.json
+                                                   |
+                                                   v
+                              continue-evidence-translation -> evidencia final consolidada
 ```
 
 Events procesa únicamente el objeto que lo disparó. Claims y Evidence v1 no
@@ -168,11 +182,14 @@ Claims → Evidence → sincronización automática al proyecto Multi-Claim. El
 `campaign.json` conserva cualquier noticia faltante o sin Body válido para no
 ocultar exclusiones.
 
-Si Evidence agota tiempo únicamente para algunos claims, el helper
+Si Evidence agota tiempo únicamente para algunos abstracts, usa
+[`scripts/07_prepare_translation_continuation_job.py`](scripts/07_prepare_translation_continuation_job.py)
+sobre el `evidence.jsonl` y `manifest.json` parcial. Genera un solo job para
+subir a `silver/evidence-translation-jobs/run_id=<run>/job-0001.job.json`; la
+Function de continuación no repite PubMed ni embeddings. El helper histórico
 [`scripts/06_prepare_evidence_retry.py`](scripts/06_prepare_evidence_retry.py)
-crea un `claims.jsonl` mínimo con esos IDs fallidos. Al subirlo bajo un nuevo
-`silver/claims/run_id=<retry>/claims.jsonl`, se repite solo Evidence; no se
-vuelve a extraer Body ni Claims ya correctos.
+queda reservado para fallas anteriores a la traducción, cuando sí se decide
+ejecutar Evidence de nuevo de forma explícita.
 
 ## Archivos del repositorio
 
@@ -182,6 +199,7 @@ scripts/
   04_build_training_dataset.py   Evidence + export de Label Studio + Body a CSVs Gold
   05_prepare_claims_backfill.py  Body histórico a lotes controlados de Claims
   06_prepare_evidence_retry.py   Claims fallidos de Evidence a reintento mínimo
+  07_prepare_translation_continuation_job.py  job sin PubMed/Embed para traducciones pendientes
 tests/
   ...                             pruebas automatizadas
 docs/

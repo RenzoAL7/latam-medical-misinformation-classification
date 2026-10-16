@@ -248,9 +248,20 @@ def _evidence_block_reason(record: dict[str, Any]) -> str:
     return "" if not non_ok else "not_reviewable_" + "_and_".join(non_ok)
 
 
+def _evidence_revision_priority(record: dict[str, Any], path: Path, line_number: int) -> tuple[int, int, str, str, int]:
+    """Prefer a recovered/reviewable revision when a claim appears in many runs."""
+
+    reviewable = not _evidence_block_reason(record)
+    translation_ok = _clean(record.get("translation_status")).upper() == "OK"
+    retrieved_at = _clean(record.get("retrieved_at"))
+    # A final continuation artifact normally has a later retrieved_at value.
+    # Path/line make the decision deterministic when older records lack it.
+    return (int(reviewable), int(translation_ok), retrieved_at, str(path), line_number)
+
+
 def _load_evidence_inventory(
     values: Iterable[Path],
-) -> tuple[dict[str, set[str]], dict[str, dict[str, str]], list[Path]]:
+) -> tuple[dict[str, set[str]], dict[str, dict[str, str]], list[Path], int]:
     """Read every extracted claim, including claims excluded from Label Studio.
 
     A claim absent from Label Studio is not equivalent to a claim that was
@@ -261,23 +272,30 @@ def _load_evidence_inventory(
 
     expected: dict[str, set[str]] = defaultdict(set)
     blocked: dict[str, dict[str, str]] = defaultdict(dict)
-    seen: set[str] = set()
+    records_by_key: dict[str, tuple[dict[str, Any], Path, int]] = {}
+    superseded_revisions = 0
     paths = _evidence_paths(values)
     for path in paths:
         for line_number, record in enumerate(_read_jsonl(path), start=1):
             record_id, _claim_id, claim_key = _evidence_identity(record, path, line_number)
-            if claim_key in seen:
-                raise ValueError(
-                    f"Duplicate Evidence claim_key {claim_key!r}. Provide exactly one Evidence row per claim."
-                )
-            seen.add(claim_key)
-            expected[record_id].add(claim_key)
-            reason = _evidence_block_reason(record)
-            if reason:
-                blocked[record_id][claim_key] = reason
+            previous = records_by_key.get(claim_key)
+            if previous is None or _evidence_revision_priority(record, path, line_number) >= _evidence_revision_priority(
+                *previous
+            ):
+                records_by_key[claim_key] = (record, path, line_number)
+            if previous is not None:
+                superseded_revisions += 1
+    for claim_key, (record, path, line_number) in sorted(records_by_key.items()):
+        record_id, _claim_id, validated_key = _evidence_identity(record, path, line_number)
+        if validated_key != claim_key:
+            raise ValueError(f"Evidence claim identity changed while loading {path}")
+        expected[record_id].add(claim_key)
+        reason = _evidence_block_reason(record)
+        if reason:
+            blocked[record_id][claim_key] = reason
     if not expected:
         raise ValueError("No claim records were found in the supplied Evidence JSONL input.")
-    return expected, blocked, paths
+    return expected, blocked, paths, superseded_revisions
 
 
 def _pending_claims(expected: dict[str, set[str]], reviews: list[dict[str, Any]]) -> dict[str, set[str]]:
@@ -386,7 +404,7 @@ def build_dataset(
 
     payload = _read_labelstudio_export(export_path)
     task_claims = _expected_claim_keys(payload)
-    expected, blocked, evidence_paths = _load_evidence_inventory(evidence_inputs)
+    expected, blocked, evidence_paths, superseded_revisions = _load_evidence_inventory(evidence_inputs)
     task_keys = {claim_key for claim_keys in task_claims.values() for claim_key in claim_keys}
     evidence_keys = {claim_key for claim_keys in expected.values() for claim_key in claim_keys}
     task_keys_without_evidence = sorted(task_keys - evidence_keys)
@@ -476,6 +494,7 @@ def build_dataset(
         "claim_reviews_completed": len(reviews),
         "claims_pending": sum(len(keys) for keys in pending.values()),
         "claims_without_reviewable_evidence": sum(len(claims) for claims in blocked.values()),
+        "evidence_revisions_superseded": superseded_revisions,
         "articles_total": len(articles),
         "articles_by_aggregation_status": dict(sorted(status_counts.items())),
         "training_records": len(training),
