@@ -133,3 +133,27 @@ El orden de activación es:
 Nunca borres ni mezcles los CSV históricos como parte de esta activación. Su
 ordenamiento, eliminación o enriquecimiento se decide después de evaluar la
 corrida controlada.
+
+## Backfill histórico controlado (solo Claims y Evidence)
+
+Cuando se decida recuperar noticias históricas, no se vuelve a ejecutar
+NewsData ni `extract-news-body`. Primero se exporta el listado exacto de
+`record_id` del proyecto histórico de Label Studio y se cruza con los Body CSV
+ya almacenados. El comando local prepara lotes planos, auditables y pequeños:
+
+```bash
+python3 scripts/05_prepare_claims_backfill.py \
+  --body-input /ruta/descargada/silver/body \
+  --record-ids /ruta/labelstudio_export.json \
+  --output-dir labelstudio/artifacts/backfill_historic_20261015 \
+  --campaign-id historic-20261015 \
+  --batch-size 20
+```
+
+El `campaign.json` resultante lista los `record_id` solicitados, los que sí
+tienen Body válido, los que faltan y los que no son reutilizables. Se sube un
+solo `body_backfill_<campaign>_<n>.csv` por vez directamente a `silver/body/`.
+El evento normal ejecuta **solo** Claims, después Evidence y finalmente el
+sincronizador de Multi-Claim. Se revisan ambos manifests antes del lote
+siguiente; una fila sin Body válido queda como excepción, nunca se vuelve a
+rastrear automáticamente.

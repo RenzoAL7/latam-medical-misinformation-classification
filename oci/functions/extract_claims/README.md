@@ -67,6 +67,10 @@ group must be allowed to read both secrets. The request uses the
 `llm_key_slot` records which loaded slot produced each row without exposing the
 key.
 
+The Claims manifest records available body characters, characters sent after
+`LLM_MAX_BODY_CHARS`, and any omitted tail text. This is telemetry only: it
+does not change the all-articles/all-claims integrity rule.
+
 An Object Storage Event is scoped to its triggering `silver/body/*.csv` object;
 it never imports an older Body source. `LLM_REQUEST_BATCH_SIZE` limits only the
 number of articles in an individual LLM prompt; it does not cap claims or

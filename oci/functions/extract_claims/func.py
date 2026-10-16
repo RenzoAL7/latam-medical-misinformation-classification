@@ -124,6 +124,17 @@ def _env_float(name: str, default: float, minimum: float | None = None) -> float
     return value
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a strict Boolean Function configuration value."""
+
+    value = os.getenv(name, str(default)).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean")
+
+
 def _object_storage_client() -> Any:
     signer = oci.auth.signers.get_resource_principals_signer()
     return oci.object_storage.ObjectStorageClient(config={}, signer=signer)
@@ -191,6 +202,9 @@ def _google_key_switchable(error: Exception) -> bool:
             "http 401",
             "http 403",
             "http 429",
+            "http 500",
+            "http 502",
+            "http 503",
             "quota",
             "rate limit",
             "api key",
@@ -200,6 +214,7 @@ def _google_key_switchable(error: Exception) -> bool:
             "timeout",
             "temporarily unavailable",
             "service unavailable",
+            "unavailable",
         )
     )
 
@@ -945,7 +960,7 @@ def _handler_legacy(ctx: Any, data: io.BytesIO | None = None) -> response.Respon
         request_batch_size = _env_int("LLM_REQUEST_BATCH_SIZE", 10, minimum=1)
         max_seconds = _env_float("LLM_MAX_SECONDS", 150.0, minimum=1.0)
         time_buffer = _env_float("LLM_TIME_BUFFER", 10.0, minimum=0.0)
-        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 12_000, minimum=500)
+        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 24_000, minimum=500)
         max_tokens = _env_int("LLM_MAX_TOKENS", 3000, minimum=50)
         request_timeout = _env_float("LLM_REQUEST_TIMEOUT", 30.0, minimum=5.0)
         temperature = _env_float("LLM_TEMPERATURE", 0.0, minimum=0.0)
@@ -1191,6 +1206,145 @@ def _write_json_object(
     )
 
 
+def _list_jsonl_objects(client: Any, namespace: str, bucket: str, prefix: str) -> list[str]:
+    """List immutable JSONL objects below one Object Storage prefix."""
+
+    list_prefix = f"{prefix.strip('/')}/" if prefix.strip("/") else ""
+    names: list[str] = []
+    start: str | None = None
+    while True:
+        result = client.list_objects(
+            namespace_name=namespace,
+            bucket_name=bucket,
+            prefix=list_prefix,
+            start=start,
+            fields="name",
+            limit=1000,
+        )
+        for item in result.data.objects:
+            name = str(item.name)
+            if name.endswith(".jsonl"):
+                names.append(name)
+        start = result.data.next_start_with
+        if not start:
+            break
+    return sorted(set(names))
+
+
+def _read_jsonl_object(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    object_name: str,
+) -> list[dict[str, Any]]:
+    """Read a JSONL Object Storage artifact with a strict object-per-line contract."""
+
+    result = client.get_object(
+        namespace_name=namespace,
+        bucket_name=bucket,
+        object_name=object_name,
+    )
+    content = result.data.content
+    if hasattr(content, "read"):
+        content = content.read()
+    if not isinstance(content, (bytes, bytearray)):
+        raise RuntimeError(f"Object Storage returned non-byte content for {object_name}")
+    records: list[dict[str, Any]] = []
+    for line_number, line in enumerate(bytes(content).decode("utf-8-sig", errors="strict").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Invalid JSONL in {object_name} at line {line_number}") from exc
+        if not isinstance(record, dict):
+            raise RuntimeError(f"JSONL record in {object_name} at line {line_number} is not an object")
+        records.append(record)
+    return records
+
+
+def _claim_text_key(value: Any) -> str:
+    """Return the conservative exact-text key used only for controlled retries."""
+
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _existing_v1_claim_texts(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    prefix: str,
+    record_ids: set[str],
+) -> dict[str, set[str]]:
+    """Find previously emitted Claim text for only the records being retried.
+
+    This is intentionally scoped by ``record_id`` and compares normalized exact
+    text only.  It is off in normal event processing and exists so a deliberate
+    full-body retry can add claims from a formerly omitted tail without sending
+    an unchanged claim twice to Label Studio.
+    """
+
+    texts_by_record: dict[str, set[str]] = {record_id: set() for record_id in record_ids}
+    if not texts_by_record:
+        return texts_by_record
+    for object_name in _list_jsonl_objects(client, namespace, bucket, prefix):
+        for record in _read_jsonl_object(client, namespace, bucket, object_name):
+            if str(record.get("schema_version", "")).strip() != CLAIMS_SCHEMA_VERSION:
+                continue
+            if str(record.get("llm_status", "")).strip().upper() != "OK":
+                continue
+            record_id = str(record.get("record_id", "")).strip()
+            if record_id not in texts_by_record:
+                continue
+            claims = record.get("claims", [])
+            if not isinstance(claims, list):
+                LOGGER.warning("Ignoring non-list claims in prior object %s for %s", object_name, record_id)
+                continue
+            for claim in claims:
+                if isinstance(claim, dict):
+                    key = _claim_text_key(claim.get("claim_text"))
+                    if key:
+                        texts_by_record[record_id].add(key)
+    return texts_by_record
+
+
+def _suppress_existing_claim_texts(
+    records: list[dict[str, Any]],
+    existing_texts_by_record: dict[str, set[str]],
+) -> dict[str, int]:
+    """Remove only exact duplicate claims from controlled full-body retries."""
+
+    stats: Counter[str] = Counter()
+    for record in records:
+        if str(record.get("llm_status", "")).strip().upper() != "OK":
+            continue
+        record_id = str(record.get("record_id", "")).strip()
+        previous_texts = {
+            key
+            for value in existing_texts_by_record.get(record_id, set())
+            if (key := _claim_text_key(value))
+        }
+        if not previous_texts:
+            continue
+        claims = record.get("claims", [])
+        if not isinstance(claims, list):
+            continue
+        kept_claims: list[dict[str, Any]] = []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            key = _claim_text_key(claim.get("claim_text"))
+            if key and key in previous_texts:
+                stats["claims_suppressed"] += 1
+                continue
+            kept_claims.append(claim)
+        if len(kept_claims) != len(claims):
+            stats["articles_with_suppressed_claims"] += 1
+            record["claims"] = kept_claims
+            record["claims_count"] = len(kept_claims)
+    return dict(stats)
+
+
 def _multiclaim_prompt(rows: list[dict[str, str]], max_body_chars: int) -> str:
     """Ask for every distinct, verifiable medical claim in each article.
 
@@ -1258,6 +1412,29 @@ def _ordered_multiclaim_items(document: Any, rows: list[dict[str, str]]) -> list
         if not isinstance(claims, list) or not all(isinstance(claim, dict) for claim in claims):
             raise ValueError("LLM item must contain a claims array of objects")
     return items
+
+
+def _should_split_multiclaim_batch_error(error: Exception) -> bool:
+    """Return whether a malformed multi-item response can be isolated safely.
+
+    A response-format mistake for one item must not turn every article in a
+    successful request into an ``ERROR`` row.  The singleton retry preserves
+    the strict schema validation above while isolating the offending article;
+    quota, transport, and configuration failures remain batch-level errors.
+    """
+
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "claims array",
+            "jsondecodeerror",
+            "invalid json",
+            "llm returned",
+            "batch contains a non-object item",
+            "record_id values do not match",
+        )
+    )
 
 
 def _claim_identifier(record_id: str, index: int, claim_text: str) -> str:
@@ -1339,6 +1516,7 @@ def _call_multiclaim_llm_batch(
     provider: str,
     google_api_key: str,
     request_timeout: float,
+    retry_backoff_seconds: float = 1.0,
 ) -> list[tuple[dict[str, str], dict[str, Any], str]]:
     prompt = _multiclaim_prompt(rows, max_body_chars)
     last_error: Exception | None = None
@@ -1369,8 +1547,9 @@ def _call_multiclaim_llm_batch(
             return [(row, item, json.dumps(item, ensure_ascii=False)) for row, item in zip(rows, items)]
         except Exception as exc:  # noqa: BLE001 - preserve the final row-level error
             last_error = exc
-            if attempt < retries and _retryable_llm_error(exc) and time.monotonic() + 1.0 < deadline:
-                time.sleep(1.0)
+            delay = retry_backoff_seconds * (2**attempt)
+            if attempt < retries and _retryable_llm_error(exc) and time.monotonic() + delay < deadline:
+                time.sleep(delay)
     raise RuntimeError(f"LLM call failed: {type(last_error).__name__}: {last_error}") from last_error
 
 
@@ -1485,6 +1664,26 @@ def _v1_body_rows(
     return selected, dict(stats)
 
 
+def _claims_input_metrics(rows: list[dict[str, str]], max_body_chars: int) -> dict[str, int]:
+    """Describe the text actually sent to the extraction model.
+
+    ``LLM_MAX_BODY_CHARS`` is a safety limit, not a sampling mechanism.  These
+    counters make any omitted tail text visible in the immutable run manifest
+    so that future budget changes can be based on measured data rather than an
+    assumed token cost.
+    """
+
+    available = [len(row.get("body", "")) for row in rows]
+    sent = [min(length, max_body_chars) for length in available]
+    return {
+        "articles": len(rows),
+        "body_chars_available": sum(available),
+        "body_chars_sent": sum(sent),
+        "body_chars_omitted_by_limit": sum(length - sent_length for length, sent_length in zip(available, sent)),
+        "articles_truncated_by_body_limit": sum(length > max_body_chars for length in available),
+    }
+
+
 def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
     """Extract all claims from one Body event and write immutable JSONL output."""
 
@@ -1509,12 +1708,14 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         request_batch_size = _env_int("LLM_REQUEST_BATCH_SIZE", 5, minimum=1)
         max_seconds = _env_float("LLM_MAX_SECONDS", 270.0, minimum=30.0)
         time_buffer = _env_float("LLM_TIME_BUFFER", 20.0, minimum=1.0)
-        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 12_000, minimum=500)
+        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 24_000, minimum=500)
         max_tokens = _env_int("LLM_MAX_TOKENS", 8_000, minimum=500)
         request_timeout = _env_float("LLM_REQUEST_TIMEOUT", 45.0, minimum=5.0)
         temperature = _env_float("LLM_TEMPERATURE", 0.0, minimum=0.0)
         top_p = _env_float("LLM_TOP_P", 0.9, minimum=0.0)
         retries = _env_int("LLM_MAX_RETRIES", 0, minimum=0)
+        retry_backoff_seconds = _env_float("LLM_RETRY_BACKOFF_SECONDS", 5.0, minimum=0.1)
+        deduplicate_existing_texts = _env_bool("CLAIMS_DEDUPLICATE_EXISTING_TEXTS", False)
         if time_buffer >= max_seconds:
             raise RuntimeError("LLM_TIME_BUFFER must be smaller than LLM_MAX_SECONDS")
 
@@ -1526,6 +1727,8 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         statuses: Counter[str] = Counter()
         last_error = ""
         llm_requests = 0
+        split_recovery_batches = 0
+        split_recovery_articles = 0
         google_api_keys: list[str] = []
         google_key_cursor = 0
 
@@ -1548,6 +1751,50 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             else:
                 llm = _generative_ai_client(region, request_timeout)
 
+            def _run_request(
+                rows: list[dict[str, str]],
+            ) -> tuple[list[tuple[dict[str, str], dict[str, Any], str]], str]:
+                """Execute one logical request and retain the key slot used."""
+
+                nonlocal google_key_cursor
+
+                def invoke_batch(key: str) -> list[tuple[dict[str, str], dict[str, Any], str]]:
+                    return _call_multiclaim_llm_batch(
+                        llm,
+                        rows,
+                        model_id,
+                        max_body_chars,
+                        max_tokens,
+                        temperature,
+                        top_p,
+                        retries,
+                        deadline,
+                        provider,
+                        key,
+                        request_timeout,
+                        retry_backoff_seconds,
+                    )
+
+                if provider == "google":
+                    batch_results, used_slot = _call_with_google_key_failover(
+                        google_api_keys, google_key_cursor, invoke_batch
+                    )
+                    google_key_cursor = (used_slot + 1) % len(google_api_keys)
+                    return batch_results, str(used_slot + 1)
+                return invoke_batch(""), "oci"
+
+            def _append_successful_records(
+                batch_results: list[tuple[dict[str, str], dict[str, Any], str]],
+                key_slot: str,
+            ) -> None:
+                for source_row, payload, raw_json in batch_results:
+                    records.append(
+                        _claims_v1_record(
+                            source_row, payload, raw_json, run_id, model_id, key_slot, max_claims
+                        )
+                    )
+                    statuses["OK"] += 1
+
             for offset in range(0, len(pending), request_batch_size):
                 request_rows = pending[offset : offset + request_batch_size]
                 if time.monotonic() >= deadline:
@@ -1556,40 +1803,34 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                         statuses["ERROR"] += 1
                     break
                 try:
-                    def invoke_batch(key: str) -> list[tuple[dict[str, str], dict[str, Any], str]]:
-                        return _call_multiclaim_llm_batch(
-                            llm,
-                            request_rows,
-                            model_id,
-                            max_body_chars,
-                            max_tokens,
-                            temperature,
-                            top_p,
-                            retries,
-                            deadline,
-                            provider,
-                            key,
-                            request_timeout,
-                        )
-
-                    if provider == "google":
-                        batch_results, used_slot = _call_with_google_key_failover(
-                            google_api_keys, google_key_cursor, invoke_batch
-                        )
-                        google_key_cursor = (used_slot + 1) % len(google_api_keys)
-                        key_slot = str(used_slot + 1)
-                    else:
-                        batch_results = invoke_batch("")
-                        key_slot = "oci"
                     llm_requests += 1
-                    for source_row, payload, raw_json in batch_results:
-                        records.append(
-                            _claims_v1_record(
-                                source_row, payload, raw_json, run_id, model_id, key_slot, max_claims
-                            )
-                        )
-                        statuses["OK"] += 1
+                    batch_results, key_slot = _run_request(request_rows)
+                    _append_successful_records(batch_results, key_slot)
                 except Exception as exc:  # noqa: BLE001 - all input rows receive an auditable outcome
+                    if len(request_rows) > 1 and _should_split_multiclaim_batch_error(exc):
+                        split_recovery_batches += 1
+                        LOGGER.warning(
+                            "Malformed multi-claim response; retrying %s articles individually: %s",
+                            len(request_rows),
+                            type(exc).__name__,
+                        )
+                        for source_row in request_rows:
+                            try:
+                                llm_requests += 1
+                                batch_results, key_slot = _run_request([source_row])
+                                _append_successful_records(batch_results, key_slot)
+                                split_recovery_articles += 1
+                            except Exception as recovery_exc:  # noqa: BLE001 - retain the isolated failure
+                                error = f"{type(recovery_exc).__name__}: {recovery_exc}"[:2000]
+                                last_error = error
+                                LOGGER.warning(
+                                    "Multi-claim singleton recovery failed for %s: %s",
+                                    source_row.get("record_id", ""),
+                                    error,
+                                )
+                                records.append(_failed_claims_v1_record(source_row, run_id, model_id, error))
+                                statuses["ERROR"] += 1
+                        continue
                     error = f"{type(exc).__name__}: {exc}"[:2000]
                     last_error = error
                     LOGGER.warning("Multi-claim extraction failed for batch: %s", error)
@@ -1601,6 +1842,29 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                             records.append(_failed_claims_v1_record(source_row, run_id, model_id, "LLM_NOT_ATTEMPTED"))
                             statuses["ERROR"] += 1
                         break
+
+        deduplication: dict[str, Any] = {
+            "enabled": deduplicate_existing_texts,
+            "comparison": "record_id + normalized_exact_claim_text",
+            "existing_claim_texts_considered": 0,
+            "claims_suppressed": 0,
+            "articles_with_suppressed_claims": 0,
+        }
+        if deduplicate_existing_texts and records:
+            prior_texts = _existing_v1_claim_texts(
+                storage,
+                namespace,
+                bucket,
+                claims_prefix,
+                {
+                    str(record.get("record_id", "")).strip()
+                    for record in records
+                    if str(record.get("llm_status", "")).strip().upper() == "OK"
+                    and str(record.get("record_id", "")).strip()
+                },
+            )
+            deduplication["existing_claim_texts_considered"] = sum(len(texts) for texts in prior_texts.values())
+            deduplication.update(_suppress_existing_claim_texts(records, prior_texts))
 
         claims_object, manifest_object = _claims_v1_object_names(claims_prefix, run_id)
         _write_jsonl_object(storage, namespace, bucket, claims_object, records)
@@ -1626,14 +1890,21 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "claims_total": claims_total,
             "articles_with_truncated_claims": truncated_articles,
             "llm_status_counts": dict(article_statuses),
+            "recovery": {
+                "malformed_batches_split": split_recovery_batches,
+                "articles_retried_individually": split_recovery_articles,
+            },
+            "deduplication": deduplication,
             "scan": scan,
             "configuration": {
                 "llm_provider": provider,
                 "model_id": model_id,
                 "request_batch_size": request_batch_size,
+                "max_body_chars": max_body_chars,
                 "max_claims_per_article": max_claims,
                 "max_rows": "all",
             },
+            "input": _claims_input_metrics(pending, max_body_chars),
         }
         _write_json_object(storage, namespace, bucket, manifest_object, manifest)
         result = {
