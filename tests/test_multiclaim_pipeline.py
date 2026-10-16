@@ -117,18 +117,7 @@ def test_v1_claim_handler_recovers_a_malformed_batch_by_retrying_singletons(monk
         record_ids = re.findall(r"record_id \(copia exactamente\): ([^\n]+)", args[2])
         call_sizes.append(len(record_ids))
         if len(record_ids) > 1:
-            malformed = {
-                "items": [
-                    {
-                        "record_id": record_id,
-                        "is_medical": True,
-                        "reason": "Respuesta malformada de lote.",
-                        "claims": {},
-                    }
-                    for record_id in record_ids
-                ]
-            }
-            return {"text": json.dumps(malformed)}
+            return {"text": '{"items": [}' }
         record_id = record_ids[0]
         valid = {
             "items": [
@@ -178,6 +167,18 @@ def test_v1_claim_handler_recovers_a_malformed_batch_by_retrying_singletons(monk
         "malformed_batches_split": 1,
         "articles_retried_individually": 2,
     }
+
+
+def test_multiclaim_batch_recovery_recognizes_schema_and_json_errors() -> None:
+    assert EXTRACT._should_split_multiclaim_batch_error(
+        RuntimeError("LLM call failed: ValueError: LLM item must contain a claims array of objects")
+    )
+    assert EXTRACT._should_split_multiclaim_batch_error(
+        RuntimeError("LLM call failed: JSONDecodeError: Expecting property name")
+    )
+    assert not EXTRACT._should_split_multiclaim_batch_error(
+        RuntimeError("Gemini HTTP 429: quota exhausted")
+    )
 
 
 def test_evidence_excludes_pubmed_results_without_abstract() -> None:

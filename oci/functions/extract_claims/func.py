@@ -1274,6 +1274,8 @@ def _should_split_multiclaim_batch_error(error: Exception) -> bool:
         marker in message
         for marker in (
             "claims array",
+            "jsondecodeerror",
+            "invalid json",
             "llm returned",
             "batch contains a non-object item",
             "record_id values do not match",
