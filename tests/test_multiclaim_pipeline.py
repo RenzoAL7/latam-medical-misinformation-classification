@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import re
 import sys
 import types
 import xml.etree.ElementTree as ET
@@ -81,6 +82,102 @@ def test_claim_extraction_preserves_all_distinct_claims_without_default_cap() ->
     assert [claim["claim_index"] for claim in claims] == [1, 2]
     assert len({claim["claim_id"] for claim in claims}) == 2
     assert all(claim["claim_status"] == "PENDING_EVIDENCE" for claim in claims)
+
+
+def test_v1_claim_handler_recovers_a_malformed_batch_by_retrying_singletons(monkeypatch) -> None:
+    class FakeStorage:
+        def __init__(self, objects: dict[str, bytes]) -> None:
+            self.objects = objects
+
+        def get_object(self, namespace_name, bucket_name, object_name):
+            return types.SimpleNamespace(data=types.SimpleNamespace(content=io.BytesIO(self.objects[object_name])))
+
+        def put_object(self, namespace_name, bucket_name, object_name, put_object_body, content_type):
+            self.objects[object_name] = put_object_body.read()
+
+    class FakeResponse:
+        def __init__(self, _ctx, response_data, status_code=200, headers=None):
+            self.response_data = response_data
+            self.status_code = status_code
+            self.headers = headers or {}
+
+    body_object = "silver/body/body_run.csv"
+    storage = FakeStorage(
+        {
+            body_object: (
+                "record_id,country,source_name,canonical_url,title,topic,body,extraction_status\n"
+                "news_001,pe,Fuente,https://example.test/1,Primera,health,El tratamiento A mejora B.,OK\n"
+                "news_002,pe,Fuente,https://example.test/2,Segunda,health,El tratamiento C mejora D.,OK\n"
+            ).encode("utf-8")
+        }
+    )
+    call_sizes: list[int] = []
+
+    def fake_gemini(*args, **_kwargs):
+        record_ids = re.findall(r"record_id \(copia exactamente\): ([^\n]+)", args[2])
+        call_sizes.append(len(record_ids))
+        if len(record_ids) > 1:
+            malformed = {
+                "items": [
+                    {
+                        "record_id": record_id,
+                        "is_medical": True,
+                        "reason": "Respuesta malformada de lote.",
+                        "claims": {},
+                    }
+                    for record_id in record_ids
+                ]
+            }
+            return {"text": json.dumps(malformed)}
+        record_id = record_ids[0]
+        valid = {
+            "items": [
+                {
+                    "record_id": record_id,
+                    "is_medical": True,
+                    "reason": "Una afirmación médica verificable.",
+                    "claims": [
+                        {
+                            "claim_text": f"El tratamiento de {record_id} mejora un resultado.",
+                            "claim_text_en": f"Treatment for {record_id} improves an outcome.",
+                            "pubmed_query_en": "treatment outcome",
+                            "claim_type": "tratamiento",
+                            "is_claim_eligible": True,
+                        }
+                    ],
+                }
+            ]
+        }
+        return {"text": json.dumps(valid)}
+
+    monkeypatch.setattr(EXTRACT, "_object_storage_client", lambda: storage)
+    monkeypatch.setattr(EXTRACT, "_vault_secret_value", lambda _secret: "claim-key")
+    monkeypatch.setattr(EXTRACT, "_google_gemini_request", fake_gemini)
+    monkeypatch.setattr(EXTRACT.response, "Response", FakeResponse)
+    monkeypatch.setenv("PIPELINE_SCHEMA", "v1")
+    monkeypatch.setenv("OBJECT_STORAGE_NAMESPACE", "ns")
+    monkeypatch.setenv("OBJECT_STORAGE_BUCKET", "bucket")
+    monkeypatch.setenv("LLM_PROVIDER", "google")
+    monkeypatch.setenv("GOOGLE_GEMINI_SECRET_OCIDS", "secret")
+    monkeypatch.setenv("LLM_MAX_ROWS", "0")
+    monkeypatch.setenv("LLM_REQUEST_BATCH_SIZE", "2")
+    monkeypatch.setenv("LLM_MAX_SECONDS", "60")
+    monkeypatch.setenv("LLM_TIME_BUFFER", "1")
+    monkeypatch.setenv("LLM_MAX_RETRIES", "0")
+    event = {"data": {"resourceName": body_object, "additionalDetails": {"bucketName": "bucket"}}}
+
+    result = EXTRACT.handler(None, io.BytesIO(json.dumps(event).encode("utf-8")))
+    payload = json.loads(result.response_data)
+    records = [json.loads(line) for line in storage.objects[payload["object_name"]].decode("utf-8").splitlines()]
+    manifest = json.loads(storage.objects[payload["manifest_object"]].decode("utf-8"))
+
+    assert payload["status"] == "complete"
+    assert call_sizes == [2, 1, 1]
+    assert [record["llm_status"] for record in records] == ["OK", "OK"]
+    assert manifest["recovery"] == {
+        "malformed_batches_split": 1,
+        "articles_retried_individually": 2,
+    }
 
 
 def test_evidence_excludes_pubmed_results_without_abstract() -> None:
@@ -270,6 +367,40 @@ def test_manifest_metrics_make_body_truncation_and_abstract_workload_auditable()
     assert evidence_metrics["abstract_source_chars"] == 8
 
 
+def test_translation_batch_rejects_omitted_pmid_for_fallback_recovery(monkeypatch) -> None:
+    row = {
+        "record_id": "news_003",
+        "claim_id": "news_003_c01",
+        "pubmed_results_json": json.dumps(
+            [
+                {"pmid": "111", "abstract_excerpt": "First abstract"},
+                {"pmid": "222", "abstract_excerpt": "Second abstract"},
+            ]
+        ),
+    }
+
+    monkeypatch.setattr(
+        EVIDENCE,
+        "_google_generate_json",
+        lambda *_args, **_kwargs: {
+            "items": [
+                {
+                    "claim_id": "news_003_c01",
+                    "translations": [{"pmid": "111", "abstract_es": "Primer abstract."}],
+                }
+            ]
+        },
+    )
+
+    try:
+        EVIDENCE._translate_batch("key", "model", [row], 1000, 30)
+    except ValueError as exc:
+        assert "omitted translation(s)" in str(exc)
+        assert "222" in str(exc)
+    else:
+        raise AssertionError("A missing PMID must trigger candidate-level recovery")
+
+
 def test_parallel_translation_recovers_recitation_with_paraphrase(monkeypatch) -> None:
     """The two-key path must reach the per-abstract RECITATION fallback."""
 
@@ -308,6 +439,55 @@ def test_parallel_translation_recovers_recitation_with_paraphrase(monkeypatch) -
     assert candidate["translation_status"] == "PARAPHRASED"
     assert candidate["abstract_es"] == "Resumen fiel en español."
     assert stats["translation_candidate_fallbacks"] == 1
+    assert stats["paraphrased_abstracts"] == 1
+
+
+def test_segmented_paraphrase_recovers_when_whole_abstract_is_recitation_blocked(monkeypatch) -> None:
+    row = {
+        "record_id": "news_002",
+        "claim_id": "news_002_c01",
+        "claim_text_en": "second claim",
+        "evidence_status": "OK",
+        "pubmed_results_json": json.dumps(
+            [
+                {
+                    "pmid": "456",
+                    "title": "Study",
+                    "abstract_excerpt": f"{'a' * 500}. {'b' * 500}.",
+                    "pubmed_rank": 1,
+                }
+            ]
+        ),
+    }
+
+    def recitation(*_args, **_kwargs):
+        raise RuntimeError("Gemini translation returned an empty response (RECITATION)")
+
+    def text_fallback(*args, **_kwargs):
+        prompt = args[2]
+        if "Abstract en inglés:" in prompt:
+            raise RuntimeError("Gemini plain-text translation returned an empty response")
+        return "Resumen fiel del fragmento."
+
+    monkeypatch.setattr(EVIDENCE, "_translate_batch", recitation)
+    monkeypatch.setattr(EVIDENCE, "_google_generate_text", text_fallback)
+
+    stats = EVIDENCE._apply_translations(
+        [row],
+        ["translation-key-1"],
+        "model",
+        1,
+        1000,
+        30,
+        float("inf"),
+        "run_2",
+        True,
+    )
+
+    candidate = json.loads(row["pubmed_results_json"])[0]
+    assert row["translation_status"] == "OK"
+    assert candidate["translation_status"] == "PARAPHRASED"
+    assert candidate["abstract_es"] == "Resumen fiel del fragmento. Resumen fiel del fragmento."
     assert stats["paraphrased_abstracts"] == 1
 
 

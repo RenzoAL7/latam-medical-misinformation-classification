@@ -945,7 +945,7 @@ def _handler_legacy(ctx: Any, data: io.BytesIO | None = None) -> response.Respon
         request_batch_size = _env_int("LLM_REQUEST_BATCH_SIZE", 10, minimum=1)
         max_seconds = _env_float("LLM_MAX_SECONDS", 150.0, minimum=1.0)
         time_buffer = _env_float("LLM_TIME_BUFFER", 10.0, minimum=0.0)
-        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 12_000, minimum=500)
+        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 24_000, minimum=500)
         max_tokens = _env_int("LLM_MAX_TOKENS", 3000, minimum=50)
         request_timeout = _env_float("LLM_REQUEST_TIMEOUT", 30.0, minimum=5.0)
         temperature = _env_float("LLM_TEMPERATURE", 0.0, minimum=0.0)
@@ -1260,6 +1260,27 @@ def _ordered_multiclaim_items(document: Any, rows: list[dict[str, str]]) -> list
     return items
 
 
+def _should_split_multiclaim_batch_error(error: Exception) -> bool:
+    """Return whether a malformed multi-item response can be isolated safely.
+
+    A response-format mistake for one item must not turn every article in a
+    successful request into an ``ERROR`` row.  The singleton retry preserves
+    the strict schema validation above while isolating the offending article;
+    quota, transport, and configuration failures remain batch-level errors.
+    """
+
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "claims array",
+            "llm returned",
+            "batch contains a non-object item",
+            "record_id values do not match",
+        )
+    )
+
+
 def _claim_identifier(record_id: str, index: int, claim_text: str) -> str:
     digest = hashlib.sha256(f"{record_id}\n{index}\n{claim_text}".encode("utf-8")).hexdigest()[:10]
     return f"{record_id}_c{index:02d}_{digest}"
@@ -1529,7 +1550,7 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         request_batch_size = _env_int("LLM_REQUEST_BATCH_SIZE", 5, minimum=1)
         max_seconds = _env_float("LLM_MAX_SECONDS", 270.0, minimum=30.0)
         time_buffer = _env_float("LLM_TIME_BUFFER", 20.0, minimum=1.0)
-        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 12_000, minimum=500)
+        max_body_chars = _env_int("LLM_MAX_BODY_CHARS", 24_000, minimum=500)
         max_tokens = _env_int("LLM_MAX_TOKENS", 8_000, minimum=500)
         request_timeout = _env_float("LLM_REQUEST_TIMEOUT", 45.0, minimum=5.0)
         temperature = _env_float("LLM_TEMPERATURE", 0.0, minimum=0.0)
@@ -1546,6 +1567,8 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         statuses: Counter[str] = Counter()
         last_error = ""
         llm_requests = 0
+        split_recovery_batches = 0
+        split_recovery_articles = 0
         google_api_keys: list[str] = []
         google_key_cursor = 0
 
@@ -1568,6 +1591,49 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             else:
                 llm = _generative_ai_client(region, request_timeout)
 
+            def _run_request(
+                rows: list[dict[str, str]],
+            ) -> tuple[list[tuple[dict[str, str], dict[str, Any], str]], str]:
+                """Execute one logical request and retain the key slot used."""
+
+                nonlocal google_key_cursor
+
+                def invoke_batch(key: str) -> list[tuple[dict[str, str], dict[str, Any], str]]:
+                    return _call_multiclaim_llm_batch(
+                        llm,
+                        rows,
+                        model_id,
+                        max_body_chars,
+                        max_tokens,
+                        temperature,
+                        top_p,
+                        retries,
+                        deadline,
+                        provider,
+                        key,
+                        request_timeout,
+                    )
+
+                if provider == "google":
+                    batch_results, used_slot = _call_with_google_key_failover(
+                        google_api_keys, google_key_cursor, invoke_batch
+                    )
+                    google_key_cursor = (used_slot + 1) % len(google_api_keys)
+                    return batch_results, str(used_slot + 1)
+                return invoke_batch(""), "oci"
+
+            def _append_successful_records(
+                batch_results: list[tuple[dict[str, str], dict[str, Any], str]],
+                key_slot: str,
+            ) -> None:
+                for source_row, payload, raw_json in batch_results:
+                    records.append(
+                        _claims_v1_record(
+                            source_row, payload, raw_json, run_id, model_id, key_slot, max_claims
+                        )
+                    )
+                    statuses["OK"] += 1
+
             for offset in range(0, len(pending), request_batch_size):
                 request_rows = pending[offset : offset + request_batch_size]
                 if time.monotonic() >= deadline:
@@ -1576,40 +1642,34 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                         statuses["ERROR"] += 1
                     break
                 try:
-                    def invoke_batch(key: str) -> list[tuple[dict[str, str], dict[str, Any], str]]:
-                        return _call_multiclaim_llm_batch(
-                            llm,
-                            request_rows,
-                            model_id,
-                            max_body_chars,
-                            max_tokens,
-                            temperature,
-                            top_p,
-                            retries,
-                            deadline,
-                            provider,
-                            key,
-                            request_timeout,
-                        )
-
-                    if provider == "google":
-                        batch_results, used_slot = _call_with_google_key_failover(
-                            google_api_keys, google_key_cursor, invoke_batch
-                        )
-                        google_key_cursor = (used_slot + 1) % len(google_api_keys)
-                        key_slot = str(used_slot + 1)
-                    else:
-                        batch_results = invoke_batch("")
-                        key_slot = "oci"
                     llm_requests += 1
-                    for source_row, payload, raw_json in batch_results:
-                        records.append(
-                            _claims_v1_record(
-                                source_row, payload, raw_json, run_id, model_id, key_slot, max_claims
-                            )
-                        )
-                        statuses["OK"] += 1
+                    batch_results, key_slot = _run_request(request_rows)
+                    _append_successful_records(batch_results, key_slot)
                 except Exception as exc:  # noqa: BLE001 - all input rows receive an auditable outcome
+                    if len(request_rows) > 1 and _should_split_multiclaim_batch_error(exc):
+                        split_recovery_batches += 1
+                        LOGGER.warning(
+                            "Malformed multi-claim response; retrying %s articles individually: %s",
+                            len(request_rows),
+                            type(exc).__name__,
+                        )
+                        for source_row in request_rows:
+                            try:
+                                llm_requests += 1
+                                batch_results, key_slot = _run_request([source_row])
+                                _append_successful_records(batch_results, key_slot)
+                                split_recovery_articles += 1
+                            except Exception as recovery_exc:  # noqa: BLE001 - retain the isolated failure
+                                error = f"{type(recovery_exc).__name__}: {recovery_exc}"[:2000]
+                                last_error = error
+                                LOGGER.warning(
+                                    "Multi-claim singleton recovery failed for %s: %s",
+                                    source_row.get("record_id", ""),
+                                    error,
+                                )
+                                records.append(_failed_claims_v1_record(source_row, run_id, model_id, error))
+                                statuses["ERROR"] += 1
+                        continue
                     error = f"{type(exc).__name__}: {exc}"[:2000]
                     last_error = error
                     LOGGER.warning("Multi-claim extraction failed for batch: %s", error)
@@ -1646,6 +1706,10 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "claims_total": claims_total,
             "articles_with_truncated_claims": truncated_articles,
             "llm_status_counts": dict(article_statuses),
+            "recovery": {
+                "malformed_batches_split": split_recovery_batches,
+                "articles_retried_individually": split_recovery_articles,
+            },
             "scan": scan,
             "configuration": {
                 "llm_provider": provider,

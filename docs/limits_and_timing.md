@@ -66,10 +66,14 @@ descarta evidencia.
 
 ## Claims y Gemini
 
-`extract-claims` recorta cada cuerpo según `LLM_MAX_BODY_CHARS` y pide al modelo
+`extract-claims` recorta cada cuerpo según `LLM_MAX_BODY_CHARS` (24,000
+caracteres por defecto) y pide al modelo
 un arreglo estructurado de claims, no una única afirmación. Cada respuesta
 incluye texto en español, traducción fiel en inglés y una consulta PubMed. La
 Function usa un máximo interno de 270 segundos con un buffer de 20 segundos;
+si una respuesta de varios artículos no respeta el arreglo `claims`, conserva
+la validación estricta y reintenta solo esos artículos de forma individual. El
+manifest deja auditables ambos contadores de recuperación.
 si la respuesta es inválida o el tiempo se agota, la noticia se conserva con
 `llm_status=ERROR` y explicación.
 

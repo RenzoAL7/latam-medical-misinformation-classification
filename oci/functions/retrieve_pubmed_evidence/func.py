@@ -326,6 +326,7 @@ def _google_key_switchable(error: Exception) -> bool:
             # project before falling back to the bounded paraphrase path.
             "recitation",
             "empty response",
+            "omitted translation",
         )
     )
 
@@ -939,6 +940,11 @@ def _translate_batch(
             text = re.sub(r"\s+", " ", str(translation.get("abstract_es", "") or "")).strip()
             if text:
                 row_translations[pmid] = text[:8000]
+        missing_pmids = expected_pmids - set(row_translations)
+        if missing_pmids:
+            raise ValueError(
+                "Gemini omitted translation(s) for PMID(s): " + ", ".join(sorted(missing_pmids))
+            )
         translated[_claim_identity(row)] = row_translations
     return translated
 
@@ -1038,6 +1044,78 @@ def _apply_translation_mapping(
     return translated_count, missing_count, bool(scored)
 
 
+def _paraphrase_segments(text: str, max_chars: int = 650) -> list[str]:
+    """Split a long abstract into small, sentence-aware paraphrase inputs.
+
+    Gemini can occasionally reject a full biomedical abstract as recitation,
+    including after the existing whole-abstract faithful-summary fallback.  A
+    small, explicit segment is less likely to trigger that filter.  This path
+    is used only after both normal JSON translation and the whole-abstract
+    fallback have failed; it is never a normal-cost path.
+    """
+
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    if not compact:
+        return []
+    sentence_parts = re.split(r"(?<=[.!?])\s+", compact)
+    segments: list[str] = []
+    current = ""
+    for sentence in sentence_parts:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if current and len(current) + 1 + len(sentence) > max_chars:
+            segments.append(current)
+            current = ""
+        while len(sentence) > max_chars:
+            if current:
+                segments.append(current)
+                current = ""
+            segments.append(sentence[:max_chars])
+            sentence = sentence[max_chars:].lstrip()
+        current = f"{current} {sentence}".strip()
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _paraphrase_abstract_segments(
+    api_key: str,
+    model_id: str,
+    abstract: str,
+    max_tokens: int,
+    timeout: float,
+    deadline: float,
+) -> tuple[str, int]:
+    """Return a faithful Spanish paraphrase assembled from safe fragments."""
+
+    translated_segments: list[str] = []
+    attempts = 0
+    for index, segment in enumerate(_paraphrase_segments(abstract), start=1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 5.0:
+            raise TimeoutError("translation time budget reached during segmented fallback")
+        prompt = (
+            "Redacta en español un resumen médico fiel, con tus propias palabras, del siguiente "
+            f"fragmento {index}. No copies frases consecutivas. Conserva cifras, enfermedades, "
+            "intervenciones, población y niveles de certeza. Devuelve únicamente el resumen.\n\n"
+            f"Fragmento en inglés:\n{segment}"
+        )
+        attempts += 1
+        translated_segments.append(
+            _google_generate_text(
+                api_key,
+                model_id,
+                prompt,
+                min(max_tokens, 1200),
+                min(timeout, max(1.0, remaining - 5.0)),
+            )
+        )
+    if not translated_segments:
+        raise ValueError("abstract has no text to paraphrase")
+    return " ".join(translated_segments), attempts
+
+
 def _translate_row_individually(
     api_key: str,
     model_id: str,
@@ -1097,6 +1175,31 @@ def _translate_row_individually(
                     candidate_timeout,
                 )
             except Exception as plain_exc:  # noqa: BLE001 - preserve both attempts
+                recoverable_plain_failure = any(
+                    marker in str(plain_exc).lower()
+                    for marker in ("recitation", "empty response")
+                )
+                if recoverable_plain_failure:
+                    try:
+                        segmented, segment_attempts = _paraphrase_abstract_segments(
+                            api_key,
+                            model_id,
+                            str(candidate.get("abstract_excerpt", "") or ""),
+                            max_tokens,
+                            candidate_timeout,
+                            deadline,
+                        )
+                        attempts += segment_attempts
+                        translated[pmid] = segmented
+                        paraphrased_pmids.add(pmid)
+                        continue
+                    except Exception as segment_exc:  # noqa: BLE001 - retain both fallback failures
+                        errors.append(
+                            f"{pmid}: {type(exc).__name__}: {exc}; plain fallback: "
+                            f"{type(plain_exc).__name__}: {plain_exc}; segmented fallback: "
+                            f"{type(segment_exc).__name__}: {segment_exc}"
+                        )
+                        continue
                 errors.append(
                     f"{pmid}: {type(exc).__name__}: {exc}; plain fallback: "
                     f"{type(plain_exc).__name__}: {plain_exc}"
