@@ -209,6 +209,67 @@ def test_translation_reuses_identical_pubmed_abstract_between_claims(monkeypatch
     assert [row["translation_status"] for row in rows] == ["OK", "OK"]
 
 
+def test_translation_batches_only_combine_small_complete_claim_rows() -> None:
+    def row(claim_id: str, abstracts: list[str]) -> dict[str, str]:
+        return {
+            "record_id": "news_001",
+            "claim_id": claim_id,
+            "pubmed_results_json": json.dumps(
+                [
+                    {
+                        "pmid": f"{claim_id}-{index}",
+                        "title": "Study",
+                        "abstract_excerpt": abstract,
+                    }
+                    for index, abstract in enumerate(abstracts, start=1)
+                ]
+            ),
+        }
+
+    rows = [
+        row("c01", ["a" * 100]),
+        row("c02", ["b" * 100]),
+        row("c03", ["c" * 450]),
+    ]
+
+    batches = EVIDENCE._translation_batches(
+        rows,
+        batch_size=2,
+        max_input_chars=300,
+        max_abstracts=2,
+    )
+
+    assert [[item["claim_id"] for item in batch] for batch in batches] == [["c01", "c02"], ["c03"]]
+
+
+def test_manifest_metrics_make_body_truncation_and_abstract_workload_auditable() -> None:
+    claim_metrics = EXTRACT._claims_input_metrics(
+        [{"body": "a" * 10}, {"body": "b" * 4}],
+        max_body_chars=6,
+    )
+    evidence_metrics = EVIDENCE._evidence_abstract_metrics(
+        [
+            {
+                "candidates": [
+                    {"pmid": "1", "abstract_excerpt": "Same", "abstract_es": "Igual"},
+                    {"pmid": "1", "abstract_excerpt": "Same", "abstract_es": "Igual"},
+                ]
+            }
+        ]
+    )
+
+    assert claim_metrics == {
+        "articles": 2,
+        "body_chars_available": 14,
+        "body_chars_sent": 10,
+        "body_chars_omitted_by_limit": 4,
+        "articles_truncated_by_body_limit": 1,
+    }
+    assert evidence_metrics["candidate_abstracts"] == 2
+    assert evidence_metrics["unique_pmid_abstracts"] == 1
+    assert evidence_metrics["abstract_source_chars"] == 8
+
+
 def test_parallel_translation_recovers_recitation_with_paraphrase(monkeypatch) -> None:
     """The two-key path must reach the per-abstract RECITATION fallback."""
 
@@ -532,4 +593,5 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
     assert len(embedding_inputs["SEARCH_QUERY"]) == 2
     assert len(embedding_inputs["SEARCH_DOCUMENT"]) == 5
     assert evidence_manifest["configuration"]["embed_all_retrieved_candidates_with_abstract"] is True
+    assert evidence_manifest["workload"]["abstracts"]["candidate_abstracts"] == 10
     assert evidence_manifest["status"] == "COMPLETE"

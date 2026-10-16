@@ -49,6 +49,7 @@ El ahorro se aplica a los candidatos:
 ```text
 PUBMED_CANDIDATES_FETCHED=5
 TRANSLATION_PARALLELISM=2
+TRANSLATION_BATCH_SIZE=2
 ```
 
 Cada claim consulta hasta cinco PMIDs y Embed 4 procesa todos los candidatos
@@ -57,6 +58,11 @@ presentación; no descarta candidatos. Si dos claims reciben exactamente el
 mismo PMID+abstract, se calcula una sola representación del documento y una
 sola traducción dentro de la Function; las similitudes coseno siguen siendo
 una por claim porque cada query de claim es distinta.
+
+La traducción puede agrupar hasta dos claims pequeños en una sola solicitud de
+Gemini, con límites conservadores de 9,000 caracteres y seis abstracts por
+lote. Si una fila supera esos límites, permanece sola: no se parte ni se
+descarta evidencia.
 
 ## Claims y Gemini
 
@@ -68,7 +74,11 @@ si la respuesta es inválida o el tiempo se agota, la noticia se conserva con
 `llm_status=ERROR` y explicación.
 
 Un `llm_status=OK` confirma estructura válida, no veracidad. El modelo LLM no
-asigna `RESPALDADA`, `REFUTADA` ni la etiqueta final de la noticia.
+asigna `RESPALDADA`, `REFUTADA` ni la etiqueta final de la noticia. El manifest
+de Claims conserva los caracteres disponibles, enviados y omitidos por el
+límite; el de Evidence registra PMIDs únicos, abstracts y caracteres de
+traducción. Estas métricas permiten comparar costo/tiempo sin sacrificar
+claims ni candidatos.
 
 ## Evidence, PubMed, embedding y traducción
 
@@ -89,9 +99,9 @@ y ningún score tiene un umbral de aceptación antes de una calibración humana.
 
 El Function respeta 0.4 s entre consultas PubMed sin API key. Embed 4 usa
 dimensión 512 y trocea solicitudes por inputs/tokens. Con dos claves Gemini
-independientes, la traducción procesa como máximo una fila por clave en cada
-ola (`TRANSLATION_PARALLELISM=2`); esto reduce el tiempo de pared sin aumentar
-la cantidad de abstracts ni el costo unitario. Las cuotas reales dependen del
+independientes, la traducción procesa hasta dos lotes en paralelo
+(`TRANSLATION_PARALLELISM=2`); esto reduce el tiempo de pared sin aumentar la
+cantidad de abstracts ni el costo unitario. Las cuotas reales dependen del
 tenancy y región; se revisan en OCI antes de elevar más el paralelismo o el
 tamaño de lote.
 

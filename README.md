@@ -156,12 +156,25 @@ se sube un JSONL Silver directamente a Gold. La guía completa está en
 Solo las filas revisadas por una persona, con evidencia trazable y etiqueta
 binaria final, pasan a Gold y al split de entrenamiento.
 
+### Reproceso histórico sin volver a extraer noticias
+
+Para recuperar claims de un lote anterior, se reutiliza el Body ya guardado y
+se empieza directamente en Claims. El script
+[`scripts/05_prepare_claims_backfill.py`](scripts/05_prepare_claims_backfill.py)
+recibe los `record_id` de un export de Label Studio, selecciona solo los Body
+con `extraction_status=OK` y prepara CSVs pequeños para subir uno por uno a
+`silver/body/`. No consulta NewsData ni vuelve a visitar URLs; el evento inicia
+Claims → Evidence → sincronización automática al proyecto Multi-Claim. El
+`campaign.json` conserva cualquier noticia faltante o sin Body válido para no
+ocultar exclusiones.
+
 ## Archivos del repositorio
 
 ```text
 scripts/
   03_train_baseline.py           baseline local TF-IDF + regresión logística
   04_build_training_dataset.py   Evidence + export de Label Studio + Body a CSVs Gold
+  05_prepare_claims_backfill.py  Body histórico a lotes controlados de Claims
 tests/
   ...                             pruebas automatizadas
 docs/

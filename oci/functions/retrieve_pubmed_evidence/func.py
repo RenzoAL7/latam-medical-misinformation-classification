@@ -943,6 +943,58 @@ def _translate_batch(
     return translated
 
 
+def _translation_row_workload(row: dict[str, str]) -> tuple[int, int]:
+    """Return the abstract count and source characters for one claim row."""
+
+    abstract_count = 0
+    source_chars = 0
+    for candidate in _candidate_list(row):
+        abstract = str(candidate.get("abstract_excerpt", "") or "").strip()
+        if not abstract or str(candidate.get("abstract_es", "") or "").strip():
+            continue
+        abstract_count += 1
+        source_chars += len(str(candidate.get("title", "") or "")) + len(abstract)
+    return abstract_count, source_chars
+
+
+def _translation_batches(
+    rows: list[dict[str, str]],
+    batch_size: int,
+    max_input_chars: int,
+    max_abstracts: int,
+) -> list[list[dict[str, str]]]:
+    """Greedily group complete claim rows without risking oversized output.
+
+    A claim must retain all of its PubMed candidates.  Batching therefore
+    never splits a row or drops an abstract: it only combines two small claim
+    rows when both the configured row count and conservative input budgets
+    permit it.  A single large row remains valid as a batch of one.
+    """
+
+    batches: list[list[dict[str, str]]] = []
+    current: list[dict[str, str]] = []
+    current_abstracts = 0
+    current_chars = 0
+    for row in rows:
+        row_abstracts, row_chars = _translation_row_workload(row)
+        exceeds_budget = current and (
+            len(current) >= batch_size
+            or current_abstracts + row_abstracts > max_abstracts
+            or current_chars + row_chars > max_input_chars
+        )
+        if exceeds_budget:
+            batches.append(current)
+            current = []
+            current_abstracts = 0
+            current_chars = 0
+        current.append(row)
+        current_abstracts += row_abstracts
+        current_chars += row_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _apply_translation_mapping(
     row: dict[str, str],
     mapping: dict[str, str],
@@ -1125,6 +1177,8 @@ def _apply_translations(
     enabled: bool,
     configuration_error: str = "",
     parallelism: int = 1,
+    batch_max_input_chars: int = 9_000,
+    batch_max_abstracts: int = 6,
 ) -> dict[str, Any]:
     if isinstance(api_keys, str):
         api_keys = [api_keys] if api_keys else []
@@ -1133,6 +1187,10 @@ def _apply_translations(
     stats: Counter[str] = Counter()
     parallelism = min(max(1, parallelism), len(api_keys)) if api_keys else 1
     translation_cache: dict[str, str] = {}
+    if batch_max_input_chars < 1:
+        raise ValueError("batch_max_input_chars must be positive")
+    if batch_max_abstracts < 1:
+        raise ValueError("batch_max_abstracts must be positive")
 
     def cache_key(candidate: dict[str, Any]) -> str:
         abstract = str(candidate.get("abstract_excerpt", "") or "").strip()
@@ -1293,20 +1351,52 @@ def _apply_translations(
             )[:1500] or f"{missing_count} abstract(s) were not translated"
             stats["translation_errors"] += 1
 
-    # One row contains all of its PubMed candidates.  With two independent
-    # Gemini projects, send one complete row per key concurrently.  This avoids
-    # a large multi-row response exceeding its output limit and gives every
-    # final evidence row a realistic chance to finish inside one Function run.
+    def refresh_cached_batch(batch: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Apply translations learned in earlier waves before another API call."""
+
+        uncached_batch: list[dict[str, str]] = []
+        for row in batch:
+            candidates = _candidate_list(row)
+            hydrate_cache(row, candidates)
+            if all(
+                str(candidate.get("abstract_es", "") or "").strip()
+                for candidate in candidates
+                if str(candidate.get("abstract_excerpt", "") or "").strip()
+            ):
+                _, missing_count, scored = _apply_translation_mapping(row, {})
+                if missing_count:
+                    stats["translation_errors"] += 1
+                stats["scored_rows"] += int(scored)
+                stats["translation_cache_rows"] += 1
+            else:
+                uncached_batch.append(row)
+        return uncached_batch
+
+    # A claim keeps all of its candidates. Small claims can share a request,
+    # while the conservative character/abstract ceilings keep larger rows from
+    # producing an oversized JSON response.
+    batches = _translation_batches(
+        pending,
+        batch_size,
+        batch_max_input_chars,
+        batch_max_abstracts,
+    )
     if parallelism > 1 and pending:
-        batches = [pending[index : index + batch_size] for index in range(0, len(pending), batch_size)]
         for offset in range(0, len(batches), parallelism):
-            wave = batches[offset : offset + parallelism]
+            wave = [
+                refreshed
+                for batch in batches[offset : offset + parallelism]
+                if (refreshed := refresh_cached_batch(batch))
+            ]
+            if not wave:
+                continue
             if deadline - time.monotonic() < timeout + 5.0:
                 for remaining in batches[offset:]:
                     for row in remaining:
-                        row["translation_status"] = "TIME_BUDGET"
-                        row["translation_error"] = "Translation time budget reached"
-                        stats["translation_errors"] += 1
+                        if row.get("translation_status") == "PENDING":
+                            row["translation_status"] = "TIME_BUDGET"
+                            row["translation_error"] = "Translation time budget reached"
+                            stats["translation_errors"] += 1
                 break
             with ThreadPoolExecutor(max_workers=len(wave)) as executor:
                 futures = {
@@ -1320,6 +1410,7 @@ def _apply_translations(
                     ): (batch, (offset + index) % len(api_keys))
                     for index, batch in enumerate(wave)
                 }
+                stats["translation_batches"] += len(wave)
                 for future in as_completed(futures):
                     batch, preferred_slot = futures[future]
                     try:
@@ -1340,29 +1431,8 @@ def _apply_translations(
                                 apply_candidate_fallback(row, fallback_slot, fallback_exc)
         return dict(stats)
 
-    for offset in range(0, len(pending), batch_size):
-        batch = pending[offset : offset + batch_size]
-        # Cache entries may have been learned while translating the prior
-        # batch.  Refresh this batch immediately before calling Gemini so a
-        # PMID shared by two claims is paid for only once in the normal v1
-        # sequential mode.
-        uncached_batch: list[dict[str, str]] = []
-        for row in batch:
-            candidates = _candidate_list(row)
-            hydrate_cache(row, candidates)
-            if all(
-                str(candidate.get("abstract_es", "") or "").strip()
-                for candidate in candidates
-                if str(candidate.get("abstract_excerpt", "") or "").strip()
-            ):
-                _, missing_count, scored = _apply_translation_mapping(row, {})
-                if missing_count:
-                    stats["translation_errors"] += 1
-                stats["scored_rows"] += int(scored)
-                stats["translation_cache_rows"] += 1
-            else:
-                uncached_batch.append(row)
-        batch = uncached_batch
+    for batch in batches:
+        batch = refresh_cached_batch(batch)
         if not batch:
             continue
         if time.monotonic() >= deadline:
@@ -1373,6 +1443,7 @@ def _apply_translations(
             continue
         try:
             translated, used_slot = translate_with_failover(batch)
+            stats["translation_batches"] += 1
             stats["translation_requests"] += 1
             apply_mapping(batch, translated, used_slot)
         except Exception as exc:  # noqa: BLE001 - keep the English evidence usable
@@ -2499,6 +2570,36 @@ def _evidence_v1_record(row: dict[str, str], run_id: str) -> dict[str, Any]:
     }
 
 
+def _evidence_abstract_metrics(records: list[dict[str, Any]]) -> dict[str, int]:
+    """Expose the translation/embedding workload without retaining secrets."""
+
+    abstract_count = 0
+    source_chars = 0
+    translated_chars = 0
+    unique_abstracts: set[str] = set()
+    for record in records:
+        candidates = record.get("candidates", [])
+        if not isinstance(candidates, list):
+            continue
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            abstract = str(candidate.get("abstract_excerpt", "") or "").strip()
+            if not abstract:
+                continue
+            abstract_count += 1
+            source_chars += len(abstract)
+            pmid = str(candidate.get("pmid", "") or "").strip()
+            unique_abstracts.add(f"{pmid}:{hashlib.sha256(abstract.encode('utf-8')).hexdigest()}")
+            translated_chars += len(str(candidate.get("abstract_es", "") or "").strip())
+    return {
+        "candidate_abstracts": abstract_count,
+        "unique_pmid_abstracts": len(unique_abstracts),
+        "abstract_source_chars": source_chars,
+        "abstract_translation_chars": translated_chars,
+    }
+
+
 def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
     """Retrieve/rank evidence for every eligible claim in one Claims run."""
 
@@ -2529,6 +2630,12 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         )
         translation_model = os.getenv("TRANSLATION_MODEL_ID", "gemini-3.5-flash-lite").strip()
         translation_batch_size = _env_int("TRANSLATION_BATCH_SIZE", 1, minimum=1, maximum=5)
+        translation_batch_max_input_chars = _env_int(
+            "TRANSLATION_BATCH_MAX_INPUT_CHARS", 9000, minimum=1000, maximum=50000
+        )
+        translation_batch_max_abstracts = _env_int(
+            "TRANSLATION_BATCH_MAX_ABSTRACTS", 6, minimum=1, maximum=25
+        )
         translation_max_tokens = _env_int("TRANSLATION_MAX_TOKENS", 8000, minimum=500, maximum=12000)
         translation_timeout = _env_float("TRANSLATION_REQUEST_TIMEOUT", 30.0, minimum=5.0)
         translation_parallelism = _env_int("TRANSLATION_PARALLELISM", 1, minimum=1, maximum=10)
@@ -2669,6 +2776,8 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             run_id,
             True,
             parallelism=translation_parallelism,
+            batch_max_input_chars=translation_batch_max_input_chars,
+            batch_max_abstracts=translation_batch_max_abstracts,
         )
         _gate_evidence_for_human_review(output_rows, require_embeddings=True, require_translation=True)
 
@@ -2697,8 +2806,17 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                 "candidates_fetched_per_claim": candidates_fetched,
                 "embed_all_retrieved_candidates_with_abstract": True,
                 "translation_batch_size": translation_batch_size,
+                "translation_batch_max_input_chars": translation_batch_max_input_chars,
+                "translation_batch_max_abstracts": translation_batch_max_abstracts,
+                "translation_max_tokens": translation_max_tokens,
                 "translation_parallelism": translation_parallelism,
                 "embedding_model": embedding_model,
+            },
+            "workload": {
+                "claims_ready_for_pubmed": len(ready_rows),
+                "pubmed_search_requests": len(query_pmids),
+                "unique_pmids_requested": len(all_pmids),
+                "abstracts": _evidence_abstract_metrics(evidence_records),
             },
             "embedding": embedding_stats,
             "translation": translation_stats,

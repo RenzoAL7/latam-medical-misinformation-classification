@@ -1485,6 +1485,26 @@ def _v1_body_rows(
     return selected, dict(stats)
 
 
+def _claims_input_metrics(rows: list[dict[str, str]], max_body_chars: int) -> dict[str, int]:
+    """Describe the text actually sent to the extraction model.
+
+    ``LLM_MAX_BODY_CHARS`` is a safety limit, not a sampling mechanism.  These
+    counters make any omitted tail text visible in the immutable run manifest
+    so that future budget changes can be based on measured data rather than an
+    assumed token cost.
+    """
+
+    available = [len(row.get("body", "")) for row in rows]
+    sent = [min(length, max_body_chars) for length in available]
+    return {
+        "articles": len(rows),
+        "body_chars_available": sum(available),
+        "body_chars_sent": sum(sent),
+        "body_chars_omitted_by_limit": sum(length - sent_length for length, sent_length in zip(available, sent)),
+        "articles_truncated_by_body_limit": sum(length > max_body_chars for length in available),
+    }
+
+
 def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
     """Extract all claims from one Body event and write immutable JSONL output."""
 
@@ -1631,9 +1651,11 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                 "llm_provider": provider,
                 "model_id": model_id,
                 "request_batch_size": request_batch_size,
+                "max_body_chars": max_body_chars,
                 "max_claims_per_article": max_claims,
                 "max_rows": "all",
             },
+            "input": _claims_input_metrics(pending, max_body_chars),
         }
         _write_json_object(storage, namespace, bucket, manifest_object, manifest)
         result = {

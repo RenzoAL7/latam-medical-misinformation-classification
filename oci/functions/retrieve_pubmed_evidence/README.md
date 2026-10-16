@@ -51,10 +51,12 @@ TRANSLATE_ABSTRACTS=true
 GOOGLE_TRANSLATION_SECRET_OCIDS=<OCI Vault secret OCID API 3>,<OCI Vault secret OCID API 4>
 # GOOGLE_TRANSLATION_SECRET_OCID remains supported for one key.
 TRANSLATION_MODEL_ID=gemini-3.5-flash-lite
-TRANSLATION_BATCH_SIZE=1
+TRANSLATION_BATCH_SIZE=2
+TRANSLATION_BATCH_MAX_INPUT_CHARS=9000
+TRANSLATION_BATCH_MAX_ABSTRACTS=6
 TRANSLATION_MAX_TOKENS=8000
 TRANSLATION_REQUEST_TIMEOUT=30
-TRANSLATION_PARALLELISM=1
+TRANSLATION_PARALLELISM=2
 EMBEDDINGS_ENABLED=true
 GENAI_COMPARTMENT_ID=<OCI compartment OCID allowed to use Generative AI>
 EMBEDDING_REGION=us-ashburn-1
@@ -93,6 +95,13 @@ are chunked by input count and a conservative 100,000-token estimate so a
 large set of claims does not exceed the model input limit. See
 [`docs/limits_and_timing.md`](../../../docs/limits_and_timing.md) for the
 complete duration, PubMed and Embed 4 limits.
+
+Translation may group up to two *small* claim rows in one Gemini request. It
+never splits a claim or removes one of its candidates: the 9,000-character and
+six-abstract ceilings force a larger claim to remain in a batch of one. The
+manifest records the effective batch limits, request/cache statistics, and
+abstract character counts, so a future tuning decision can use observed work
+rather than lower `TRANSLATION_MAX_TOKENS` blindly.
 
 ## Output
 
