@@ -181,6 +181,13 @@ def test_multiclaim_batch_recovery_recognizes_schema_and_json_errors() -> None:
     )
 
 
+def test_google_key_failover_treats_transient_server_overload_as_switchable() -> None:
+    assert EXTRACT._google_key_switchable(
+        RuntimeError("Gemini HTTP 503: model is experiencing high demand (UNAVAILABLE)")
+    )
+    assert not EXTRACT._google_key_switchable(RuntimeError("Gemini HTTP 400: invalid request"))
+
+
 def test_evidence_excludes_pubmed_results_without_abstract() -> None:
     candidates = EVIDENCE._candidate_results(
         {},

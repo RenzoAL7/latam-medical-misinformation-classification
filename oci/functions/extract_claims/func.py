@@ -191,6 +191,9 @@ def _google_key_switchable(error: Exception) -> bool:
             "http 401",
             "http 403",
             "http 429",
+            "http 500",
+            "http 502",
+            "http 503",
             "quota",
             "rate limit",
             "api key",
@@ -200,6 +203,7 @@ def _google_key_switchable(error: Exception) -> bool:
             "timeout",
             "temporarily unavailable",
             "service unavailable",
+            "unavailable",
         )
     )
 
