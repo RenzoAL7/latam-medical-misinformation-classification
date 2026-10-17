@@ -185,7 +185,11 @@ def test_builder_blocks_an_article_when_evidence_contains_an_unreviewable_claim(
             (
                 "news_001",
                 "c02",
-                {"evidence_status": "NO_RESULTS", "embedding_status": "PENDING"},
+                {
+                    "evidence_status": "ERROR",
+                    "embedding_status": "ERROR",
+                    "translation_status": "ERROR",
+                },
             ),
         ],
     )
@@ -199,6 +203,86 @@ def test_builder_blocks_an_article_when_evidence_contains_an_unreviewable_claim(
         article = next(csv.DictReader(handle))
     assert article["aggregation_status"] == "PENDIENTE_EVIDENCIA"
     assert article["final_training_eligible"] == "NO"
+
+
+def test_reviewed_secondary_claim_does_not_block_on_technical_evidence_error(tmp_path: Path) -> None:
+    decisive = _task("news_001", "c01", "RESPALDADO", "supports", "central")
+    secondary = _task("news_001", "c02", "", "", "secondary")
+    secondary["data"]["evidence_status"] = "ERROR"
+    secondary["annotations"][0]["result"] = [
+        result
+        for result in secondary["annotations"][0]["result"]
+        if result["from_name"] not in {"evidence_relation", "claim_verdict", "selected_pmids"}
+    ]
+    export_path = tmp_path / "labelstudio_export.json"
+    export_path.write_text(json.dumps([decisive, secondary]), encoding="utf-8")
+    body_path = tmp_path / "body.csv"
+    _write_body(body_path)
+    evidence_path = tmp_path / "evidence.jsonl"
+    _write_evidence(
+        evidence_path,
+        [
+            ("news_001", "c01", None),
+            (
+                "news_001",
+                "c02",
+                {
+                    "evidence_status": "ERROR",
+                    "embedding_status": "ERROR",
+                    "translation_status": "ERROR",
+                },
+            ),
+        ],
+    )
+
+    summary = builder.build_dataset(export_path, [evidence_path], [body_path], tmp_path / "output")
+
+    assert summary["status"] == "ok"
+    assert summary["training_records"] == 1
+    assert summary["claims_without_reviewable_evidence"] == 0
+    assert summary["claims_secondary_without_evidence_review"] == 1
+    assert summary["claims_with_technical_evidence_blocks"] == 1
+
+
+def test_terminal_no_results_requires_triage_and_cannot_be_labeled_true_or_false(tmp_path: Path) -> None:
+    supported = _task("news_001", "c01", "RESPALDADO", "supports", "central")
+    undetermined = _task("news_001", "c02", "NO_DETERMINABLE", "unclear", "material")
+    undetermined["data"]["evidence_status"] = "NO_RESULTS"
+    undetermined["annotations"][0]["result"] = [
+        result
+        for result in undetermined["annotations"][0]["result"]
+        if result["from_name"] != "selected_pmids"
+    ]
+    export_path = tmp_path / "labelstudio_export.json"
+    export_path.write_text(json.dumps([supported, undetermined]), encoding="utf-8")
+    body_path = tmp_path / "body.csv"
+    _write_body(body_path)
+    evidence_path = tmp_path / "evidence.jsonl"
+    _write_evidence(
+        evidence_path,
+        [
+            ("news_001", "c01", None),
+            (
+                "news_001",
+                "c02",
+                {
+                    "evidence_status": "NO_RESULTS",
+                    "embedding_status": "SKIPPED_NO_EVIDENCE",
+                    "translation_status": "SKIPPED_NO_EVIDENCE",
+                },
+            ),
+        ],
+    )
+
+    summary = builder.build_dataset(export_path, [evidence_path], [body_path], tmp_path / "output")
+
+    assert summary["status"] == "ok"
+    assert summary["claims_pending"] == 0
+    assert summary["training_records"] == 0
+    with (tmp_path / "output" / "article_labels.csv").open(encoding="utf-8-sig", newline="") as handle:
+        article = next(csv.DictReader(handle))
+    assert article["label"] == "NO_DETERMINABLE"
+    assert article["aggregation_status"] == "COMPLETADA"
 
 
 def test_builder_prefers_a_recovered_evidence_revision_for_the_same_claim(tmp_path: Path) -> None:

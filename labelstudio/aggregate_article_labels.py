@@ -58,9 +58,6 @@ def _claim_issues(row: dict[str, str]) -> list[str]:
         "claim_id",
         "claim_text",
         "claim_materiality",
-        "evidence_relation",
-        "claim_verdict",
-        "selected_pmids",
         "verification_note",
         "annotation_id",
         "annotator",
@@ -71,8 +68,18 @@ def _claim_issues(row: dict[str, str]) -> list[str]:
     materiality = row.get("claim_materiality", "")
     if materiality and materiality not in {"central", "material", "secondary"}:
         issues.append("invalid_claim_materiality")
+
+    # Secondary claims remain auditable but do not determine the article label.
+    if materiality == "secondary":
+        return issues
+
+    for field in ("evidence_relation", "claim_verdict"):
+        if not row.get(field, ""):
+            issues.append(f"missing_{field}")
+
     verdict = row.get("claim_verdict", "")
     relation = row.get("evidence_relation", "")
+    evidence_status = row.get("evidence_status", "").upper()
     expected = {
         "RESPALDADO": "supports",
         "REFUTADO": "contradicts",
@@ -84,6 +91,17 @@ def _claim_issues(row: dict[str, str]) -> list[str]:
         issues.append("invalid_evidence_relation")
     if expected and relation and relation != expected:
         issues.append("claim_relation_mismatch")
+    if evidence_status not in {"OK", "NO_RESULTS", "NO_ABSTRACT"}:
+        issues.append("decisive_claim_without_reviewable_evidence")
+    elif evidence_status in {"NO_RESULTS", "NO_ABSTRACT"}:
+        if verdict and verdict != "NO_DETERMINABLE":
+            issues.append("decisive_verdict_without_pubmed_evidence")
+        if relation and relation != "unclear":
+            issues.append("decisive_relation_without_pubmed_evidence")
+        if row.get("selected_pmids", ""):
+            issues.append("pmid_without_pubmed_evidence")
+    elif evidence_status == "OK" and not row.get("selected_pmids", ""):
+        issues.append("missing_selected_pmids")
     return issues
 
 
@@ -109,6 +127,10 @@ def _aggregate_record(
     ]
     if not decisive:
         issues.append("no_central_or_material_claim")
+
+    decisive_evidence_statuses = {
+        claim.get("evidence_status", "").upper() for claim in decisive
+    }
 
     if issues:
         label = "NO_DETERMINABLE"
@@ -160,7 +182,13 @@ def _aggregate_record(
         "best_tfidf_similarity": _value(decisive_for_audit, "best_tfidf_similarity"),
         "ranking_method": "oci_cohere_embed_v4",
         "embedding_model": "cohere.embed-v4.0",
-        "evidence_status": "OK" if not issues else "REQUIERE_CORRECCION",
+        "evidence_status": (
+            "REQUIERE_CORRECCION"
+            if issues
+            else "OK"
+            if decisive_evidence_statuses == {"OK"}
+            else "NO_DETERMINABLE"
+        ),
         "evidence_run_id": _value(claims, "evidence_run_id"),
         "evidence_relation": relation,
         "label": label,

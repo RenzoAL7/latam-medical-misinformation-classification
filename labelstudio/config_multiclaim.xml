@@ -9,7 +9,7 @@
   </Style>
 
   <Header value="Revisión humana por claim médico" />
-  <Markdown value="Cada tarea corresponde a un solo claim (`record_id + claim_id`). Embed 4 y TF-IDF ordenan artículos PubMed: no verifican por sí mismos que la noticia sea verdadera." />
+  <Markdown value="Cada tarea corresponde a un solo claim (`record_id + claim_id`). Embed 4 y TF-IDF ordenan artículos PubMed: no verifican por sí mismos que la noticia sea verdadera. Primero marca su importancia. Si es secundario, basta justificar por qué no cambia el sentido de la noticia; no completes el bloque de evidencia. Para claims centrales o materiales, revisa la evidencia y el veredicto." />
 
   <View className="meta" style="display: flex; gap: 16px;">
     <View style="flex: 1;">
@@ -61,22 +61,22 @@
     </Choices>
 
     <Header value="2. Relación entre evidencia y claim" />
-    <Choices name="evidence_relation" toName="claim" choice="single-radio" showInline="true" required="true">
+    <Choices name="evidence_relation" toName="claim" choice="single-radio" showInline="true">
       <Choice value="supports" html="Apoya" />
       <Choice value="contradicts" html="Contradice" />
       <Choice value="unclear" html="No concluyente" />
     </Choices>
 
     <Header value="3. Veredicto de este claim" />
-    <Choices name="claim_verdict" toName="claim" choice="single-radio" showInline="true" required="true">
+    <Choices name="claim_verdict" toName="claim" choice="single-radio" showInline="true">
       <Choice value="RESPALDADO" html="Respaldado" />
       <Choice value="REFUTADO" html="Refutado" />
       <Choice value="NO_DETERMINABLE" html="No determinable" />
     </Choices>
   </View>
 
-  <Header value="PMID(s) usados (obligatorio)" />
-  <TextArea name="selected_pmids" toName="claim" required="true" maxSubmissions="1" placeholder="Por ejemplo: 12345678, 23456789" />
+  <Header value="PMID(s) usados (obligatorio para claims centrales/materiales con evidencia)" />
+  <TextArea name="selected_pmids" toName="claim" maxSubmissions="1" placeholder="Para claims centrales/materiales con evidencia: por ejemplo 12345678, 23456789" />
   <Header value="Justificación humana (obligatoria)" />
   <TextArea name="verification_note" toName="claim" required="true" maxSubmissions="1" placeholder="Indica población, resultado y por qué la evidencia apoya, contradice o no permite decidir." />
 </View>

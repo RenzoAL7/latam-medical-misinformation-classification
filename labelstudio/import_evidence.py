@@ -182,11 +182,25 @@ def _input_paths(values: list[str]) -> list[Path]:
 
 
 def _ready_for_review(row: dict[str, Any]) -> bool:
-    if _as_text(row.get("evidence_status")).upper() != "OK":
+    if _as_text(row.get("schema_version")) != "evidence.v1":
         return False
-    return _as_text(row.get("schema_version")) == "evidence.v1" and all(
-        _as_text(row.get(field)).upper() == "OK"
-        for field in ("llm_status", "embedding_status", "translation_status")
+    if _as_text(row.get("llm_status")).upper() != "OK":
+        return False
+
+    evidence_status = _as_text(row.get("evidence_status")).upper()
+    if evidence_status == "OK":
+        return all(
+            _as_text(row.get(field)).upper() == "OK"
+            for field in ("embedding_status", "translation_status")
+        )
+
+    # Terminal PubMed misses still need a human materiality decision. They
+    # may become secondary, or central/material with an explicit
+    # NO_DETERMINABLE verdict; they are never supporting/contradicting evidence.
+    return (
+        evidence_status in {"NO_RESULTS", "NO_ABSTRACT"}
+        and _as_text(row.get("embedding_status")).upper() == "SKIPPED_NO_EVIDENCE"
+        and _as_text(row.get("translation_status")).upper() == "SKIPPED_NO_EVIDENCE"
     )
 
 

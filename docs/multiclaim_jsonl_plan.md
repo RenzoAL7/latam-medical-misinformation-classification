@@ -177,17 +177,29 @@ archivo de candidatos.
 ## Gold y entrenamiento
 
 Label Studio importa una tarea por `record_id + claim_id`. La persona revisora
-marca `claim_materiality` (`central`, `material` o `secondary`),
-`evidence_relation` y `claim_verdict`. Después,
-`scripts/04_build_training_dataset.py` genera una sola fila por `record_id`
-solo cuando reúne el Evidence JSONL completo, la exportación de Label Studio y
-el Body de la misma corrida. Si Evidence contiene un claim no revisable o falta
-su tarea/revisión humana, la noticia queda fuera del CSV binario. Con el lote
-completo, aplica esta regla:
+marca `claim_materiality` (`central`, `material` o `secondary`) y deja una
+justificación. Si es `secondary`, no necesita adjudicar evidencia, PMID ni
+veredicto; el claim permanece en la auditoría y no determina la etiqueta. Si
+es `central` o `material`, también revisa `evidence_relation` y
+`claim_verdict`. Para `NO_RESULTS`/`NO_ABSTRACT`, un claim decisivo solo puede
+recibir `NO_DETERMINABLE`. Los errores técnicos no se convierten en veredictos.
+Después, `scripts/04_build_training_dataset.py` genera una sola fila por
+`record_id` solo cuando reúne el Evidence JSONL completo, la exportación de
+Label Studio y el Body de la misma corrida. Un resultado terminal
+`NO_RESULTS`/`NO_ABSTRACT` sí se puede revisar para clasificar materialidad y,
+si el claim es decisivo, adjudicar `NO_DETERMINABLE`. Un fallo técnico de un
+claim decisivo, una tarea/revisión humana faltante u otro dato inválido deja la
+noticia fuera del CSV binario. Con el lote completo, aplica esta regla:
 
 - algún claim `central`/`material` `REFUTADO` → `REFUTADA`;
 - todos los claims `central`/`material` `RESPALDADOS` → `RESPALDADA`;
-- de otro modo → `NO_DETERMINABLE`.
+- al menos un claim decisivo `NO_DETERMINABLE` → `NO_DETERMINABLE`;
+- los claims `secondary` quedan en el registro de revisión pero no alteran la
+  agregación.
+
+Esta relajación reduce la búsqueda manual de evidencia por claims secundarios;
+no reduce por sí sola las consultas a PubMed, porque la Function de Evidence
+actual todavía recibe y procesa todos los claims elegibles.
 
 La salida compacta de entrenamiento continúa siendo una fila por noticia:
 
