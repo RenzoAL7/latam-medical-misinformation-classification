@@ -717,6 +717,44 @@ def test_labelstudio_jsonl_creates_one_task_per_claim_and_xml_has_no_article_lab
     control_names = {element.attrib["name"] for element in xml_root.iter() if "name" in element.attrib}
     assert {"claim_materiality", "evidence_relation", "claim_verdict", "selected_pmids"}.issubset(control_names)
     assert "final_label" not in control_names
+    controls = {element.attrib.get("name"): element for element in xml_root.iter() if "name" in element.attrib}
+    assert controls["claim_materiality"].attrib.get("required") == "true"
+    assert controls["evidence_relation"].attrib.get("required") is None
+    assert controls["claim_verdict"].attrib.get("required") is None
+    assert controls["selected_pmids"].attrib.get("required") is None
+
+
+def test_labelstudio_import_accepts_terminal_pubmed_misses_for_human_triage() -> None:
+    row = {
+        "schema_version": "evidence.v1",
+        "llm_status": "OK",
+        "evidence_status": "NO_RESULTS",
+        "embedding_status": "SKIPPED_NO_EVIDENCE",
+        "translation_status": "SKIPPED_NO_EVIDENCE",
+    }
+
+    assert IMPORTER._ready_for_review(row)
+
+    row["translation_status"] = "ERROR"
+    assert not IMPORTER._ready_for_review(row)
+
+
+def test_terminal_pubmed_miss_cannot_be_adjudicated_with_a_pmid() -> None:
+    claim = {
+        "claim_id": "news_001_c01",
+        "claim_text": "Claim without PubMed candidates.",
+        "claim_materiality": "central",
+        "claim_verdict": "NO_DETERMINABLE",
+        "evidence_relation": "unclear",
+        "evidence_status": "NO_RESULTS",
+        "selected_pmids": "12345678",
+        "verification_note": "No candidate was returned by PubMed.",
+        "annotation_id": "annotation-1",
+        "annotator": "reviewer",
+        "annotated_at": "2026-10-17T12:00:00Z",
+    }
+
+    assert "pmid_without_pubmed_evidence" in AGGREGATOR._claim_issues(claim)
 
 
 def test_jsonl_import_filters_degraded_claim_and_aggregates_one_article() -> None:

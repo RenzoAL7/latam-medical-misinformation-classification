@@ -4,8 +4,10 @@
 The program is intended for a private Label Studio VM. It authenticates to
 Object Storage with the VM's Instance Principal, accepts only the immutable
 ``silver/evidence/run_id=*/manifest.json`` outputs for the multi-claim JSONL
-contract. Manifests can be ``COMPLETE`` or ``PARTIAL``: the importer still
-accepts only individual claims whose four review states are ``OK``.
+contract. Manifests can be ``COMPLETE`` or ``PARTIAL``. The importer accepts
+claims with a valid LLM extraction and either complete evidence processing or
+a terminal PubMed miss (``NO_RESULTS``/``NO_ABSTRACT``) so a human can triage
+their materiality. Transient evidence failures remain excluded.
 
 The Label Studio API token is read only from ``LABEL_STUDIO_TOKEN`` at runtime;
 it is never written to the state file or committed to the repository.

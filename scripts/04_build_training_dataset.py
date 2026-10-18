@@ -238,7 +238,23 @@ def _evidence_identity(record: dict[str, Any], path: Path, line_number: int) -> 
 
 
 def _evidence_block_reason(record: dict[str, Any]) -> str:
-    """Return why one extracted claim could not be sent for human review."""
+    """Return why one claim cannot support a decisive human verdict yet."""
+
+    llm_status = _clean(record.get("llm_status")).upper()
+    evidence_status = _clean(record.get("evidence_status")).upper()
+    embedding_status = _clean(record.get("embedding_status")).upper()
+    translation_status = _clean(record.get("translation_status")).upper()
+
+    # No candidates/usable abstracts is a terminal research outcome, not a
+    # technical failure. The reviewer can triage the claim and, if decisive,
+    # record NO_DETERMINABLE without inventing a PMID.
+    if (
+        llm_status == "OK"
+        and evidence_status in {"NO_RESULTS", "NO_ABSTRACT"}
+        and embedding_status == "SKIPPED_NO_EVIDENCE"
+        and translation_status == "SKIPPED_NO_EVIDENCE"
+    ):
+        return ""
 
     non_ok = [
         field
@@ -310,6 +326,34 @@ def _pending_claims(expected: dict[str, set[str]], reviews: list[dict[str, Any]]
         for record_id, claim_keys in expected.items()
         if claim_keys - reviewed_by_record.get(record_id, set())
     }
+
+
+def _exclude_reviewed_secondary_from_evidence_blocks(
+    blocked: dict[str, dict[str, str]], reviews: list[dict[str, Any]]
+) -> tuple[dict[str, dict[str, str]], int]:
+    """Let a complete secondary triage resolve a technical evidence block."""
+
+    secondary_keys = {
+        (_clean(row.get("record_id")), _clean(row.get("claim_key")))
+        for row in reviews
+        if _clean(row.get("claim_materiality")) == "secondary"
+        and not AGGREGATOR._claim_issues(row)
+    }
+    remaining = {
+        record_id: {
+            claim_key: reason
+            for claim_key, reason in claim_reasons.items()
+            if (record_id, claim_key) not in secondary_keys
+        }
+        for record_id, claim_reasons in blocked.items()
+    }
+    remaining = {record_id: reasons for record_id, reasons in remaining.items() if reasons}
+    blocked_keys = {
+        (record_id, claim_key)
+        for record_id, claim_reasons in blocked.items()
+        for claim_key in claim_reasons
+    }
+    return remaining, len(secondary_keys & blocked_keys)
 
 
 def _mark_pending_articles(
@@ -416,6 +460,10 @@ def build_dataset(
         )
     body_rows = _load_body_rows(body_inputs)
     reviews = EXPORTER._claim_review_rows(payload)
+    raw_blocked_count = sum(len(claims) for claims in blocked.values())
+    blocked, secondary_without_evidence = _exclude_reviewed_secondary_from_evidence_blocks(
+        blocked, reviews
+    )
     reviewable = {
         record_id: claim_keys - set(blocked.get(record_id, {}))
         for record_id, claim_keys in expected.items()
@@ -494,6 +542,8 @@ def build_dataset(
         "claim_reviews_completed": len(reviews),
         "claims_pending": sum(len(keys) for keys in pending.values()),
         "claims_without_reviewable_evidence": sum(len(claims) for claims in blocked.values()),
+        "claims_secondary_without_evidence_review": secondary_without_evidence,
+        "claims_with_technical_evidence_blocks": raw_blocked_count,
         "evidence_revisions_superseded": superseded_revisions,
         "articles_total": len(articles),
         "articles_by_aggregation_status": dict(sorted(status_counts.items())),
