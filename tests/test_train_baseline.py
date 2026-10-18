@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 from pathlib import Path
+import pytest
 
 
 MODULE_PATH = Path(__file__).parents[1] / "scripts" / "03_train_baseline.py"
@@ -64,3 +65,37 @@ def test_select_rows_is_deterministic_and_keeps_both_labels() -> None:
 
     assert [row["record_id"] for row in first] == [row["record_id"] for row in second]
     assert {row["label"] for row in first} == {"RESPALDADA", "REFUTADA"}
+
+
+def test_load_split_manifest_keeps_article_assignments(tmp_path: Path) -> None:
+    path = tmp_path / "split_manifest.csv"
+    rows = [
+        {"record_id": "a", "dataset_split": "train", "label": "REFUTADA"},
+        {"record_id": "b", "dataset_split": "train", "label": "RESPALDADA"},
+        {"record_id": "c", "dataset_split": "validation", "label": "REFUTADA"},
+        {"record_id": "d", "dataset_split": "validation", "label": "RESPALDADA"},
+        {"record_id": "e", "dataset_split": "test", "label": "REFUTADA"},
+        {"record_id": "f", "dataset_split": "test", "label": "RESPALDADA"},
+    ]
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+    assignments, labels = train_baseline.load_split_manifest(path)
+
+    assert assignments["a"] == "train"
+    assert assignments["d"] == "validation"
+    assert assignments["f"] == "test"
+    assert labels["b"] == "RESPALDADA"
+
+
+def test_load_split_manifest_rejects_duplicate_article(tmp_path: Path) -> None:
+    path = tmp_path / "split_manifest.csv"
+    path.write_text(
+        "record_id,dataset_split,label\na,train,REFUTADA\na,test,REFUTADA\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="repeats record_id"):
+        train_baseline.load_split_manifest(path)
