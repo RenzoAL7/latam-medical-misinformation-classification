@@ -166,6 +166,38 @@ def stratified_split(rows: list[dict[str, str]], seed: int) -> dict[str, str]:
     return assignments
 
 
+def load_split_manifest(path: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Read an article-level split so every model can use identical records."""
+
+    assignments: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        fields = set(reader.fieldnames or ())
+        missing = {"record_id", "dataset_split", "label"} - fields
+        if missing:
+            raise ValueError(f"Split manifest is missing columns: {', '.join(sorted(missing))}")
+        for line_number, row in enumerate(reader, start=2):
+            record_id = _clean(row.get("record_id"))
+            split = _clean(row.get("dataset_split"))
+            label = _clean(row.get("label"))
+            if not record_id:
+                raise ValueError(f"Split manifest has an empty record_id at line {line_number}")
+            if record_id in assignments:
+                raise ValueError(f"Split manifest repeats record_id {record_id!r}")
+            if split not in {"train", "validation", "test"}:
+                raise ValueError(f"Invalid dataset_split {split!r} for {record_id}")
+            if label not in LABEL_TO_ID:
+                raise ValueError(f"Invalid binary label {label!r} for {record_id}")
+            assignments[record_id] = split
+            labels[record_id] = label
+    if not assignments:
+        raise ValueError(f"Split manifest is empty: {path}")
+    if set(assignments.values()) != {"train", "validation", "test"}:
+        raise ValueError("Split manifest must contain train, validation, and test rows")
+    return assignments, labels
+
+
 def _metrics(y_true: list[int], y_pred: Any, y_score: Any | None) -> dict[str, Any]:
     from sklearn.metrics import (
         accuracy_score,
@@ -226,25 +258,48 @@ def run_training(
     min_rows: int,
     seed: int,
     overwrite: bool = False,
+    split_manifest: Path | None = None,
 ) -> Path:
     rows = load_training_rows(input_path)
-    if len(rows) < min_rows:
+    if split_manifest is None and len(rows) < min_rows:
         raise ValueError(
             f"Only {len(rows)} binary Gold rows are ready; the pilot requires at least {min_rows}. "
             "Complete and validate more Label Studio annotations first."
         )
-    selected = select_rows(rows, limit, seed)
+    split_source = f"generated with seed={seed}, limit={limit}"
+    if split_manifest is None:
+        selected = select_rows(rows, limit, seed)
+        assignments = stratified_split(selected, seed)
+    else:
+        assignments, manifest_labels = load_split_manifest(split_manifest)
+        by_id = {row["record_id"]: row for row in rows}
+        missing_ids = sorted(set(assignments) - set(by_id))
+        if missing_ids:
+            raise ValueError(f"Split manifest refers to article IDs missing from Gold: {missing_ids[:5]}")
+        for record_id, label in manifest_labels.items():
+            if by_id[record_id]["label"] != label:
+                raise ValueError(f"Label mismatch for {record_id} between Gold and split manifest")
+        selected = [by_id[record_id] for record_id in assignments]
+        split_source = str(split_manifest)
     if len(selected) < min_rows:
-        raise ValueError(f"The selected pilot has {len(selected)} rows; increase --limit to at least {min_rows}")
+        raise ValueError(
+            f"The selected pilot has {len(selected)} rows; increase --limit or use a larger split manifest "
+            f"to reach --min-rows {min_rows}"
+        )
     selected_class_counts = Counter(row["label"] for row in selected)
     if set(selected_class_counts) != set(LABEL_TO_ID):
         raise ValueError("The selected pilot must contain both RESPALDADA and REFUTADA rows")
 
-    assignments = stratified_split(selected, seed)
+    if set(assignments) != {row["record_id"] for row in selected}:
+        raise ValueError("Each selected article must appear exactly once in the split manifest")
     by_split = {
         split: [row for row in selected if assignments[row["record_id"]] == split]
         for split in ("train", "validation", "test")
     }
+    if any(not split_rows for split_rows in by_split.values()):
+        raise ValueError("The split must contain train, validation, and test articles")
+    if set(row["label"] for row in by_split["train"]) != set(LABEL_TO_ID):
+        raise ValueError("The train split must contain examples from both binary classes")
 
     try:
         from joblib import dump
@@ -366,6 +421,7 @@ def run_training(
         "target": "label",
         "label_mapping": LABEL_TO_ID,
         "split": "70/15/15 stratified",
+        "split_source": split_source,
         "model": {
             "type": "TfidfVectorizer + LogisticRegression",
             "class_weight": "balanced",
@@ -388,6 +444,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=100, help="Rows in the pilot subset")
     parser.add_argument("--min-rows", type=int, default=100, help="Minimum eligible rows required")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--split-manifest",
+        type=Path,
+        help="Optional split_manifest.csv from a prior run; reuses exactly those article IDs",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -400,6 +461,7 @@ def main() -> int:
             args.min_rows,
             args.seed,
             args.overwrite,
+            args.split_manifest,
         )
     except (FileNotFoundError, ValueError, FileExistsError, RuntimeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

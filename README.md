@@ -200,6 +200,13 @@ scripts/
   05_prepare_claims_backfill.py  Body histórico a lotes controlados de Claims
   06_prepare_evidence_retry.py   Claims fallidos de Evidence a reintento mínimo
   07_prepare_translation_continuation_job.py  job sin PubMed/Embed para traducciones pendientes
+experiments/models/
+  README.md                       uso, dependencias y protocolo común de modelos
+  common.py                       carga Gold y evaluación compartida por noticia
+  sequence_train.py               Word2Vec/LSTM y GloVe/BiLSTM
+  transformer_train.py            fine-tuning BERT/BETO/RoBERTa-BNE
+  sbert_train.py                  embeddings SBERT + clasificador clásico
+  */train.py                      punto de entrada por variante de modelo
 tests/
   ...                             pruebas automatizadas
 docs/
