@@ -3,9 +3,10 @@
 The function is deliberately an evidence-retrieval step. It does not decide
 whether a news claim is true or false. It drains one bounded source batch,
 queries PubMed with ESearch, ranks the candidates with OCI Cohere Embed 4,
-translates all retained abstract excerpts to Spanish, and writes accepted and
-rejected rows to deterministic output objects. A transparent Spanish TF-IDF
-score is kept as a diagnostic and fallback.
+prepares a flat JSONL translation artifact, and writes retrieval failures to a
+rejected artifact. Translation is a separate event-driven step that consumes
+that artifact and publishes the final Evidence JSONL. A transparent Spanish
+TF-IDF score is kept as a diagnostic and fallback.
 """
 
 from __future__ import annotations
@@ -45,8 +46,7 @@ EMBEDDING_METHOD = "oci_cohere_embed_v4"
 TRANSLATION_PROMPT_VERSION = "pubmed-abstract-es-v1"
 EVIDENCE_SCHEMA_VERSION = "evidence.v1"
 EVIDENCE_MANIFEST_SCHEMA_VERSION = "evidence.manifest.v1"
-TRANSLATION_JOB_SCHEMA_VERSION = "evidence.translation.job.v1"
-TRANSLATION_CONTINUATION_STAGE = "translation_continuation"
+TRANSLATE_MANIFEST_SCHEMA_VERSION = "translate.manifest.v1"
 
 OUTPUT_FIELDS = [
     "record_id",
@@ -86,7 +86,6 @@ OUTPUT_FIELDS = [
     "claim_run_id",
     "evidence_run_id",
     "cosine_method",
-    "ranking_method",
     "embedding_model",
     "embedding_status",
     "embedding_query_field",
@@ -1274,7 +1273,6 @@ def _rerank_candidates(row: dict[str, str]) -> int:
         row["best_tfidf_similarity"] = ""
     scored = embedding_candidates or tfidf_scored
     row["cosine_method"] = EMBEDDING_METHOD if embedding_candidates else COSINE_METHOD if tfidf_scored else row.get("cosine_method", "")
-    row["ranking_method"] = EMBEDDING_METHOD if embedding_candidates else COSINE_METHOD if tfidf_scored else row.get("ranking_method", "")
     if scored:
         row["best_pmid"] = str(candidates[0].get("pmid", ""))
         if embedding_candidates:
@@ -1941,7 +1939,6 @@ def _apply_embeddings(
         )
         row["pubmed_results_json"] = json.dumps(candidates, ensure_ascii=False)
         row["embedding_status"] = "OK"
-        row["ranking_method"] = EMBEDDING_METHOD
         if candidates and candidates[0].get("embedding_similarity") is not None:
             row["best_pmid"] = str(candidates[0].get("pmid", ""))
             row["best_embedding_similarity"] = str(candidates[0]["embedding_similarity"])
@@ -1993,7 +1990,6 @@ def _base_output_row(row: dict[str, str], run_id: str, retrieved_at: str) -> dic
         "claim_run_id": row.get("claim_run_id", ""),
         "evidence_run_id": run_id,
         "cosine_method": COSINE_METHOD,
-        "ranking_method": "",
         "embedding_model": "",
         "embedding_status": "PENDING",
         "embedding_query_field": "",
@@ -2101,7 +2097,6 @@ def _handler_legacy(ctx: Any, data: io.BytesIO | None = None) -> response.Respon
         namespace = _required_env("OBJECT_STORAGE_NAMESPACE")
         bucket = _required_env("OBJECT_STORAGE_BUCKET")
         claims_prefix = os.getenv("SILVER_CLAIMS_PREFIX", "silver/claims").strip("/")
-        evidence_prefix = os.getenv("SILVER_EVIDENCE_PREFIX", "silver/evidence").strip("/")
         rejected_prefix = os.getenv("SILVER_REJECTED_EVIDENCE_PREFIX", "silver/rejected/evidence").strip("/")
         # A zero max processes every eligible claim in the selected source.
         # Production can set a positive cap to let a recurring drain advance a
@@ -2389,11 +2384,6 @@ def _handler_legacy(ctx: Any, data: io.BytesIO | None = None) -> response.Respon
                 if embedding_stats.get("status") == "ok"
                 else COSINE_METHOD
             ),
-            "ranking_method": (
-                EMBEDDING_METHOD
-                if embedding_stats.get("status") == "ok"
-                else COSINE_METHOD
-            ),
             "embedding_model": embedding_model if embeddings_enabled else "",
             "embedding_dimensions": str(embedding_dimensions) if embeddings_enabled else "",
             "embedding_max_inputs": str(embedding_max_inputs) if embeddings_enabled else "",
@@ -2455,7 +2445,7 @@ def _read_jsonl_object(
 
 
 def _event_jsonl_object_name(data: io.BytesIO | None, bucket: str, prefix: str) -> str:
-    """Read exactly the claims.jsonl object from an Object Storage event."""
+    """Read exactly one flat ``claims_<run_id>.jsonl`` event object."""
 
     if data is None:
         raise RuntimeError("Object Storage event payload is required in evidence.v1")
@@ -2487,14 +2477,43 @@ def _event_jsonl_object_name(data: io.BytesIO | None, bucket: str, prefix: str) 
         payload.get("object_name"),
     ):
         object_name = unquote(str(candidate or "")).lstrip("/")
-        if object_name.startswith(expected_prefix) and object_name.endswith("/claims.jsonl"):
+        basename = object_name[len(expected_prefix) :] if object_name.startswith(expected_prefix) else ""
+        if (
+            basename.startswith("claims_")
+            and basename.endswith(".jsonl")
+            and "/" not in basename
+        ):
             return object_name
-    raise RuntimeError(f"Event does not identify a claims.jsonl under {expected_prefix}")
+    raise RuntimeError(f"Event does not identify a flat claims_<run_id>.jsonl under {expected_prefix}")
 
 
 def _evidence_v1_object_names(prefix: str, run_id: str) -> tuple[str, str]:
-    base = f"{prefix.strip('/')}/run_id={run_id}"
-    return f"{base}/evidence.jsonl", f"{base}/manifest.json"
+    base = prefix.strip("/")
+    return f"{base}/evidence_{run_id}.jsonl", f"{base}/evidence_{run_id}.manifest.json"
+
+
+def _translate_v1_object_names(prefix: str, run_id: str) -> tuple[str, str]:
+    base = prefix.strip("/")
+    return f"{base}/translate_{run_id}.jsonl", f"{base}/translate_{run_id}.manifest.json"
+
+
+def _rejected_jsonl_object_name(prefix: str, stage: str, run_id: str) -> str:
+    base = prefix.strip("/")
+    stage = stage.strip("/")
+    if base.rsplit("/", 1)[-1] != stage:
+        base = f"{base}/{stage}"
+    return f"{base}/{stage}_{run_id}.jsonl"
+
+
+def _retrieval_rejected_object_name(prefix: str, run_id: str) -> str:
+    """Return the rejected artifact for the PubMed/embedding stage.
+
+    Retrieval produces the Translate input JSONL.  Its failures must stay in
+    the Translate rejected prefix; the Evidence rejected prefix belongs to the
+    subsequent translation-and-finalization stage.
+    """
+
+    return _rejected_jsonl_object_name(prefix, "translate", run_id)
 
 
 def _write_jsonl_object(
@@ -2528,6 +2547,24 @@ def _write_json_object(
         put_object_body=io.BytesIO(json.dumps(document, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")),
         content_type="application/json; charset=utf-8",
     )
+
+
+def _write_rejected_jsonl(
+    client: Any,
+    namespace: str,
+    bucket: str,
+    prefix: str,
+    stage: str,
+    run_id: str,
+    records: list[dict[str, Any]],
+) -> str:
+    """Write rejected rows without creating an event source for the next stage."""
+
+    if not records:
+        return ""
+    object_name = _rejected_jsonl_object_name(prefix, stage, run_id)
+    _write_jsonl_object(client, namespace, bucket, object_name, records)
+    return object_name
 
 
 def _read_json_object(
@@ -2754,6 +2791,7 @@ def _evidence_v1_record(row: dict[str, str], run_id: str) -> dict[str, Any]:
         "source_body_object": row.get("source_body_object", ""),
         "body_sha256": row.get("body_sha256", ""),
         "article": _v1_article_metadata(row),
+        "body": row.get("body", ""),
         "llm_status": row.get("llm_status", ""),
         "claim_text": row.get("claim_text", ""),
         "claim_text_en": row.get("claim_text_en", ""),
@@ -2768,7 +2806,6 @@ def _evidence_v1_record(row: dict[str, str], run_id: str) -> dict[str, Any]:
         "best_embedding_similarity": row.get("best_embedding_similarity", ""),
         "best_tfidf_similarity": row.get("best_tfidf_similarity", ""),
         "cosine_method": row.get("cosine_method", ""),
-        "ranking_method": row.get("ranking_method", ""),
         "embedding_model": row.get("embedding_model", ""),
         "embedding_status": row.get("embedding_status", ""),
         "embedding_query_field": row.get("embedding_query_field", ""),
@@ -2813,77 +2850,28 @@ def _evidence_abstract_metrics(records: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def _evidence_claim_key(record: dict[str, Any]) -> str:
-    """Return the durable article/claim identity used across continuation jobs."""
+    """Return the durable article/claim identity used across stages."""
 
     record_id = _as_text(record.get("record_id"))
     claim_id = _as_text(record.get("claim_id"))
     if not record_id or not claim_id:
-        raise RuntimeError("Evidence continuation record lacks record_id or claim_id")
+        raise RuntimeError("Evidence record lacks record_id or claim_id")
     return f"{record_id}::{claim_id}"
 
 
-def _translation_retryable_evidence_record(record: dict[str, Any]) -> bool:
-    """Return whether only the translation portion can safely be retried.
-
-    This deliberately excludes LLM, PubMed and embedding failures.  A
-    continuation receives the candidates already fetched and ranked by the
-    first Evidence invocation, so rerunning any earlier stage would be both
-    more expensive and methodologically harder to audit.
-    """
-
-    if _as_text(record.get("schema_version")) != EVIDENCE_SCHEMA_VERSION:
-        return False
-    if _as_text(record.get("llm_status")).upper() != "OK":
-        return False
-    if _as_text(record.get("embedding_status")).upper() != "OK":
-        return False
-    status = _as_text(record.get("translation_status")).upper()
-    if status in {"TIME_BUDGET", "PARTIAL"}:
-        return True
-    if status != "ERROR":
-        return False
-    error_text = " ".join(
-        (
-            _as_text(record.get("translation_error")),
-            _as_text(record.get("evidence_error")),
-        )
-    ).lower()
-    transient_markers = (
-        "429",
-        "500",
-        "502",
-        "503",
-        "504",
-        "timeout",
-        "timed out",
-        "time budget",
-        "temporarily",
-        "unavailable",
-        "network",
-        "quota",
-        "rate limit",
-        "recitation",
-        "empty response",
-        "omitted translation",
-    )
-    return any(marker in error_text for marker in transient_markers)
-
-
-def _continuation_row_from_record(
+def _translation_row_from_record(
     record: dict[str, Any],
-    continuation_run_id: str,
+    run_id: str,
     retrieved_at: str,
 ) -> dict[str, str]:
-    """Rehydrate an Evidence JSONL record without fetching or embedding again."""
+    """Rehydrate one flat translation record without refetching evidence."""
 
     if _as_text(record.get("schema_version")) != EVIDENCE_SCHEMA_VERSION:
-        raise RuntimeError("Translation continuation accepts only evidence.v1 records")
+        raise RuntimeError("Translation accepts only evidence.v1 records")
     _evidence_claim_key(record)
     candidates = record.get("candidates", [])
     if not isinstance(candidates, list) or not all(isinstance(item, dict) for item in candidates):
-        raise RuntimeError("Translation continuation record has invalid candidates")
-    if not candidates:
-        raise RuntimeError("Translation continuation record has no retained PubMed candidates")
+        raise RuntimeError("Translation record has invalid candidates")
     article = record.get("article", {})
     if not isinstance(article, dict):
         article = {}
@@ -2895,72 +2883,18 @@ def _continuation_row_from_record(
     for field in OUTPUT_FIELDS:
         if field in record and field != "pubmed_results_json":
             row[field] = _as_text(record.get(field))
-    for field in ("body_sha256", "claim_status"):
-        row[field] = _as_text(record.get(field))
     row["record_id"] = _as_text(record.get("record_id"))
     row["claim_id"] = _as_text(record.get("claim_id"))
     row["pubmed_results_json"] = json.dumps(candidates, ensure_ascii=False)
-    # The original records have already completed PubMed and Embed 4.  Reset
-    # only the output state necessary for _apply_translations to fill missing
-    # abstracts while retaining any previously translated candidates.
-    row["evidence_status"] = "OK"
-    row["evidence_error"] = ""
-    row["translation_status"] = "PENDING"
-    row["translation_error"] = ""
-    row["translation_run_id"] = continuation_run_id
-    row["evidence_run_id"] = continuation_run_id
+    row["evidence_run_id"] = _as_text(record.get("evidence_run_id")) or run_id
+    row["translation_run_id"] = run_id
     row["retrieved_at"] = retrieved_at
+    if row.get("evidence_status", "").upper() == "OK":
+        row["translation_status"] = "PENDING"
+        row["translation_error"] = ""
+    else:
+        row["translation_status"] = "SKIPPED_NO_EVIDENCE"
     return row
-
-
-def _translation_job_object_name(prefix: str, parent_run_id: str, sequence: int) -> str:
-    if sequence < 1:
-        raise RuntimeError("Translation continuation sequence must be positive")
-    return f"{prefix.strip('/')}/run_id={parent_run_id}/job-{sequence:04d}.job.json"
-
-
-def _translation_stage_object_names(
-    prefix: str,
-    parent_run_id: str,
-    sequence: int,
-) -> tuple[str, str]:
-    base = f"{prefix.strip('/')}/run_id={parent_run_id}/job-{sequence:04d}"
-    return f"{base}/evidence.jsonl", f"{base}/completion.json"
-
-
-def _translation_completion_object_name(job_object: str) -> str:
-    if not job_object.endswith(".job.json"):
-        raise RuntimeError("Translation continuation job object has an invalid suffix")
-    return f"{job_object[:-len('.job.json')]}.done"
-
-
-def _translation_job_document(
-    parent_run_id: str,
-    parent_evidence_object: str,
-    source_claims_object: str,
-    sequence: int,
-    chunk_size: int,
-    max_attempts: int,
-    items: list[dict[str, Any]],
-    staging_objects: list[str],
-) -> dict[str, Any]:
-    """Build an immutable job that contains only translation-retry claims."""
-
-    if not items:
-        raise RuntimeError("Translation continuation jobs require at least one claim")
-    return {
-        "schema_version": TRANSLATION_JOB_SCHEMA_VERSION,
-        "stage": TRANSLATION_CONTINUATION_STAGE,
-        "parent_run_id": parent_run_id,
-        "parent_evidence_object": parent_evidence_object,
-        "source_claims_object": source_claims_object,
-        "sequence": sequence,
-        "chunk_size": chunk_size,
-        "max_attempts": max_attempts,
-        "items": items,
-        "staging_objects": staging_objects,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
 
 
 def _translation_manifest_status(records: list[dict[str, Any]]) -> tuple[str, Counter[str]]:
@@ -2970,135 +2904,40 @@ def _translation_manifest_status(records: list[dict[str, Any]]) -> tuple[str, Co
     return ("FAILED" if len(counts) == 1 else "PARTIAL"), counts
 
 
-def _continuation_job_items(document: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_items = document.get("items", [])
-    if not isinstance(raw_items, list) or not raw_items:
-        raise RuntimeError("Translation continuation job has no items")
-    items: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for index, item in enumerate(raw_items, start=1):
-        if not isinstance(item, dict) or not isinstance(item.get("record"), dict):
-            raise RuntimeError(f"Translation continuation job item {index} is invalid")
-        record = item["record"]
-        claim_key = _evidence_claim_key(record)
-        if claim_key in seen:
-            raise RuntimeError(f"Translation continuation job repeats {claim_key}")
-        seen.add(claim_key)
-        try:
-            attempt = int(item.get("attempt", 0))
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(f"Translation continuation job item {index} has an invalid attempt") from exc
-        if attempt < 0:
-            raise RuntimeError(f"Translation continuation job item {index} has a negative attempt")
-        items.append({"record": record, "attempt": attempt})
-    return items
+def _flat_run_id(object_name: str, stem: str) -> str:
+    basename = object_name.rsplit("/", 1)[-1]
+    prefix = f"{stem}_"
+    if not basename.startswith(prefix) or not basename.endswith(".jsonl"):
+        raise RuntimeError(f"Unexpected {stem} input object: {object_name}")
+    run_id = basename[len(prefix) : -len(".jsonl")]
+    if not run_id or "/" in run_id:
+        raise RuntimeError(f"Missing run_id in {object_name}")
+    return run_id
 
 
-def _finalize_translation_continuation(
-    storage: Any,
-    namespace: str,
-    bucket: str,
-    evidence_prefix: str,
-    parent_run_id: str,
-    parent_evidence_object: str,
-    source_claims_object: str,
-    staging_objects: list[str],
-    started_at: datetime,
-) -> tuple[str, str, str, dict[str, Any]]:
-    """Overlay translated stages on the parent output and publish one final run.
-
-    The final artifact has the normal evidence.v1 location and manifest.  The
-    Label Studio synchronizer therefore needs no special retry path: it sees a
-    new manifest, deduplicates by ``record_id::claim_id``, and imports only
-    records whose four review states are now OK.
-    """
-
-    parent_records = _read_jsonl_object(storage, namespace, bucket, parent_evidence_object)
-    if not parent_records:
-        raise RuntimeError("Parent evidence output is empty")
-    overrides: dict[str, dict[str, Any]] = {}
-    for stage_object in staging_objects:
-        for record in _read_jsonl_object(storage, namespace, bucket, stage_object):
-            claim_key = _evidence_claim_key(record)
-            overrides[claim_key] = record
-
-    final_run_id = f"{parent_run_id}_translation_final"
-    now = datetime.now(timezone.utc)
-    final_records: list[dict[str, Any]] = []
-    parent_keys: set[str] = set()
-    for record in parent_records:
-        claim_key = _evidence_claim_key(record)
-        if claim_key in parent_keys:
-            raise RuntimeError(f"Parent evidence output repeats {claim_key}")
-        parent_keys.add(claim_key)
-        selected = dict(overrides.get(claim_key, record))
-        selected["schema_version"] = EVIDENCE_SCHEMA_VERSION
-        selected["run_id"] = final_run_id
-        selected["evidence_run_id"] = final_run_id
-        selected["retrieved_at"] = now.isoformat()
-        final_records.append(selected)
-    unexpected = sorted(set(overrides) - parent_keys)
-    if unexpected:
-        raise RuntimeError(
-            "Translation continuation stage contains claims absent from the parent Evidence output: "
-            + ", ".join(unexpected[:5])
-        )
-
-    evidence_object, manifest_object = _evidence_v1_object_names(evidence_prefix, final_run_id)
-    manifest_status, evidence_counts = _translation_manifest_status(final_records)
-    _write_jsonl_object(storage, namespace, bucket, evidence_object, final_records)
-    manifest = {
-        "schema_version": EVIDENCE_MANIFEST_SCHEMA_VERSION,
-        "stage": "evidence",
-        "run_id": final_run_id,
-        "status": manifest_status,
-        "source_object": source_claims_object,
-        "evidence_object": evidence_object,
-        "started_at": started_at.isoformat(),
-        "finished_at": now.isoformat(),
-        "elapsed_seconds": 0.0,
-        "evidence_claims_processed": len(final_records),
-        "candidates_total": sum(
-            len(record.get("candidates", []))
-            for record in final_records
-            if isinstance(record.get("candidates"), list)
-        ),
-        "evidence_status_counts": dict(evidence_counts),
-        "continuation": {
-            "status": "COMPLETE",
-            "parent_run_id": parent_run_id,
-            "parent_evidence_object": parent_evidence_object,
-            "staging_objects": staging_objects,
-            "stages_processed": len(staging_objects),
-            "reused_pubmed_and_embeddings": True,
-        },
-        "workload": {"abstracts": _evidence_abstract_metrics(final_records)},
-    }
-    _write_json_object(storage, namespace, bucket, manifest_object, manifest)
-    return final_run_id, evidence_object, manifest_object, manifest
-
-
-def _handler_translation_continuation(
-    ctx: Any,
-    data: io.BytesIO | None = None,
-) -> response.Response:
-    """Translate a bounded job and chain the next one through Object Storage."""
+def _handler_translation(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
+    """Translate one flat JSONL artifact and publish one final Evidence JSONL."""
 
     started_monotonic = time.monotonic()
     started_at = datetime.now(timezone.utc)
-    continuation_run_id = f"translation_{started_at.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+    fallback_run_id = f"translation_{started_at.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+    namespace = ""
+    bucket = ""
+    source_object = ""
+    storage: Any | None = None
+    run_id = fallback_run_id
+    rejected_prefix = os.getenv("SILVER_REJECTED_PREFIX", "silver/rejected").strip("/")
     try:
         namespace = _required_env("OBJECT_STORAGE_NAMESPACE")
         bucket = _required_env("OBJECT_STORAGE_BUCKET")
-        job_prefix = os.getenv("SILVER_TRANSLATION_JOB_PREFIX", "silver/evidence-translation-jobs").strip("/")
-        stage_prefix = os.getenv("SILVER_TRANSLATION_STAGE_PREFIX", "silver/evidence-translation-stage").strip("/")
+        translate_prefix = os.getenv("SILVER_TRANSLATE_PREFIX", "silver/translate").strip("/")
         evidence_prefix = os.getenv("SILVER_EVIDENCE_PREFIX", "silver/evidence").strip("/")
-        max_seconds = _env_float("TRANSLATION_CONTINUATION_MAX_SECONDS", 285.0, minimum=30.0)
-        time_buffer = _env_float("TRANSLATION_CONTINUATION_TIME_BUFFER", 10.0, minimum=1.0)
+        max_seconds = _env_float("TRANSLATION_MAX_SECONDS", 285.0, minimum=30.0)
+        time_buffer = _env_float("TRANSLATION_TIME_BUFFER", 10.0, minimum=1.0)
         if time_buffer >= max_seconds:
-            raise RuntimeError("TRANSLATION_CONTINUATION_TIME_BUFFER must be smaller than the max seconds")
+            raise RuntimeError("TRANSLATION_TIME_BUFFER must be smaller than TRANSLATION_MAX_SECONDS")
         translation_model = os.getenv("TRANSLATION_MODEL_ID", "gemini-3.5-flash-lite").strip()
-        translation_batch_size = _env_int("TRANSLATION_BATCH_SIZE", 1, minimum=1, maximum=5)
+        translation_batch_size = _env_int("TRANSLATION_BATCH_SIZE", 2, minimum=1, maximum=5)
         translation_batch_max_input_chars = _env_int(
             "TRANSLATION_BATCH_MAX_INPUT_CHARS", 9000, minimum=1000, maximum=50000
         )
@@ -3107,72 +2946,53 @@ def _handler_translation_continuation(
         )
         translation_max_tokens = _env_int("TRANSLATION_MAX_TOKENS", 8000, minimum=500, maximum=12000)
         translation_timeout = _env_float("TRANSLATION_REQUEST_TIMEOUT", 30.0, minimum=5.0)
-        translation_parallelism = _env_int(
-            "TRANSLATION_CONTINUATION_PARALLELISM", 1, minimum=1, maximum=2
-        )
+        translation_parallelism = _env_int("TRANSLATION_PARALLELISM", 2, minimum=1, maximum=2)
         storage = _object_storage_client()
-        job_object = _event_object_name_under_prefix(data, bucket, job_prefix, ".job.json")
-        completion_object = _translation_completion_object_name(job_object)
-        if _object_exists(storage, namespace, bucket, completion_object):
-            result = {
-                "status": "already_complete",
-                "mode": TRANSLATION_CONTINUATION_STAGE,
-                "job_object": job_object,
-                "completion_object": completion_object,
-            }
-            return response.Response(
-                ctx,
-                response_data=json.dumps(result, ensure_ascii=False),
-                headers={"Content-Type": "application/json"},
-            )
-
-        job = _read_json_object(storage, namespace, bucket, job_object)
-        if job.get("schema_version") != TRANSLATION_JOB_SCHEMA_VERSION or job.get("stage") != TRANSLATION_CONTINUATION_STAGE:
-            raise RuntimeError("Unsupported translation continuation job schema or stage")
-        parent_run_id = _as_text(job.get("parent_run_id"))
-        parent_evidence_object = _as_text(job.get("parent_evidence_object"))
-        source_claims_object = _as_text(job.get("source_claims_object"))
-        if not parent_run_id or not parent_evidence_object or not source_claims_object:
-            raise RuntimeError("Translation continuation job lacks parent source metadata")
-        try:
-            sequence = int(job.get("sequence", 0))
-            chunk_size = int(job.get("chunk_size", 0))
-            max_attempts = int(job.get("max_attempts", 0))
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("Translation continuation job has invalid numeric limits") from exc
-        if sequence < 1 or not 1 <= chunk_size <= 20 or not 1 <= max_attempts <= 5:
-            raise RuntimeError("Translation continuation job has unsafe numeric limits")
-        staging_objects = job.get("staging_objects", [])
-        if not isinstance(staging_objects, list) or not all(isinstance(value, str) and value for value in staging_objects):
-            raise RuntimeError("Translation continuation job has invalid staging object references")
-        items = _continuation_job_items(job)
-        current_items = items[:chunk_size]
-        remaining_items = items[chunk_size:]
-        deadline = started_monotonic + max_seconds - time_buffer
-        api_keys = _translation_api_keys(
-            _secret_ids("GOOGLE_TRANSLATION_SECRET_OCIDS", "GOOGLE_TRANSLATION_SECRET_OCID")
-        )
-
+        source_object = _event_object_name_under_prefix(data, bucket, translate_prefix, ".jsonl")
+        run_id = _flat_run_id(source_object, "translate")
+        input_records = _read_jsonl_object(storage, namespace, bucket, source_object)
         rows: list[dict[str, str]] = []
-        stage_by_key: dict[str, dict[str, Any]] = {}
-        for item in current_items:
-            record = item["record"]
-            claim_key = _evidence_claim_key(record)
+        invalid_records: list[dict[str, Any]] = []
+        for record in input_records:
             try:
-                rows.append(_continuation_row_from_record(record, continuation_run_id, started_at.isoformat()))
-            except Exception as exc:  # noqa: BLE001 - retain the bad record instead of losing it
+                rows.append(_translation_row_from_record(record, run_id, started_at.isoformat()))
+            except Exception as exc:  # noqa: BLE001 - retain malformed records in rejected
                 failed = dict(record)
-                failed["run_id"] = continuation_run_id
-                failed["evidence_run_id"] = continuation_run_id
-                failed["retrieved_at"] = started_at.isoformat()
-                failed["evidence_status"] = "ERROR"
-                failed["evidence_error"] = f"TRANSLATION_CONTINUATION_INPUT_ERROR: {type(exc).__name__}: {exc}"[:1500]
-                failed["translation_status"] = "ERROR"
-                failed["translation_error"] = failed["evidence_error"]
-                stage_by_key[claim_key] = failed
+                failed.update(
+                    {
+                        "schema_version": EVIDENCE_SCHEMA_VERSION,
+                        "run_id": run_id,
+                        "evidence_run_id": run_id,
+                        "evidence_status": "ERROR",
+                        "evidence_error": f"TRANSLATION_INPUT_ERROR: {type(exc).__name__}: {exc}"[:1500],
+                        "translation_status": "ERROR",
+                        "translation_error": f"{type(exc).__name__}: {exc}"[:1500],
+                        "rejection_reason": "TRANSLATION_INPUT_ERROR",
+                    }
+                )
+                invalid_records.append(failed)
 
+        deadline = started_monotonic + max_seconds - time_buffer
+        needs_translation = any(
+            row.get("evidence_status", "").upper() == "OK"
+            and any(str(candidate.get("abstract_excerpt", "") or "").strip() for candidate in _candidate_list(row))
+            for row in rows
+        )
         translation_stats: dict[str, Any] = {}
-        if rows:
+        if needs_translation:
+            secret_ids = _secret_ids("GOOGLE_TRANSLATION_SECRET_OCIDS", "GOOGLE_TRANSLATION_SECRET_OCID")
+            api_keys: list[str] = []
+            configuration_error = ""
+            for secret_id in secret_ids:
+                try:
+                    value = _vault_secret_value(secret_id)
+                except Exception as exc:  # noqa: BLE001 - keep other configured slots usable
+                    LOGGER.warning("Unable to read translation Gemini secret: %s", type(exc).__name__)
+                    continue
+                if value and value not in api_keys:
+                    api_keys.append(value)
+            if not api_keys:
+                configuration_error = "No usable Google translation Vault secret was found"
             translation_stats = _apply_translations(
                 rows,
                 api_keys,
@@ -3181,192 +3001,152 @@ def _handler_translation_continuation(
                 translation_max_tokens,
                 translation_timeout,
                 deadline,
-                continuation_run_id,
+                run_id,
                 True,
+                configuration_error=configuration_error,
                 parallelism=translation_parallelism,
                 batch_max_input_chars=translation_batch_max_input_chars,
                 batch_max_abstracts=translation_batch_max_abstracts,
             )
-            _gate_evidence_for_human_review(rows, require_embeddings=True, require_translation=True)
-            stage_by_key.update(
-                {
-                    _evidence_claim_key(record): record
-                    for record in (_evidence_v1_record(row, continuation_run_id) for row in rows)
-                }
-            )
-
-        stage_records = [stage_by_key[_evidence_claim_key(item["record"])] for item in current_items]
-        stage_object, stage_manifest_object = _translation_stage_object_names(stage_prefix, parent_run_id, sequence)
-        _write_jsonl_object(storage, namespace, bucket, stage_object, stage_records)
-        _write_json_object(
-            storage,
-            namespace,
-            bucket,
-            stage_manifest_object,
-            {
-                "schema_version": TRANSLATION_JOB_SCHEMA_VERSION,
-                "stage": TRANSLATION_CONTINUATION_STAGE,
-                "parent_run_id": parent_run_id,
-                "job_object": job_object,
-                "sequence": sequence,
-                "records_processed": len(stage_records),
-                "translation": translation_stats,
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-
-        retry_items: list[dict[str, Any]] = []
-        for item, record in zip(current_items, stage_records):
-            attempt = int(item["attempt"]) + 1
-            if _translation_retryable_evidence_record(record) and attempt < max_attempts:
-                retry_items.append({"record": record, "attempt": attempt})
-        next_staging_objects = [*staging_objects, stage_object]
-        next_items = [*retry_items, *remaining_items]
-        result: dict[str, Any] = {
-            "status": "continued",
-            "mode": TRANSLATION_CONTINUATION_STAGE,
-            "job_object": job_object,
-            "records_processed": len(stage_records),
-            "retry_claims": len(retry_items),
-            "remaining_claims": len(next_items),
-            "stage_object": stage_object,
-        }
-        if next_items:
-            next_job_object = _translation_job_object_name(job_prefix, parent_run_id, sequence + 1)
-            next_job = _translation_job_document(
-                parent_run_id,
-                parent_evidence_object,
-                source_claims_object,
-                sequence + 1,
-                chunk_size,
-                max_attempts,
-                next_items,
-                next_staging_objects,
-            )
-            _write_json_object(storage, namespace, bucket, next_job_object, next_job)
-            result["next_job_object"] = next_job_object
         else:
-            final_run_id, evidence_object, manifest_object, manifest = _finalize_translation_continuation(
-                storage,
-                namespace,
-                bucket,
-                evidence_prefix,
-                parent_run_id,
-                parent_evidence_object,
-                source_claims_object,
-                next_staging_objects,
-                started_at,
-            )
-            result.update(
-                {
-                    "status": manifest["status"].lower(),
-                    "final_run_id": final_run_id,
-                    "object_name": evidence_object,
-                    "manifest_object": manifest_object,
-                    "status_counts": manifest["evidence_status_counts"],
-                }
-            )
+            translation_stats = {"status": "NOT_NEEDED"}
+        _gate_evidence_for_human_review(rows, require_embeddings=True, require_translation=True)
 
-        result["elapsed_seconds"] = round(time.monotonic() - started_monotonic, 3)
-        _write_json_object(
+        evidence_records = [_evidence_v1_record(row, run_id) for row in rows] + invalid_records
+        for record in evidence_records:
+            if _as_text(record.get("evidence_status")).upper() != "OK":
+                record["rejection_reason"] = _evidence_rejection_reason(record)
+        evidence_object, manifest_object = _evidence_v1_object_names(evidence_prefix, run_id)
+        _write_jsonl_object(storage, namespace, bucket, evidence_object, evidence_records)
+
+        rejected_translate = [
+            record
+            for record in evidence_records
+            if _as_text(record.get("translation_status")).upper() not in {"OK", "SKIPPED_NO_EVIDENCE"}
+            or _as_text(record.get("rejection_reason")).startswith("TRANSLATION_INPUT_ERROR")
+        ]
+        rejected_evidence = [
+            record for record in evidence_records if _as_text(record.get("evidence_status")).upper() != "OK"
+        ]
+        rejected_translate_object = _write_rejected_jsonl(
             storage,
             namespace,
             bucket,
-            completion_object,
-            {
-                "schema_version": TRANSLATION_JOB_SCHEMA_VERSION,
-                "stage": TRANSLATION_CONTINUATION_STAGE,
-                "job_object": job_object,
-                "result": result,
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-            },
+            rejected_prefix,
+            "translate",
+            run_id,
+            rejected_translate,
         )
+        rejected_evidence_object = _write_rejected_jsonl(
+            storage,
+            namespace,
+            bucket,
+            rejected_prefix,
+            "evidence",
+            run_id,
+            rejected_evidence,
+        )
+        status, evidence_counts = _translation_manifest_status(evidence_records)
+        manifest = {
+            "schema_version": EVIDENCE_MANIFEST_SCHEMA_VERSION,
+            "stage": "evidence",
+            "run_id": run_id,
+            "status": status,
+            "source_object": source_object,
+            "evidence_object": evidence_object,
+            "rejected_translate_object": rejected_translate_object,
+            "rejected_evidence_object": rejected_evidence_object,
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "elapsed_seconds": round(time.monotonic() - started_monotonic, 3),
+            "evidence_claims_processed": len(evidence_records),
+            "candidates_total": sum(
+                len(record.get("candidates", []))
+                for record in evidence_records
+                if isinstance(record.get("candidates"), list)
+            ),
+            "evidence_status_counts": dict(evidence_counts),
+            "translation": translation_stats,
+            "configuration": {
+                "embed_all_retrieved_candidates_with_abstract": True,
+                "translation_model": translation_model,
+                "translation_batch_size": translation_batch_size,
+            },
+            "workload": {"abstracts": _evidence_abstract_metrics(evidence_records)},
+        }
+        _write_json_object(storage, namespace, bucket, manifest_object, manifest)
+        result = {
+            "status": status.lower(),
+            "mode": "translation",
+            "run_id": run_id,
+            "source_object": source_object,
+            "object_name": evidence_object,
+            "manifest_object": manifest_object,
+            "rejected_translate_object": rejected_translate_object,
+            "rejected_evidence_object": rejected_evidence_object,
+            "status_counts": dict(evidence_counts),
+            "elapsed_seconds": f"{time.monotonic() - started_monotonic:.2f}",
+        }
+        LOGGER.info("Evidence JSONL written after translation: %s (%s claims)", evidence_object, len(evidence_records))
         return response.Response(
             ctx,
             response_data=json.dumps(result, ensure_ascii=False),
             headers={"Content-Type": "application/json"},
         )
-    except Exception as exc:  # noqa: BLE001 - ensure Event retries expose a useful reason
-        LOGGER.exception("translation continuation failed")
+    except Exception as exc:  # noqa: BLE001 - persist a failure artifact whenever storage is available
+        LOGGER.exception("translation function failed")
+        if storage is not None and namespace and bucket:
+            try:
+                failure = {
+                    "schema_version": EVIDENCE_SCHEMA_VERSION,
+                    "run_id": run_id,
+                    "evidence_run_id": run_id,
+                    "source_object": source_object,
+                    "evidence_status": "ERROR",
+                    "evidence_error": f"{type(exc).__name__}: {exc}"[:1500],
+                    "translation_status": "ERROR",
+                    "translation_error": f"{type(exc).__name__}: {exc}"[:1500],
+                    "rejection_reason": "TRANSLATION_FUNCTION_ERROR",
+                }
+                _write_rejected_jsonl(
+                    storage,
+                    namespace,
+                    bucket,
+                    rejected_prefix,
+                    "translate",
+                    run_id,
+                    [failure],
+                )
+            except Exception:  # noqa: BLE001 - preserve original error response
+                LOGGER.exception("Unable to persist translation rejected artifact")
         return response.Response(
             ctx,
             response_data=json.dumps(
-                {
-                    "status": "error",
-                    "mode": TRANSLATION_CONTINUATION_STAGE,
-                    "run_id": continuation_run_id,
-                    "message": str(exc),
-                }
+                {"status": "error", "mode": "translation", "run_id": run_id, "message": str(exc)},
+                ensure_ascii=False,
             ),
             status_code=500,
             headers={"Content-Type": "application/json"},
         )
 
 
-def _schedule_translation_continuation(
-    storage: Any,
-    namespace: str,
-    bucket: str,
-    job_prefix: str,
-    parent_run_id: str,
-    parent_evidence_object: str,
-    source_claims_object: str,
-    evidence_records: list[dict[str, Any]],
-    enabled: bool,
-    chunk_size: int,
-    max_attempts: int,
-) -> dict[str, Any]:
-    """Persist one durable translation-only job for retryable partial claims."""
-
-    retryable_records = [
-        record for record in evidence_records if _translation_retryable_evidence_record(record)
-    ]
-    if not enabled:
-        return {
-            "status": "DISABLED",
-            "retryable_claims": len(retryable_records),
-            "reused_pubmed_and_embeddings": True,
-        }
-    if not retryable_records:
-        return {
-            "status": "NOT_NEEDED",
-            "retryable_claims": 0,
-            "reused_pubmed_and_embeddings": True,
-        }
-    job_object = _translation_job_object_name(job_prefix, parent_run_id, 1)
-    job = _translation_job_document(
-        parent_run_id,
-        parent_evidence_object,
-        source_claims_object,
-        1,
-        chunk_size,
-        max_attempts,
-        [{"record": record, "attempt": 0} for record in retryable_records],
-        [],
-    )
-    _write_json_object(storage, namespace, bucket, job_object, job)
-    return {
-        "status": "SCHEDULED",
-        "retryable_claims": len(retryable_records),
-        "job_object": job_object,
-        "chunk_size": chunk_size,
-        "max_attempts": max_attempts,
-        "reused_pubmed_and_embeddings": True,
-    }
-
-
 def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
-    """Retrieve/rank evidence for every eligible claim in one Claims run."""
+    """Retrieve/rank evidence and publish the flat translation input JSONL."""
 
     started = time.monotonic()
     now = datetime.now(timezone.utc)
     run_id = f"run_{now.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
     retrieved_at = now.isoformat()
+    namespace = ""
+    bucket = ""
+    source_object = ""
+    storage: Any | None = None
+    rejected_prefix = os.getenv("SILVER_REJECTED_PREFIX", "silver/rejected").strip("/")
     try:
         namespace = _required_env("OBJECT_STORAGE_NAMESPACE")
         bucket = _required_env("OBJECT_STORAGE_BUCKET")
         claims_prefix = os.getenv("SILVER_CLAIMS_PREFIX", "silver/claims").strip("/")
-        evidence_prefix = os.getenv("SILVER_EVIDENCE_PREFIX", "silver/evidence").strip("/")
+        translate_prefix = os.getenv("SILVER_TRANSLATE_PREFIX", "silver/translate").strip("/")
         configured_max_rows = _env_int("EVIDENCE_MAX_ROWS", 0, minimum=0, maximum=1000)
         if configured_max_rows:
             raise RuntimeError("EVIDENCE_MAX_ROWS must be 0 in evidence.v1; every claim must be processed")
@@ -3376,34 +3156,9 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         max_seconds = _env_float("EVIDENCE_MAX_SECONDS", 285.0, minimum=30.0)
         time_buffer = _env_float("EVIDENCE_TIME_BUFFER", 10.0, minimum=1.0)
         abstract_max_chars = _env_int("ABSTRACT_MAX_CHARS", 1500, minimum=500, maximum=10000)
-        translate_enabled = _env_bool("TRANSLATE_ABSTRACTS", True)
         embeddings_enabled = _env_bool("EMBEDDINGS_ENABLED", True)
-        if not translate_enabled or not embeddings_enabled:
-            raise RuntimeError("evidence.v1 requires TRANSLATE_ABSTRACTS=true and EMBEDDINGS_ENABLED=true")
-        translation_secret_ids = _secret_ids(
-            "GOOGLE_TRANSLATION_SECRET_OCIDS", "GOOGLE_TRANSLATION_SECRET_OCID"
-        )
-        translation_model = os.getenv("TRANSLATION_MODEL_ID", "gemini-3.5-flash-lite").strip()
-        translation_batch_size = _env_int("TRANSLATION_BATCH_SIZE", 1, minimum=1, maximum=5)
-        translation_batch_max_input_chars = _env_int(
-            "TRANSLATION_BATCH_MAX_INPUT_CHARS", 9000, minimum=1000, maximum=50000
-        )
-        translation_batch_max_abstracts = _env_int(
-            "TRANSLATION_BATCH_MAX_ABSTRACTS", 6, minimum=1, maximum=25
-        )
-        translation_max_tokens = _env_int("TRANSLATION_MAX_TOKENS", 8000, minimum=500, maximum=12000)
-        translation_timeout = _env_float("TRANSLATION_REQUEST_TIMEOUT", 30.0, minimum=5.0)
-        translation_parallelism = _env_int("TRANSLATION_PARALLELISM", 1, minimum=1, maximum=10)
-        continuation_enabled = _env_bool("TRANSLATION_CONTINUATION_ENABLED", True)
-        continuation_job_prefix = os.getenv(
-            "SILVER_TRANSLATION_JOB_PREFIX", "silver/evidence-translation-jobs"
-        ).strip("/")
-        continuation_chunk_size = _env_int(
-            "TRANSLATION_CONTINUATION_MAX_CLAIMS", 4, minimum=1, maximum=20
-        )
-        continuation_max_attempts = _env_int(
-            "TRANSLATION_CONTINUATION_MAX_ATTEMPTS", 3, minimum=1, maximum=5
-        )
+        if not embeddings_enabled:
+            raise RuntimeError("evidence.v1 requires EMBEDDINGS_ENABLED=true")
         embedding_model = os.getenv("EMBEDDING_MODEL_ID", "cohere.embed-v4.0").strip()
         embedding_region = os.getenv("EMBEDDING_REGION", "us-ashburn-1").strip()
         embedding_compartment_id = _required_env("GENAI_COMPARTMENT_ID")
@@ -3424,8 +3179,6 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         storage = _object_storage_client()
         source_object = _event_jsonl_object_name(data, bucket, claims_prefix)
         claim_rows, scan = _v1_claim_rows(storage, namespace, bucket, source_object)
-
-        translation_api_keys = _translation_api_keys(translation_secret_ids)
 
         query_pmids: dict[str, list[str]] = {}
         errors: dict[str, str] = {}
@@ -3482,16 +3235,18 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                 pmids = query_pmids.get(identity, [])
                 candidates = _candidate_results(row, pmids, records, candidates_fetched, abstract_max_chars)
                 # Every usable abstract among the bounded PubMed results is
-                # embedded and translated.  Lexical TF-IDF only establishes a
-                # deterministic presentation order; it must not discard a
-                # candidate before semantic ranking.
+                # embedded here and translated by the next stage. Lexical
+                # TF-IDF only establishes a deterministic presentation order;
+                # it must not discard a candidate before semantic ranking.
                 candidates = _prefilter_candidates(row, candidates)
                 output["pubmed_result_count"] = str(len(pmids))
                 output["pubmed_results_json"] = json.dumps(candidates, ensure_ascii=False)
                 if not pmids:
                     output["evidence_status"] = "NO_RESULTS"
+                    output["embedding_status"] = "SKIPPED_NO_EVIDENCE"
                 elif not candidates:
                     output["evidence_status"] = "NO_ABSTRACT"
+                    output["embedding_status"] = "SKIPPED_NO_EVIDENCE"
                 else:
                     output["evidence_status"] = "OK"
             output_rows.append(output)
@@ -3516,106 +3271,76 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                 embedding_stats = {"status": "error", "error": detail}
                 for row in output_rows:
                     if row.get("evidence_status", "").upper() == "OK":
+                        row["evidence_status"] = "ERROR"
                         row["embedding_status"] = "ERROR"
                         row["embedding_model"] = embedding_model
                         row["evidence_error"] = detail
 
-        translation_stats = _apply_translations(
-            output_rows,
-            translation_api_keys,
-            translation_model,
-            translation_batch_size,
-            translation_max_tokens,
-            translation_timeout,
-            deadline,
-            run_id,
-            True,
-            parallelism=translation_parallelism,
-            batch_max_input_chars=translation_batch_max_input_chars,
-            batch_max_abstracts=translation_batch_max_abstracts,
-        )
-        _gate_evidence_for_human_review(output_rows, require_embeddings=True, require_translation=True)
+        _gate_evidence_for_human_review(output_rows, require_embeddings=True, require_translation=False)
 
-        evidence_object, manifest_object = _evidence_v1_object_names(evidence_prefix, run_id)
-        evidence_records = [_evidence_v1_record(row, run_id) for row in output_rows]
-        _write_jsonl_object(storage, namespace, bucket, evidence_object, evidence_records)
-        try:
-            continuation = _schedule_translation_continuation(
-                storage,
-                namespace,
-                bucket,
-                continuation_job_prefix,
-                run_id,
-                evidence_object,
-                source_object,
-                evidence_records,
-                continuation_enabled,
-                continuation_chunk_size,
-                continuation_max_attempts,
-            )
-        except Exception as exc:  # noqa: BLE001 - preserve the partial Evidence output for audit/recovery
-            LOGGER.exception("Unable to schedule translation continuation")
-            continuation = {
-                "status": "ERROR",
-                "retryable_claims": sum(
-                    1 for record in evidence_records if _translation_retryable_evidence_record(record)
-                ),
-                "error": f"{type(exc).__name__}: {exc}"[:1500],
-                "reused_pubmed_and_embeddings": True,
-            }
+        translate_object, manifest_object = _translate_v1_object_names(translate_prefix, run_id)
+        translate_records = [_evidence_v1_record(row, run_id) for row in output_rows]
+        _write_jsonl_object(storage, namespace, bucket, translate_object, translate_records)
+        rejected_records = [
+            record
+            for record in translate_records
+            if _as_text(record.get("evidence_status")).upper() != "OK"
+            or _as_text(record.get("embedding_status")).upper() != "OK"
+        ]
+        for record in rejected_records:
+            record["rejection_reason"] = _evidence_rejection_reason(record)
+        rejected_object = ""
+        if rejected_records:
+            rejected_object = _retrieval_rejected_object_name(rejected_prefix, run_id)
+            _write_jsonl_object(storage, namespace, bucket, rejected_object, rejected_records)
         status_counts = Counter(row.get("evidence_status", "") for row in output_rows)
         manifest_status = "COMPLETE"
         if status_counts.get("ERROR"):
             manifest_status = "FAILED" if len(status_counts) == 1 else "PARTIAL"
         manifest = {
-            "schema_version": EVIDENCE_MANIFEST_SCHEMA_VERSION,
-            "stage": "evidence",
+            "schema_version": TRANSLATE_MANIFEST_SCHEMA_VERSION,
+            "stage": "translate",
             "run_id": run_id,
             "status": manifest_status,
             "source_object": source_object,
-            "evidence_object": evidence_object,
+            "translate_object": translate_object,
+            "rejected_object": rejected_object,
             "started_at": now.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "evidence_claims_processed": len(output_rows),
-            "candidates_total": sum(len(record["candidates"]) for record in evidence_records),
+            "candidates_total": sum(len(record["candidates"]) for record in translate_records),
             "evidence_status_counts": dict(status_counts),
             "scan": scan,
             "configuration": {
                 "candidates_fetched_per_claim": candidates_fetched,
                 "embed_all_retrieved_candidates_with_abstract": True,
-                "translation_batch_size": translation_batch_size,
-                "translation_batch_max_input_chars": translation_batch_max_input_chars,
-                "translation_batch_max_abstracts": translation_batch_max_abstracts,
-                "translation_max_tokens": translation_max_tokens,
-                "translation_parallelism": translation_parallelism,
                 "embedding_model": embedding_model,
             },
             "workload": {
                 "claims_ready_for_pubmed": len(ready_rows),
                 "pubmed_search_requests": len(query_pmids),
                 "unique_pmids_requested": len(all_pmids),
-                "abstracts": _evidence_abstract_metrics(evidence_records),
+                "abstracts": _evidence_abstract_metrics(translate_records),
             },
             "embedding": embedding_stats,
-            "translation": translation_stats,
-            "continuation": continuation,
+            "translation": {"status": "PENDING"},
         }
         _write_json_object(storage, namespace, bucket, manifest_object, manifest)
         result = {
             "status": manifest_status.lower(),
-            "mode": "evidence.v1",
+            "mode": "evidence-retrieval.v1",
             "run_id": run_id,
             "source_object": source_object,
-            "object_name": evidence_object,
+            "object_name": translate_object,
             "manifest_object": manifest_object,
+            "rejected_object": rejected_object,
             "evidence_claims_processed": len(output_rows),
             "status_counts": dict(status_counts),
             "pubmed_requests": pubmed_requests,
-            "continuation": continuation,
             "elapsed_seconds": f"{time.monotonic() - started:.2f}",
         }
-        LOGGER.info("Evidence JSONL written: %s (%s claims)", evidence_object, len(evidence_records))
+        LOGGER.info("Translation input JSONL written: %s (%s claims)", translate_object, len(translate_records))
         return response.Response(
             ctx,
             response_data=json.dumps(result, ensure_ascii=False),
@@ -3623,6 +3348,23 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         )
     except Exception as exc:  # noqa: BLE001 - make external/config failures observable
         LOGGER.exception("retrieve-pubmed-evidence v1 failed")
+        if storage is not None and namespace and bucket:
+            try:
+                failure = {
+                    "schema_version": EVIDENCE_SCHEMA_VERSION,
+                    "run_id": run_id,
+                    "evidence_run_id": run_id,
+                    "source_claims_object": source_object,
+                    "evidence_status": "ERROR",
+                    "evidence_error": f"{type(exc).__name__}: {exc}"[:1500],
+                    "embedding_status": "ERROR",
+                    "translation_status": "PENDING",
+                    "rejection_reason": "EVIDENCE_FUNCTION_ERROR",
+                }
+                rejected_object = _retrieval_rejected_object_name(rejected_prefix, run_id)
+                _write_jsonl_object(storage, namespace, bucket, rejected_object, [failure])
+            except Exception:  # noqa: BLE001 - preserve original invocation failure
+                LOGGER.exception("Unable to persist Evidence rejected artifact")
         return response.Response(
             ctx,
             response_data=json.dumps({"status": "error", "run_id": run_id, "message": str(exc)}),
@@ -3632,13 +3374,13 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
 
 
 def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
-    """Dispatch Evidence retrieval or its isolated translation continuation."""
+    """Dispatch retrieval or the isolated translation stage."""
 
     mode = os.getenv("PIPELINE_MODE", "retrieve").strip().lower()
-    if mode in {"translation_continuation", "continue_evidence_translation"}:
-        return _handler_translation_continuation(ctx, data)
+    if mode in {"translation", "translation_continuation", "continue_evidence_translation"}:
+        return _handler_translation(ctx, data)
     if mode not in {"", "retrieve", "evidence"}:
-        raise RuntimeError("PIPELINE_MODE must be retrieve or translation_continuation")
+        raise RuntimeError("PIPELINE_MODE must be retrieve or translation")
 
     schema = os.getenv("PIPELINE_SCHEMA", "v1").strip().lower()
     if schema in {"v1", "evidence.v1", "jsonl"}:

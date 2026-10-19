@@ -21,25 +21,26 @@ Las Functions desplegadas en OCI separan las etapas de datos:
    claim, ordena el resultado y hace Embed 4 sobre todos los abstracts
    utilizables; reutiliza la traducción y el embedding de un PMID/abstract
    idéntico dentro de la corrida.
-   La salida es una línea JSONL por claim con sus candidatos y estados.
-5. Si solo falla o se agota el tiempo de **traducción**, Evidence deja un job
-   JSON inmutable. `continue-evidence-translation` reutiliza exactamente los
-   candidatos/PMIDs y embeddings ya guardados, traduce como máximo cuatro
-   claims por invocación y encadena el siguiente job hasta publicar un Evidence
-   final consolidado. No vuelve a consultar NewsData, Body, Claims, PubMed ni
-   Embed 4.
-6. Label Studio crea una tarea por `record_id + claim_id`. La persona revisora
+   La salida es `silver/translate/translate_<run_id>.jsonl`, una línea JSONL
+   por claim con sus candidatos y estados.
+5. `continue-evidence-translation` consume ese JSONL, traduce los abstracts
+   pendientes y publica `silver/evidence/evidence_<run_id>.jsonl`. No vuelve a
+   consultar NewsData, Body, Claims, PubMed ni Embed 4.
+6. Los fallos de Body, Claims, retrieval, traducción y Evidence se copian en
+   `silver/rejected/<stage>/` con el mismo `run_id`; los artefactos normales
+   conservan también el estado de cada fila.
+7. Label Studio crea una tarea por `record_id + claim_id`. La persona revisora
    decide materialidad, relación y veredicto de cada claim; luego se agrega una
    única etiqueta de noticia para Gold y entrenamiento.
 
 Los artefactos operativos se guardan en Object Storage: `bronze/`,
-`silver/body/`, `silver/claims/` y `silver/evidence/`. Bronze y Body siguen
-siendo CSV; Claims y Evidence usan rutas inmutables por corrida:
-`silver/claims/run_id=<run_id>/claims.jsonl` y
-`silver/evidence/run_id=<run_id>/evidence.jsonl`, cada una con su
-`manifest.json`. `evidence_status=OK` significa únicamente que la recuperación,
-el embedding y la traducción produjeron candidatos utilizables; no es una
-etiqueta de verdad.
+`silver/body/`, `silver/claims/`, `silver/translate/`, `silver/evidence/` y
+`silver/rejected/`. Bronze y Body siguen siendo CSV; Claims, Translate y
+Evidence usan nombres planos e inmutables por corrida:
+`claims_<run_id>.jsonl`, `translate_<run_id>.jsonl` y
+`evidence_<run_id>.jsonl`, con el manifest de la etapa cuando corresponde.
+`evidence_status=OK` significa únicamente que la recuperación, el embedding y
+la traducción produjeron candidatos utilizables; no es una etiqueta de verdad.
 
 La extracción del cuerpo conserva estados `OK`, `CUERPO_INSUFICIENTE` y errores
 HTTP para que una URL bloqueada no desaparezca del registro. El Function deja
@@ -52,11 +53,10 @@ Una noticia puede tener cero, uno o muchos claims. No se recorta por defecto:
 `MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` obligan a conservar y
 procesar todos los claims del objeto disparador. El límite de cinco minutos se
 protege reduciendo candidatos por claim, no descartando claims. Los manifiestos
-registran `COMPLETE`, `PARTIAL` o `FAILED`. Si la parte pendiente es únicamente
-una traducción transitoria o por presupuesto, se crea un job de continuación
-específico; una falla de LLM, PubMed o embedding sigue quedando explícita y no
-se reprocesa implícitamente. Mientras tanto, el sincronizador puede entregar a
-Label Studio los claims ya listos.
+registran `COMPLETE`, `PARTIAL` o `FAILED`. Una falla de LLM, PubMed, embedding
+o traducción queda explícita en el artefacto normal y se replica en
+`silver/rejected/`; el estado `ERROR` no se reintenta implícitamente. Mientras
+tanto, el sincronizador puede entregar a Label Studio los claims ya listos.
 
 La agregación humana aplica esta regla explícita: un claim central o material
 refutado vuelve la noticia `REFUTADA`; si todos los claims centrales/materiales
@@ -85,20 +85,17 @@ fetch-newsdata -> bronze/*.csv
                extract-news-body -> silver/body/*.csv
                                       |
                                       v
-                              extract-claims -> silver/claims/run_id=*/claims.jsonl
+                              extract-claims -> silver/claims/claims_*.jsonl
                                                    |
                                                    v
-                              retrieve-pubmed-evidence -> silver/evidence/run_id=*/evidence.jsonl
-                                                   |
-                              (solo traducción pendiente)
-                                                   v
-                              silver/evidence-translation-jobs/*.job.json
+                              retrieve-pubmed-evidence -> silver/translate/translate_*.jsonl
                                                    |
                                                    v
-                              continue-evidence-translation -> evidencia final consolidada
+                              continue-evidence-translation -> silver/evidence/evidence_*.jsonl
 ```
 
-Events procesa únicamente el objeto que lo disparó. Claims y Evidence v1 no
+Events procesa únicamente el objeto que lo disparó. Claims, retrieval y
+traducción v1 no
 aceptan un payload vacío como drenaje global: escriben resultados y errores
 auditables en la misma corrida, sin mezclar objetos históricos ni reintentar
 automáticamente por horario.
@@ -170,43 +167,29 @@ se sube un JSONL Silver directamente a Gold. La guía completa está en
 Solo las filas revisadas por una persona, con evidencia trazable y etiqueta
 binaria final, pasan a Gold y al split de entrenamiento.
 
-### Reproceso histórico sin volver a extraer noticias
+El export crudo de Label Studio se conserva como respaldo en
+`silver/annotations/labelstudio/`; no se copia dentro de `experiments/` ni se
+usa directamente como dataset. Body ya se obtiene en `silver/body/`, y el
+ensamblador genera `gold/reviewed/` y `gold/training/` cuando las tres entradas
+corresponden a la misma corrida.
 
-Para recuperar claims de un lote anterior, se reutiliza el Body ya guardado y
-se empieza directamente en Claims. El script
-[`scripts/05_prepare_claims_backfill.py`](scripts/05_prepare_claims_backfill.py)
-recibe los `record_id` de un export de Label Studio, selecciona solo los Body
-con `extraction_status=OK` y prepara CSVs pequeños para subir uno por uno a
-`silver/body/`. No consulta NewsData ni vuelve a visitar URLs; el evento inicia
-Claims → Evidence → sincronización automática al proyecto Multi-Claim. El
-`campaign.json` conserva cualquier noticia faltante o sin Body válido para no
-ocultar exclusiones.
+### Reintentos y recuperación
 
-Si Evidence agota tiempo únicamente para algunos abstracts, usa
-[`scripts/07_prepare_translation_continuation_job.py`](scripts/07_prepare_translation_continuation_job.py)
-sobre el `evidence.jsonl` y `manifest.json` parcial. Genera un solo job para
-subir a `silver/evidence-translation-jobs/run_id=<run>/job-0001.job.json`; la
-Function de continuación no repite PubMed ni embeddings. El helper histórico
-[`scripts/06_prepare_evidence_retry.py`](scripts/06_prepare_evidence_retry.py)
-queda reservado para fallas anteriores a la traducción, cuando sí se decide
-ejecutar Evidence de nuevo de forma explícita.
+Las Functions conservan los errores técnicos en `silver/rejected/` y aplican
+los reintentos internos definidos por cada etapa. No se mantienen scripts
+locales de backfill o retry que puedan volver a publicar objetos y duplicar la
+cadena de eventos. Para construir un dataset local a partir de una corrida
+revisada se usa únicamente `scripts/04_build_training_dataset.py`.
 
 ## Archivos del repositorio
 
 ```text
 scripts/
-  03_train_baseline.py           baseline local TF-IDF + regresión logística
   04_build_training_dataset.py   Evidence + export de Label Studio + Body a CSVs Gold
-  05_prepare_claims_backfill.py  Body histórico a lotes controlados de Claims
-  06_prepare_evidence_retry.py   Claims fallidos de Evidence a reintento mínimo
-  07_prepare_translation_continuation_job.py  job sin PubMed/Embed para traducciones pendientes
 experiments/models/
-  README.md                       uso, dependencias y protocolo común de modelos
-  common.py                       carga Gold y evaluación compartida por noticia
-  sequence_train.py               Word2Vec/LSTM y GloVe/BiLSTM
-  transformer_train.py            fine-tuning BERT/BETO/RoBERTa-BNE
-  sbert_train.py                  embeddings SBERT + clasificador clásico
-  */train.py                      punto de entrada por variante de modelo
+  README.md                       contrato del experimento reducido
+  01_tfidf_naive_bayes/
+    baseline.ipynb                único baseline reproducible
 tests/
   ...                             pruebas automatizadas
 docs/
@@ -225,36 +208,31 @@ labelstudio/
 oci/functions/                   Functions desplegadas en OCI
 ```
 
-Los CSV, credenciales y artefactos generados no se versionan en Git.
+Los CSV generados no se versionan por defecto. Este PR incluye únicamente el
+snapshot Gold `20261019` para reproducir el notebook; las credenciales y los
+artefactos temporales siguen fuera de Git.
 
 ## Primer modelo local
 
-El entrenamiento empieza únicamente con el CSV compacto `training.csv`
+El entrenamiento empieza únicamente con el CSV compacto
+`gold/training/training_<run_id>.csv`
 generado por `04_build_training_dataset.py`, no con `silver/evidence`. Ese CSV contiene
-`record_id`, `title`, `body`, `label` y `dataset_split`; el piloto exige al menos 100
-filas binarias revisadas por una persona, con `title` y `body` completos. Usa
-`title + body` como texto, `RESPALDADA=1` y `REFUTADA=0`; no usa claims,
+`record_id`, `title`, `body` y `label`; el notebook exige suficientes filas
+binarias revisadas por una persona, con `title` y `body` completos. Usa
+`title + body` como texto, `RESPALDADA` y `REFUTADA` como clases; no usa claims,
 PMIDs, similitudes, fuente ni tema como variables predictoras.
 
 En el MacBook instala las dependencias opcionales y ejecuta:
 
 ```bash
 python3 -m pip install -e '.[training]'
-python3 scripts/03_train_baseline.py \
-  --input /ruta/privada/gold_training_2026-10-11.csv \
-  --output-dir artifacts/training_runs \
-  --run-name pilot_100 \
-  --limit 100 \
-  --min-rows 100 \
-  --seed 42
+jupyter notebook experiments/models/01_tfidf_naive_bayes/baseline.ipynb
 ```
 
-La corrida crea `model.joblib`, `metrics.json`, `split_manifest.csv` y
-`predictions.csv` dentro de un directorio ignorado por Git. Reporta el baseline
-de mayoría, precisión, recall, Macro-F1, F1 por clase, ROC-AUC cuando ambas
-clases aparecen en el split y matriz de confusión. Con 100 filas, la partición
-queda en 70 train, 15 validation y 15 test; los resultados deben presentarse
-como piloto por el tamaño pequeño del test.
+En la primera celda se configura `GOLD_CSV`. El notebook crea
+`model.joblib`, `metrics.json`, `split_manifest.csv` y `predictions.csv` en
+`artifacts/training_runs/notebook_tfidf_naive_bayes/`, y muestra precisión,
+recall, Macro-F1 y matriz de confusión por partición.
 
 ## Verificación local
 

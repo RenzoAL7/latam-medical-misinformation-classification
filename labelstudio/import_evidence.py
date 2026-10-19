@@ -121,7 +121,6 @@ def _task_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "best_pmid": row.get("best_pmid", ""),
         "best_embedding_similarity": row.get("best_embedding_similarity", ""),
         "best_tfidf_similarity": row.get("best_tfidf_similarity", ""),
-        "ranking_method": row.get("ranking_method", ""),
         "embedding_model": row.get("embedding_model", ""),
         "embedding_status": row.get("embedding_status", ""),
         "translation_status": row.get("translation_status", ""),

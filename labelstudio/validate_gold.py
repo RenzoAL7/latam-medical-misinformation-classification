@@ -41,7 +41,6 @@ OUTPUT_FIELDS = (
     "best_pmid",
     "best_embedding_similarity",
     "best_tfidf_similarity",
-    "ranking_method",
     "embedding_model",
     "evidence_status",
     "evidence_run_id",

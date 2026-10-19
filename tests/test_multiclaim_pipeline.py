@@ -84,6 +84,42 @@ def test_claim_extraction_preserves_all_distinct_claims_without_default_cap() ->
     assert all(claim["claim_status"] == "PENDING_EVIDENCE" for claim in claims)
 
 
+def test_multiclaim_prompt_requests_high_recall_without_rewriting_polarity() -> None:
+    prompt = EXTRACT._multiclaim_prompt(
+        [
+            {
+                "record_id": "news_001",
+                "title": "El tratamiento no garantiza la cura",
+                "subtitle_or_bajada": "Declaración de una especialista",
+                "body": "El artículo contiene una afirmación sanitaria.",
+            }
+        ],
+        max_body_chars=24000,
+    )
+
+    assert "pasada de cobertura" in prompt
+    assert "no descartes una afirmación" in prompt.lower()
+    assert "no conviertas" in prompt.lower()
+    assert '"claims": []' in prompt
+
+
+def test_claim_coverage_metrics_separate_medical_zero_claims_from_errors() -> None:
+    metrics = EXTRACT._claims_coverage_metrics(
+        [
+            {"llm_status": "OK", "is_medical": True, "claims_count": 2},
+            {"llm_status": "OK", "is_medical": True, "claims_count": 0},
+            {"llm_status": "OK", "is_medical": False, "claims_count": 0},
+            {"llm_status": "ERROR", "is_medical": None, "claims_count": 0},
+        ]
+    )
+
+    assert metrics == {
+        "medical_articles_with_claims": 1,
+        "medical_articles_without_claims": 1,
+        "nonmedical_articles_without_claims": 1,
+    }
+
+
 def test_controlled_body_retry_suppresses_only_same_record_exact_claim_texts() -> None:
     records = [
         {
@@ -920,6 +956,7 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(EVIDENCE.response, "Response", FakeResponse)
+    monkeypatch.setenv("PIPELINE_MODE", "retrieve")
     monkeypatch.setenv("EVIDENCE_MAX_ROWS", "0")
     monkeypatch.setenv("EVIDENCE_MAX_SECONDS", "60")
     monkeypatch.setenv("EVIDENCE_TIME_BUFFER", "1")
@@ -928,7 +965,19 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_TRANSLATION_SECRET_OCIDS", "secret")
     evidence_event = {"data": {"resourceName": claims_object, "additionalDetails": {"bucketName": "bucket"}}}
 
-    evidence_response = EVIDENCE.handler(None, io.BytesIO(json.dumps(evidence_event).encode("utf-8")))
+    translate_response = EVIDENCE.handler(None, io.BytesIO(json.dumps(evidence_event).encode("utf-8")))
+    translate_result = json.loads(translate_response.response_data)
+    translate_object = translate_result["object_name"]
+    translate_records = [
+        json.loads(line) for line in storage.objects[translate_object].decode("utf-8").splitlines()
+    ]
+    assert translate_result["status"] == "complete"
+    assert translate_object.startswith("silver/translate/translate_")
+    assert all(record["translation_status"] == "PENDING" for record in translate_records)
+
+    monkeypatch.setenv("PIPELINE_MODE", "translation")
+    translation_event = {"data": {"resourceName": translate_object, "additionalDetails": {"bucketName": "bucket"}}}
+    evidence_response = EVIDENCE.handler(None, io.BytesIO(json.dumps(translation_event).encode("utf-8")))
     evidence_result = json.loads(evidence_response.response_data)
     evidence_records = [
         json.loads(line) for line in storage.objects[evidence_result["object_name"]].decode("utf-8").splitlines()
@@ -942,6 +991,7 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
     }
     assert all(record["evidence_status"] == "OK" for record in evidence_records)
     assert all(record["evidence_run_id"] == evidence_result["run_id"] for record in evidence_records)
+    assert all(record["body"] for record in evidence_records)
     assert all(len(record["candidates"]) == 5 for record in evidence_records)
     assert len(embedding_inputs["SEARCH_QUERY"]) == 2
     assert len(embedding_inputs["SEARCH_DOCUMENT"]) == 5

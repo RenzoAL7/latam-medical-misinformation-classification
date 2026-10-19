@@ -21,12 +21,11 @@ fetch-newsdata
   -> extract-news-body
   -> silver/body/body_<run_id>.csv
   -> extract-claims (claims.v1)
-  -> silver/claims/run_id=<run_id>/claims.jsonl + manifest.json
-  -> retrieve-pubmed-evidence (evidence.v1)
-  -> silver/evidence/run_id=<run_id>/evidence.jsonl + manifest.json
-  -> [solo traducción pendiente] silver/evidence-translation-jobs/*.job.json
-  -> continue-evidence-translation (mismo image, otro modo)
-  -> silver/evidence/run_id=<parent>_translation_final/evidence.jsonl + manifest.json
+  -> silver/claims/claims_<run_id>.jsonl + manifest.json
+  -> retrieve-pubmed-evidence (retrieval.v1)
+  -> silver/translate/translate_<run_id>.jsonl + manifest.json
+  -> continue-evidence-translation (mismo image, modo translation)
+  -> silver/evidence/evidence_<run_id>.jsonl + manifest.json
   -> revisión humana por claim en Label Studio
   -> una fila de Gold por noticia
 ```
@@ -40,19 +39,18 @@ porque una noticia puede tener muchos claims y cada claim muchos candidatos.
 | --- | --- | --- |
 | `CreateObject` | `bronze/*.csv` | `extract-news-body` |
 | `CreateObject` | `silver/body/*.csv` | `extract-claims` |
-| `CreateObject` | `silver/claims/run_id=*/claims.jsonl` | `retrieve-pubmed-evidence` |
-| `CreateObject` | `silver/evidence-translation-jobs/*.job.json` | `continue-evidence-translation` |
+| `CreateObject` | `silver/claims/claims_*.jsonl` | `retrieve-pubmed-evidence` |
+| `CreateObject` | `silver/translate/translate_*.jsonl` | `continue-evidence-translation` |
 
 La tercera regla no debe seguir coincidiendo con `silver/claims/*.csv` después
-de activar v1. La Function de Evidence rechaza un evento que no identifica
-exactamente un `claims.jsonl`; por ello un selector amplio de prefijo causaría
-errores al crear también `manifest.json`.
+de activar v1. La Function de retrieval rechaza un evento que no identifica
+exactamente un `claims_<run_id>.jsonl`; por ello un selector amplio de prefijo
+causaría errores al crear también el manifest.
 
-La cuarta regla debe limitarse al prefijo
-`silver/evidence-translation-jobs/` y al sufijo `.job.json`. No debe apuntar al
-prefijo de staging ni a `silver/evidence/`, porque esos objetos no son entrada
-de recuperación. El destino usa la misma imagen x86 que Evidence pero tiene
-`PIPELINE_MODE=translation_continuation`.
+La cuarta regla debe limitarse al prefijo `silver/translate/` y al patrón
+`translate_*.jsonl`. No debe escuchar `silver/evidence/` ni
+`silver/rejected/`, porque esos objetos son salidas. El destino usa la misma
+imagen x86 que retrieval pero tiene `PIPELINE_MODE=translation`.
 
 Cada Function recibe el objeto que disparó el evento. `extract-claims` y
 `retrieve-pubmed-evidence` v1 no aceptan `{}` como drenaje global: procesan
@@ -79,15 +77,22 @@ EVIDENCE_MAX_ROWS=0
 PUBMED_CANDIDATES_FETCHED=5
 EVIDENCE_MAX_SECONDS=285
 EVIDENCE_TIME_BUFFER=10
+SILVER_TRANSLATE_PREFIX=silver/translate
+SILVER_REJECTED_PREFIX=silver/rejected
+EMBEDDINGS_ENABLED=true
+```
+
+En `continue-evidence-translation`:
+
+```text
+PIPELINE_MODE=translation
+PIPELINE_SCHEMA=v1
+SILVER_TRANSLATE_PREFIX=silver/translate
+SILVER_EVIDENCE_PREFIX=silver/evidence
+SILVER_REJECTED_PREFIX=silver/rejected
+TRANSLATION_MAX_SECONDS=285
+TRANSLATION_TIME_BUFFER=10
 TRANSLATION_PARALLELISM=2
-TRANSLATION_CONTINUATION_ENABLED=true
-SILVER_TRANSLATION_JOB_PREFIX=silver/evidence-translation-jobs
-SILVER_TRANSLATION_STAGE_PREFIX=silver/evidence-translation-stage
-TRANSLATION_CONTINUATION_MAX_CLAIMS=4
-TRANSLATION_CONTINUATION_MAX_ATTEMPTS=3
-TRANSLATION_CONTINUATION_MAX_SECONDS=285
-TRANSLATION_CONTINUATION_TIME_BUFFER=10
-TRANSLATION_CONTINUATION_PARALLELISM=1
 ```
 
 `MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` son reglas de integridad:
@@ -104,12 +109,11 @@ de abstracts traducidos ni el límite de cinco PMIDs por claim.
 OCI Functions tiene un timeout de 300 segundos. Claims se detiene a 270 s con
 20 s de margen y Evidence a 285 s con 10 s de margen. El límite se aplica a
 la corrida, no a un claim: si una llamada falla o se acaba el tiempo, el claim
-queda en `ERROR` dentro de `claims.jsonl` o `evidence.jsonl` y el manifest pasa
-a `PARTIAL` o `FAILED`. Para `RECITATION`, Evidence puede usar en la misma
-invocación un fallback acotado de resumen fiel. Si tras ello solo queda
-traducción transitoria, deja un job de continuación con los candidatos ya
-recuperados; la Function nueva no consulta nuevamente PubMed ni Embed 4 y
-publica una revisión final del mismo conjunto de claims.
+queda en `ERROR` dentro del JSONL de la etapa y el manifest pasa a `PARTIAL` o
+`FAILED`. Además se escribe una copia en el subdirectorio correspondiente de
+`silver/rejected/`. Retrieval nunca traduce; deja el candidato en
+`silver/translate/` para que la segunda Function lo procese sin consultar
+PubMed ni Embed 4 nuevamente.
 
 `evidence_status=OK` solo se conserva si `llm_status`, `embedding_status` y
 `translation_status` son `OK`. `NO_RESULTS` y `NO_ABSTRACT` también son
@@ -142,10 +146,10 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 fn deploy --no-bump
 El orden de activación es:
 
 1. Ejecutar las pruebas locales y construir la imagen x86.
-2. Subir/desplegar Evidence y crear `continue-evidence-translation` con esa
-   misma imagen y `PIPELINE_MODE=translation_continuation`.
-3. Mantener el selector Claims → Evidence al sufijo `claims.jsonl` y añadir la
-   regla Jobs → continuación al sufijo `.job.json`.
+2. Subir/desplegar retrieval y actualizar `continue-evidence-translation` con
+   esa misma imagen y `PIPELINE_MODE=translation`.
+3. Mantener el selector Claims → retrieval en `claims_*.jsonl` y el selector
+   Translate → Evidence en `translate_*.jsonl`.
 4. Crear un proyecto nuevo de Label Studio con `config_multiclaim.xml` y
    configurar su sincronizador en formato `jsonl`.
 5. Hacer una corrida controlada nueva, inspeccionar ambos manifests y revisar
@@ -156,26 +160,16 @@ Nunca borres ni mezcles los CSV históricos como parte de esta activación. Su
 ordenamiento, eliminación o enriquecimiento se decide después de evaluar la
 corrida controlada.
 
-## Backfill histórico controlado (solo Claims y Evidence)
+## Reintentos y recuperación
 
-Cuando se decida recuperar noticias históricas, no se vuelve a ejecutar
-NewsData ni `extract-news-body`. Primero se exporta el listado exacto de
-`record_id` del proyecto histórico de Label Studio y se cruza con los Body CSV
-ya almacenados. El comando local prepara lotes planos, auditables y pequeños:
+Las salidas con errores se conservan por etapa en `silver/rejected/body/`,
+`silver/rejected/claims/`, `silver/rejected/translate/` y
+`silver/rejected/evidence/`. La recuperación se hace sobre esos objetos y los
+reintentos internos de las Functions, con el `run_id` y los manifests como
+control de duplicados. No se usan scripts locales de backfill o retry para
+volver a publicar lotes; así una recuperación no vuelve a disparar la cadena
+completa por accidente.
 
-```bash
-python3 scripts/05_prepare_claims_backfill.py \
-  --body-input /ruta/descargada/silver/body \
-  --record-ids /ruta/labelstudio_export.json \
-  --output-dir labelstudio/artifacts/backfill_historic_20261015 \
-  --campaign-id historic-20261015 \
-  --batch-size 20
-```
-
-El `campaign.json` resultante lista los `record_id` solicitados, los que sí
-tienen Body válido, los que faltan y los que no son reutilizables. Se sube un
-solo `body_backfill_<campaign>_<n>.csv` por vez directamente a `silver/body/`.
-El evento normal ejecuta **solo** Claims, después Evidence y finalmente el
-sincronizador de Multi-Claim. Se revisan ambos manifests antes del lote
-siguiente; una fila sin Body válido queda como excepción, nunca se vuelve a
-rastrear automáticamente.
+Para generar el dataset final local después de la revisión humana, el único
+comando de ensamblado es `scripts/04_build_training_dataset.py`, que combina
+el export de Label Studio, Evidence y Body de la corrida correspondiente.
