@@ -121,6 +121,7 @@ def _configure(monkeypatch, storage: _Storage) -> None:
     monkeypatch.setenv("OBJECT_STORAGE_NAMESPACE", "namespace")
     monkeypatch.setenv("OBJECT_STORAGE_BUCKET", "mednews-data")
     monkeypatch.setattr(function, "_object_storage_client", lambda: storage)
+    monkeypatch.setattr(function, "_run_stamp", lambda: "20261019")
     monkeypatch.setattr(function.response, "Response", _Response)
 
 
@@ -144,9 +145,8 @@ def test_scheduled_payload_builds_one_gold_csv_and_rejects_pending_articles(monk
     assert payload["rejected_records"] == 1
     assert payload["status"] == "requires_review"
     training_names = [name for name in storage.objects if name.startswith("gold/training/") and name.endswith(".csv")]
-    assert len(training_names) == 1
-    assert "part-" not in training_names[0]
-    assert "run_id=" not in training_names[0]
+    assert training_names == ["gold/training/training_20261019.csv"]
+    assert not any(name.endswith(".summary.json") for name in storage.objects)
     rows = list(csv.DictReader(io.StringIO(storage.objects[training_names[0]].decode("utf-8-sig"))))
     assert rows == [{"record_id": "news_001", "title": "Título news_001", "body": "Cuerpo completo news_001", "label": "RESPALDADA", "dataset_split": ""}]
     rejected_names = [name for name in storage.objects if name.startswith("silver/rejected/training/") and name.endswith(".jsonl")]

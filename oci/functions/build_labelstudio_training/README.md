@@ -12,17 +12,18 @@ silver/annotations/labelstudio/labelstudio_<utc_timestamp>.json
 
 The Function uses the `evidence_run_id` and `source_body_object` references in
 that export/Evidence to download only the matching inputs. It writes exactly
-one training artifact per invocation:
+one training artifact per Lima calendar day; a retry on the same day replaces
+that day's CSV:
 
 ```text
-gold/training/training_<utc_timestamp>.csv
-gold/training/training_<utc_timestamp>.summary.json
-silver/rejected/training/training_<utc_timestamp>.jsonl  # only if needed
+gold/training/training_<YYYYMMDD>.csv
+silver/rejected/training/training_<YYYYMMDD>.jsonl  # only if needed
 ```
 
-There are no `run_id=` directories and no `part-0001` fragments. The scheduled
-empty payload means “use the newest Label Studio export”; an Object Storage
-event may identify a specific export object.
+The date is evaluated in `America/Lima`. There are no `run_id=` directories,
+timestamp suffixes or `part-0001` fragments. The scheduled empty payload means
+“use the newest Label Studio export”; an Object Storage event may identify a
+specific export object.
 
 Required Function configuration:
 

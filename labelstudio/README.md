@@ -130,13 +130,15 @@ silver/annotations/labelstudio/labelstudio_<utc_timestamp>.json
 El timer `mednews-labelstudio-export.timer` corre a las `13:55`
 (`America/Lima`), cinco minutos antes del Function que construye Gold. El
 Function `build-labelstudio-training` corre diariamente a las `14:00`
-(`America/Lima`) y escribe un único CSV versionado:
+(`America/Lima`) y escribe un único CSV por día:
 
 ```text
-gold/training/training_<utc_timestamp>.csv
-gold/training/training_<utc_timestamp>.summary.json
-silver/rejected/training/training_<utc_timestamp>.jsonl
+gold/training/training_<YYYYMMDD>.csv
+silver/rejected/training/training_<YYYYMMDD>.jsonl
 ```
+
+Si se reintenta el mismo día, el CSV diario se reemplaza; no se generan
+fragmentos ni archivos `summary.json` en Gold.
 
 El exportador intenta primero el secreto de OCI Vault indicado por
 `LABEL_STUDIO_SECRET_OCID`. Si ese valor no autentica, continúa con el

@@ -4,7 +4,7 @@
 
 El notebook
 [`experiments/models/01_tfidf_naive_bayes/baseline.ipynb`](../experiments/models/01_tfidf_naive_bayes/baseline.ipynb)
-consume `gold/training/training_<run_id>.csv`, producido después de reunir Evidence,
+consume `gold/training/training_<YYYYMMDD>.csv`, producido después de reunir Evidence,
 anotaciones humanas y Body de la misma corrida. Debe contener, como mínimo:
 
 | Columna | Papel |
