@@ -3,8 +3,8 @@
 Scheduled Gold builder for the private Label Studio installation.
 
 Label Studio listens only on `127.0.0.1:18080` inside `PUB_VM`, so this
-Function does not receive or store a Label Studio token. A VM-side exporter
-uses the protected token and writes one raw export to:
+Function does not receive or store a Label Studio token. After human review,
+the JSON/JSONL export is uploaded manually to:
 
 ```text
 silver/annotations/labelstudio/labelstudio_<utc_timestamp>.json

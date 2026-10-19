@@ -6,7 +6,6 @@ import json
 import re
 import sys
 import types
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -31,23 +30,10 @@ def _load_function(path: Path, module_name: str) -> types.ModuleType:
             sys.modules["fdk"] = previous
 
 
-def _load_script(path: Path, module_name: str) -> types.ModuleType:
-    sys.path.insert(0, str(path.parent))
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 EXTRACT = _load_function(ROOT / "oci/functions/extract_claims/func.py", "extract_claims_multiclaim")
 EVIDENCE = _load_function(
     ROOT / "oci/functions/retrieve_pubmed_evidence/func.py", "retrieve_evidence_multiclaim"
 )
-IMPORTER = _load_script(ROOT / "labelstudio/import_evidence.py", "import_evidence_multiclaim")
-EXPORTER = _load_script(ROOT / "labelstudio/export_annotations.py", "export_annotations_multiclaim")
-AGGREGATOR = _load_script(ROOT / "labelstudio/aggregate_article_labels.py", "aggregate_article_labels")
-VALIDATOR = _load_script(ROOT / "labelstudio/validate_gold.py", "validate_gold_multiclaim")
 
 
 def test_claim_extraction_preserves_all_distinct_claims_without_default_cap() -> None:
@@ -738,107 +724,6 @@ def test_v1_claim_loader_explicitly_excludes_llm_failures() -> None:
 
     assert [row["claim_id"] for row in rows] == ["ok-news_c01"]
     assert stats["skipped_llm_not_ok"] == 1
-
-
-def test_labelstudio_jsonl_creates_one_task_per_claim_and_xml_has_no_article_label() -> None:
-    fixture = ROOT / "tests/fixtures/evidence_multiclaim.jsonl"
-    rows = IMPORTER._rows_from_path(fixture)
-    tasks = [IMPORTER._task_from_row(row) for row in rows if IMPORTER._ready_for_review(row)]
-
-    assert [task["data"]["claim_key"] for task in tasks] == [
-        "news_001::news_001_c01_a1",
-        "news_001::news_001_c02_b2",
-    ]
-    xml_root = ET.parse(ROOT / "labelstudio/config_multiclaim.xml").getroot()
-    control_names = {element.attrib["name"] for element in xml_root.iter() if "name" in element.attrib}
-    assert {"claim_materiality", "evidence_relation", "claim_verdict", "selected_pmids"}.issubset(control_names)
-    assert "final_label" not in control_names
-    controls = {element.attrib.get("name"): element for element in xml_root.iter() if "name" in element.attrib}
-    assert controls["claim_materiality"].attrib.get("required") == "true"
-    assert controls["evidence_relation"].attrib.get("required") is None
-    assert controls["claim_verdict"].attrib.get("required") is None
-    assert controls["selected_pmids"].attrib.get("required") is None
-
-
-def test_labelstudio_import_accepts_terminal_pubmed_misses_for_human_triage() -> None:
-    row = {
-        "schema_version": "evidence.v1",
-        "llm_status": "OK",
-        "evidence_status": "NO_RESULTS",
-        "embedding_status": "SKIPPED_NO_EVIDENCE",
-        "translation_status": "SKIPPED_NO_EVIDENCE",
-    }
-
-    assert IMPORTER._ready_for_review(row)
-
-    row["translation_status"] = "ERROR"
-    assert not IMPORTER._ready_for_review(row)
-
-
-def test_terminal_pubmed_miss_cannot_be_adjudicated_with_a_pmid() -> None:
-    claim = {
-        "claim_id": "news_001_c01",
-        "claim_text": "Claim without PubMed candidates.",
-        "claim_materiality": "central",
-        "claim_verdict": "NO_DETERMINABLE",
-        "evidence_relation": "unclear",
-        "evidence_status": "NO_RESULTS",
-        "selected_pmids": "12345678",
-        "verification_note": "No candidate was returned by PubMed.",
-        "annotation_id": "annotation-1",
-        "annotator": "reviewer",
-        "annotated_at": "2026-10-17T12:00:00Z",
-    }
-
-    assert "pmid_without_pubmed_evidence" in AGGREGATOR._claim_issues(claim)
-
-
-def test_jsonl_import_filters_degraded_claim_and_aggregates_one_article() -> None:
-    rows = IMPORTER._rows_from_path(ROOT / "tests/fixtures/evidence_multiclaim.jsonl")
-    ready = [row for row in rows if IMPORTER._ready_for_review(row)]
-    assert [row["claim_id"] for row in ready] == ["news_001_c01_a1", "news_001_c02_b2"]
-
-    payload = []
-    for index, row in enumerate(ready, start=1):
-        task = IMPORTER._task_from_row(row)
-        relation = "contradicts" if index == 1 else "supports"
-        verdict = "REFUTADO" if index == 1 else "RESPALDADO"
-        task["annotations"] = [
-            {
-                "id": index,
-                "completed": True,
-                "updated_at": f"2026-10-14T0{index}:00:00Z",
-                "completed_by": "reviewer@example.test",
-                "result": [
-                    {"from_name": "claim_materiality", "value": {"choices": ["central"]}},
-                    {"from_name": "evidence_relation", "value": {"choices": [relation]}},
-                    {"from_name": "claim_verdict", "value": {"choices": [verdict]}},
-                    {"from_name": "selected_pmids", "value": {"text": [row["best_pmid"]]}},
-                    {"from_name": "verification_note", "value": {"text": ["Revisión humana"]}},
-                ],
-            }
-        ]
-        payload.append(task)
-
-    claim_reviews = EXPORTER._claim_review_rows(payload)
-    articles = AGGREGATOR.aggregate_rows(
-        claim_reviews,
-        {
-            "news_001": {
-                "record_id": "news_001",
-                "title": "Noticia médica",
-                "body": "Cuerpo completo para entrenar.",
-            }
-        },
-    )
-    reviewed, training, rejected = VALIDATOR.validate_rows(articles)
-
-    assert len(claim_reviews) == 2
-    assert len(articles) == 1
-    assert articles[0]["label"] == "REFUTADA"
-    assert articles[0]["aggregation_status"] == "COMPLETADA"
-    assert len(reviewed) == len(training) == 1
-    assert not rejected
 
 
 def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:

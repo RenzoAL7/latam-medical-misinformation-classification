@@ -5,13 +5,13 @@ OCID concretos pertenecen a la configuración de OCI, no al repositorio.
 
 ## Activación segura para una corrida v1
 
-La corrida limpia activa únicamente el schedule de NewsData de las 08:00 Lima,
-las tres reglas Events y el timer del proyecto multi-claim de Label Studio. El
-schedule de las 20:00 y los tres schedules históricos de drenaje permanecen
-inactivos: un drain usa un payload global y podría volver a recorrer objetos
-históricos, mientras que Claims y Evidence v1 deben procesar el objeto que
-disparó el evento. No borres ni reproceses CSV históricos como parte de la
-activación.
+La corrida limpia activa únicamente el schedule de NewsData de las 08:00 Lima
+y las tres reglas Events. El schedule de las 20:00 y los tres schedules
+históricos de drenaje permanecen inactivos: un drain usa un payload global y
+podría volver a recorrer objetos históricos, mientras que Claims y Evidence v1
+deben procesar el objeto que disparó el evento. La importación a Label Studio y
+la carga del export humano se hacen manualmente. No borres ni reproceses CSV
+históricos como parte de la activación.
 
 ## Cadena de objetos
 
@@ -27,7 +27,7 @@ fetch-newsdata
   -> continue-evidence-translation (mismo image, modo translation)
   -> silver/evidence/evidence_<run_id>.jsonl + manifest.json
   -> revisión humana por claim en Label Studio
-  -> export JSON de Label Studio en silver/annotations/labelstudio/
+  -> export JSON manual en silver/annotations/labelstudio/
   -> Function build-labelstudio-training
   -> una fila de Gold por noticia en gold/training/
 ```
@@ -130,11 +130,11 @@ requieren su propio `use fn-invocation`. La identidad de las Functions debe
 leer los secret bundles de NewsData, claims y traducción de abstracts; las
 claves se cargan en tiempo de ejecución y nunca se incorporan a la imagen.
 
-La VM privada de Label Studio usa Instance Principal para listar/leer Objects,
-y un JWT refresh token local protegido para renovar su access token. El
-sincronizador v1 consume manifests `evidence.manifest.v1` `COMPLETE` o
-`PARTIAL`, pero el importador conserva la compuerta por claim: los cuatro
-estados deben estar en `OK`.
+La VM privada de Label Studio no necesita servicios ni credenciales locales del
+repositorio para este flujo manual. La persona revisora trabaja en el proyecto
+existente, exporta las anotaciones terminadas y sube ese JSON a
+`silver/annotations/labelstudio/`. El builder de Gold conserva la compuerta
+por claim: los cuatro estados deben estar en `OK`.
 
 ## Imágenes y activación segura
 
@@ -152,11 +152,11 @@ El orden de activación es:
    esa misma imagen y `PIPELINE_MODE=translation`.
 3. Mantener el selector Claims → retrieval en `claims_*.jsonl` y el selector
    Translate → Evidence en `translate_*.jsonl`.
-4. Crear un proyecto nuevo de Label Studio con `config_multiclaim.xml` y
-   configurar su sincronizador en formato `jsonl`.
-5. Hacer una corrida controlada nueva, inspeccionar ambos manifests y revisar
-   tareas humanas de ejemplo.
-6. Decidir explícitamente si se reactivan los schedules.
+4. Crear un proyecto nuevo de Label Studio con `config_multiclaim.xml`.
+5. Importar manualmente el Evidence JSONL y revisar las tareas.
+6. Exportar las anotaciones terminadas y subir el JSON a
+   `silver/annotations/labelstudio/`.
+7. Hacer una corrida controlada nueva e inspeccionar ambos manifests y el Gold.
 
 Nunca borres ni mezcles los CSV históricos como parte de esta activación. Su
 ordenamiento, eliminación o enriquecimiento se decide después de evaluar la
@@ -172,17 +172,16 @@ control de duplicados. No se usan scripts locales de backfill o retry para
 volver a publicar lotes; así una recuperación no vuelve a disparar la cadena
 completa por accidente.
 
-Para generar el dataset final local después de la revisión humana, el único
-comando de ensamblado es `scripts/04_build_training_dataset.py`, que combina
-el export de Label Studio, Evidence y Body de la corrida correspondiente.
+Para entrenar localmente después de la revisión humana, se descarga el único
+CSV Gold desde `gold/training/` y se abre el notebook del baseline. No se
+ensamblan CSV localmente.
 
-## Exportación y Gold diarios
+## Gold diario y descarga manual
 
-Label Studio escucha solo en `127.0.0.1:18080` de `PUB_VM`. Por eso el
-servicio `mednews-labelstudio-export.service` corre en la VM a las `13:55`
-(`America/Lima`) y publica el export JSON en
-`silver/annotations/labelstudio/`. El timer es persistente y queda habilitado
-con `mednews-labelstudio-export.timer`.
+Después de completar la revisión, se exportan las anotaciones desde Label
+Studio y se suben manualmente a `silver/annotations/labelstudio/`. No se
+mantienen servicios `systemd`, timers ni credenciales locales de Label Studio
+en este repositorio.
 
 El horario OCI
 `mednews-build-labelstudio-training-14-lima` ejecuta el Function a las
@@ -191,10 +190,6 @@ reciente, resuelve únicamente los Evidence y Body referenciados por ese
 export, y publica `gold/training/training_<YYYYMMDD>.csv` usando la fecha de
 Lima. Si se reintenta el mismo día, reemplaza ese mismo objeto. Las filas pendientes,
 inconsistentes o sin Body se conservan en
-`silver/rejected/training/`; los fallos del exportador quedan en
-`silver/rejected/labelstudio-export/`.
-
-La VM consulta primero `LABEL_STUDIO_SECRET_OCID` en OCI Vault. Si la
-credencial de Vault no autentica, usa como fallback el refresh token protegido
-del archivo de entorno existente de la VM; los valores nunca aparecen en los
-logs.
+`silver/rejected/training/`. El export debe existir previamente porque se carga
+manualmente a `silver/annotations/labelstudio/`; no hay un servicio local ni
+un fallback de token administrado por este repositorio.

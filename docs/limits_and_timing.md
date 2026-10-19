@@ -152,16 +152,16 @@ translation_status=OK
 ```
 
 Esto evita tratar como evidencia útil una fila con error de infraestructura.
-Un manifest `PARTIAL` no bloquea los demás claims: el sincronizador importa
+Un manifest `PARTIAL` no bloquea los demás claims: la revisión manual importa
 solo las filas que cumplen esta compuerta y conserva las fallidas fuera de
 Label Studio. Cuando aparece el manifest final de continuación, el importador
-deduplica por `record_id::claim_id`: añade solo los claims recuperados y no
-duplica ni sobrescribe una anotación humana existente.
+manual deduplica por `record_id::claim_id`: añade solo los claims recuperados y
+no duplica ni sobrescribe una anotación humana existente.
 Label Studio no recibe un `final_label`; la persona clasifica materialidad,
-relación de evidencia y veredicto del claim. Al construir Gold,
-`scripts/04_build_training_dataset.py` usa el Evidence JSONL como inventario
-de todos los claims: si uno no fue revisable o no tiene revisión humana, bloquea
-la noticia. Solo entonces aplica la regla artículo: un claim central/material
+relación de evidencia y veredicto del claim. Al construir Gold, la Function
+`build-labelstudio-training` usa el Evidence JSONL como inventario de todos los
+claims: si uno no fue revisable o no tiene revisión humana, bloquea la noticia.
+Solo entonces aplica la regla artículo: un claim central/material
 refutado implica `REFUTADA`; todos respaldados implica `RESPALDADA`; los
 otros casos quedan `NO_DETERMINABLE`.
 
