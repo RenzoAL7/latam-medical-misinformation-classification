@@ -131,9 +131,8 @@ leer los secret bundles de NewsData, claims y traducción de abstracts; las
 claves se cargan en tiempo de ejecución y nunca se incorporan a la imagen.
 
 La VM privada de Label Studio no necesita servicios ni credenciales locales del
-repositorio para este flujo manual. La persona revisora descarga el Evidence
-JSONL, importa las tareas con `labelstudio/import_evidence.py`, exporta las
-anotaciones terminadas y sube ese JSON a
+repositorio para este flujo manual. La persona revisora trabaja en el proyecto
+existente, exporta las anotaciones terminadas y sube ese JSON a
 `silver/annotations/labelstudio/`. El builder de Gold conserva la compuerta
 por claim: los cuatro estados deben estar en `OK`.
 
@@ -173,9 +172,9 @@ control de duplicados. No se usan scripts locales de backfill o retry para
 volver a publicar lotes; así una recuperación no vuelve a disparar la cadena
 completa por accidente.
 
-Para generar el dataset final local después de la revisión humana, el único
-comando de ensamblado es `scripts/04_build_training_dataset.py`, que combina
-el export de Label Studio, Evidence y Body de la corrida correspondiente.
+Para entrenar localmente después de la revisión humana, se descarga el único
+CSV Gold desde `gold/training/` y se abre el notebook del baseline. No se
+ensamblan CSV localmente.
 
 ## Gold diario y descarga manual
 

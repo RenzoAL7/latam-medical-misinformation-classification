@@ -189,7 +189,7 @@ veredicto; el claim permanece en la auditoría y no determina la etiqueta. Si
 es `central` o `material`, también revisa `evidence_relation` y
 `claim_verdict`. Para `NO_RESULTS`/`NO_ABSTRACT`, un claim decisivo solo puede
 recibir `NO_DETERMINABLE`. Los errores técnicos no se convierten en veredictos.
-Después, `scripts/04_build_training_dataset.py` genera una sola fila por
+Después, el Function `build-labelstudio-training` genera una sola fila por
 `record_id` solo cuando reúne el Evidence JSONL completo, la exportación de
 Label Studio y el Body de la misma corrida. Un resultado terminal
 `NO_RESULTS`/`NO_ABSTRACT` sí se puede revisar para clasificar materialidad y,

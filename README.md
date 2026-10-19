@@ -56,8 +56,8 @@ protege reduciendo candidatos por claim, no descartando claims. Los manifiestos
 registran `COMPLETE`, `PARTIAL` o `FAILED`. Una falla de LLM, PubMed, embedding
 o traducción queda explícita en el artefacto normal y se replica en
 `silver/rejected/`; el estado `ERROR` no se reintenta implícitamente. La entrega
-de los claims listos a Label Studio se realiza manualmente con
-`labelstudio/import_evidence.py`.
+de los claims listos a Label Studio y la carga del export anotado a OCI se
+realizan manualmente.
 
 La agregación humana aplica esta regla explícita: un claim central o material
 refutado vuelve la noticia `REFUTADA`; si todos los claims centrales/materiales
@@ -154,17 +154,11 @@ filas candidatas, páginas y slots de API utilizados para auditar cada ejecució
 
 ## Revisión humana y Gold
 
-Después de `silver/evidence/`, importa solo los claims con `evidence_status`,
-`llm_status`, `embedding_status` y `translation_status` en `OK` mediante
-[`labelstudio/import_evidence.py`](labelstudio/import_evidence.py). El script
-deduplica por `claim_key` (`record_id::claim_id`), no por noticia. Exporta las
-anotaciones completadas desde Label Studio y súbelas manualmente a
-`silver/annotations/labelstudio/`. Un solo comando local,
-[`scripts/04_build_training_dataset.py`](scripts/04_build_training_dataset.py),
-genera salidas separadas de revisión por claim, revisión por noticia, errores y
-el CSV binario de entrenamiento. Solo este último se usa como entrada del
-notebook; las otras tres salidas son auditoría local y no se versionan. Nunca
-se sube un JSONL Silver directamente a Gold. La guía completa está en
+Después de `silver/evidence/`, revisa los claims elegibles en el proyecto de
+Label Studio. Exporta las anotaciones completadas y súbelas manualmente a
+`silver/annotations/labelstudio/`. El Function `build-labelstudio-training`
+genera el CSV binario de Gold en OCI; no se sube un JSONL Silver directamente a
+Gold. La guía completa está en
 [`labelstudio/README.md`](labelstudio/README.md).
 
 Solo las filas revisadas por una persona, con evidencia trazable y etiqueta
@@ -172,25 +166,22 @@ binaria final, pasan a Gold y al split de entrenamiento.
 
 El export crudo de Label Studio se conserva como respaldo en
 `silver/annotations/labelstudio/`; no se copia dentro de `experiments/` ni se
-usa directamente como dataset. Body ya se obtiene en `silver/body/`, y el
-ensamblador genera las salidas de revisión y `gold/training/` cuando las tres
-entradas corresponden a la misma corrida. En este repositorio solo se conserva
-`gold/training/training_20261019.csv`; los CSV de revisión y rechazo se mantienen
-fuera de Git para no duplicar artefactos que el notebook no consume.
+usa directamente como dataset. La Function de Gold cruza Body, Evidence y
+anotaciones de la misma corrida y publica `gold/training/`. En este repositorio
+solo se conserva `gold/training/training_20261019.csv`; los demás artefactos se
+descargan manualmente cuando se necesitan.
 
 ### Reintentos y recuperación
 
 Las Functions conservan los errores técnicos en `silver/rejected/` y aplican
 los reintentos internos definidos por cada etapa. No se mantienen scripts
-locales de backfill o retry que puedan volver a publicar objetos y duplicar la
-cadena de eventos. Para construir un dataset local a partir de una corrida
-revisada se usa únicamente `scripts/04_build_training_dataset.py`.
+locales de backfill, conversión o retry que puedan volver a publicar objetos y
+duplicar la cadena de eventos. Para el modelo local se descarga directamente
+el CSV Gold desde OCI y se abre el notebook.
 
 ## Archivos del repositorio
 
 ```text
-scripts/
-  04_build_training_dataset.py   Evidence + export de Label Studio + Body a CSVs Gold
 experiments/models/
   README.md                       contrato del experimento reducido
   01_tfidf_naive_bayes/
@@ -205,10 +196,6 @@ docs/
   training_baseline.md            contrato y ejecución del primer modelo
 labelstudio/
   config_multiclaim.xml          interfaz de revisión por claim
-  import_evidence.py             importa JSONL sin duplicar claim_key
-  export_annotations.py          parser interno de revisiones por claim
-  aggregate_article_labels.py    regla de agregación reutilizada por el builder
-  validate_gold.py               validación reutilizada por el builder
   README.md                      guía para el equipo
 oci/functions/                   Functions desplegadas en OCI
 ```
@@ -220,8 +207,8 @@ artefactos temporales siguen fuera de Git.
 ## Primer modelo local
 
 El entrenamiento empieza únicamente con el CSV compacto diario
-`gold/training/training_<YYYYMMDD>.csv`
-generado por `04_build_training_dataset.py`, no con `silver/evidence`. Ese CSV contiene
+`gold/training/training_<YYYYMMDD>.csv` descargado desde OCI, no con
+`silver/evidence`. Ese CSV contiene
 `record_id`, `title`, `body` y `label`; el notebook exige suficientes filas
 binarias revisadas por una persona, con `title` y `body` completos. Usa
 `title + body` como texto, `RESPALDADA` y `REFUTADA` como clases; no usa claims,
