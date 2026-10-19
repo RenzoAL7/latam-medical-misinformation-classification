@@ -160,7 +160,9 @@ deduplica por `claim_key` (`record_id::claim_id`), no por noticia. Exporta las
 anotaciones completadas desde Label Studio y coloca ese archivo junto al
 `evidence.jsonl` completo y al Body CSV de la misma corrida. Un solo comando local,
 [`scripts/04_build_training_dataset.py`](scripts/04_build_training_dataset.py),
-genera los CSV por claim, por noticia y el CSV binario de entrenamiento. Nunca
+genera salidas separadas de revisión por claim, revisión por noticia, errores y
+el CSV binario de entrenamiento. Solo este último se usa como entrada del
+notebook; las otras tres salidas son auditoría local y no se versionan. Nunca
 se sube un JSONL Silver directamente a Gold. La guía completa está en
 [`labelstudio/README.md`](labelstudio/README.md).
 
@@ -170,8 +172,10 @@ binaria final, pasan a Gold y al split de entrenamiento.
 El export crudo de Label Studio se conserva como respaldo en
 `silver/annotations/labelstudio/`; no se copia dentro de `experiments/` ni se
 usa directamente como dataset. Body ya se obtiene en `silver/body/`, y el
-ensamblador genera `gold/reviewed/` y `gold/training/` cuando las tres entradas
-corresponden a la misma corrida.
+ensamblador genera las salidas de revisión y `gold/training/` cuando las tres
+entradas corresponden a la misma corrida. En este repositorio solo se conserva
+`gold/training/training_20261019.csv`; los CSV de revisión y rechazo se mantienen
+fuera de Git para no duplicar artefactos que el notebook no consume.
 
 ### Reintentos y recuperación
 

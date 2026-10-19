@@ -33,6 +33,10 @@ reproducir esta corrida. `NO_DETERMINABLE`, `EXCLUIDA`, `PENDIENTE_REVISION` y
 se detiene si no hay suficientes ejemplos de ambas clases; dos noticias
 refutadas no son una base válida para entrenar.
 
+El builder puede producir además CSV de revisión por claim, revisión por
+noticia y rechazo. Son salidas de auditoría para revisar o corregir el flujo;
+no son entradas del modelo y por eso no se guardan en este repositorio.
+
 El ensamblado de Gold debe unir Body, Evidence y anotaciones de la misma
 corrida antes de crear `training_<run_id>.csv`. No se debe subir directamente un
 JSONL Silver a Gold ni fabricar etiquetas a partir de similitudes.

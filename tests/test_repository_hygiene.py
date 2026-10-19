@@ -7,12 +7,9 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_repository_tracks_only_the_declared_gold_snapshot() -> None:
+def test_repository_tracks_only_the_training_snapshot() -> None:
     expected = {
-        REPOSITORY_ROOT / "gold" / "reviewed" / "article_labels_20261019.csv",
-        REPOSITORY_ROOT / "gold" / "reviewed" / "claim_reviews_20261019.csv",
         REPOSITORY_ROOT / "gold" / "training" / "training_20261019.csv",
-        REPOSITORY_ROOT / "gold" / "rejected" / "rejected_20261019.csv",
     }
     tracked_csvs = {
         REPOSITORY_ROOT / path
