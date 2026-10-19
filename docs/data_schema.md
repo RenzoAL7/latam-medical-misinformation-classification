@@ -33,9 +33,10 @@ La Function elimina duplicados dentro de la corrida y vuelve a consultar los
 
 `silver/body/` conserva el resultado técnico de extracción. `silver/claims/`
 recibe cuerpos válidos y guarda todos los claims dentro de un registro JSONL
-por noticia. `silver/evidence/` guarda un registro JSONL por claim con sus
-candidatos PubMed. Los CSV de Bronze y Body son insumos operativos actuales;
-Claims y Evidence v1 no se mezclan con el contrato CSV histórico.
+por noticia. `silver/translate/` guarda los candidatos PubMed ya recuperados y
+rankeados; `silver/evidence/` guarda el resultado final por claim después de
+traducir. Los CSV de Bronze y Body son insumos operativos actuales; Claims,
+Translate y Evidence v1 no se mezclan con el contrato CSV histórico.
 
 | Campo | Uso |
 | --- | --- |
@@ -59,7 +60,6 @@ Claims y Evidence v1 no se mezclan con el contrato CSV histórico.
 | `best_tfidf_similarity` | Máxima similitud TF-IDF entre el claim y los abstracts traducidos al español; sirve como diagnóstico léxico auxiliar y puede corresponder a otro candidato. |
 | `embedding_status` | Estado de la llamada a OCI Embed 4 (`OK`, `ERROR`, `NO_CANDIDATES` o `SKIPPED_NO_EVIDENCE`). |
 | `embedding_model`, `embedding_query_field` | Modelo usado y campo del claim enviado a Embed 4 (`claim_text_en` o `claim_text`). |
-| `ranking_method` | `oci_cohere_embed_v4` cuando Embed 4 rankea los candidatos; `tfidf_v1_es` si se usa el fallback. |
 | `claim_materiality`, `claim_verdict` | Campos humanos de Label Studio; el primero determina si el claim influye en la etiqueta final. |
 | `evidence_relation`, `verification_note` | Decisión y explicación humana sobre la evidencia. |
 
@@ -71,12 +71,15 @@ y de veracidad siguen siendo humanas y basadas en evidencia.
 
 ### JSONL por corrida
 
-`silver/claims/run_id=<run_id>/claims.jsonl` tiene una línea por noticia y
+`silver/claims/claims_<run_id>.jsonl` tiene una línea por noticia y
 `claims: []` cuando no hay afirmaciones. Cada claim lleva `claim_id` y la
-consulta PubMed. Evidence escribe
-`silver/evidence/run_id=<run_id>/evidence.jsonl`, una línea por `claim_id`,
-con candidatos, recuperación, traducción, embedding y ranking. Ambos directorios
-incluyen un `manifest.json` con conteos, duración, configuración y errores.
+consulta PubMed. Retrieval escribe
+`silver/translate/translate_<run_id>.jsonl`, una línea por `claim_id`, con
+candidatos, recuperación y embedding. La Function de traducción escribe
+`silver/evidence/evidence_<run_id>.jsonl`, con la traducción final. Los
+manifests se guardan junto a cada artefacto. Los fallos se copian en
+`silver/rejected/body/`, `silver/rejected/claims/`,
+`silver/rejected/translate/` o `silver/rejected/evidence/`.
 
 Todos los claims del objeto de entrada se procesan en la misma invocación v1.
 Cada claim recupera como máximo `PUBMED_CANDIDATES_FETCHED=5` PMIDs y genera
@@ -102,7 +105,7 @@ Una fila por `record_id` conserva la trazabilidad de la noticia y de sus
 claims revisados. El CSV `gold/reviewed` incluye como mínimo `record_id`, `country`,
 `source_name`, `topic`, `canonical_url`, `published_at`, `title`, `body`,
 `claim_text`, `best_pmid`, `best_embedding_similarity`,
-`best_tfidf_similarity`, `ranking_method`,
+`best_tfidf_similarity`,
 `embedding_model`, `evidence_status`, `evidence_run_id`, `evidence_relation`,
 `label`, `verification_note`, `annotation_id`, `annotator`, `annotated_at`,
 `claims_total`, `decisive_claims_total`, `aggregation_status`,

@@ -3,8 +3,8 @@
 Second OCI Function in the thesis pipeline. An Object Storage event wakes the
 Function and processes only the triggering `bronze/*.csv` object. An explicit
 drain invocation with an empty payload (`{}`) instead selects one bounded batch
-from the global backlog. Both modes download URLs, extract the main HTML text,
-and update one canonical CSV per Bronze source under `silver/body/`.
+from the global backlog. Both modes download URLs and extract the main HTML
+text into an immutable run CSV under `silver/body/`.
 
 ## OCI configuration
 
@@ -48,15 +48,17 @@ HTTP/network/time-budget outcomes remain retryable.
 
 ## Silver output
 
-Each Bronze source has one deterministic output object:
+Each invocation has one immutable output object:
 
 ```text
-silver/body/body_current_<bronze-source>_<hash>.csv
+silver/body/body_<run_id>.csv
+silver/rejected/body/body_<run_id>.csv
 ```
 
-Repeating an invocation updates that same object and merges by `record_id`; it
-does not create another Body CSV for the same source. `rows_left_for_next_run`
-in the response is the pending backlog count, not a hard-coded zero.
+The rejected object is written only when one or more rows are not usable. It
+has the same columns plus `rejection_reason`; it never triggers Claims.
+`rows_left_for_next_run` in the response is the pending backlog count, not a
+hard-coded zero.
 
 The output retains the Bronze columns and adds:
 

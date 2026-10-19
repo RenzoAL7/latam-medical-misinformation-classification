@@ -13,12 +13,22 @@ required later.
 
 ## Contrato `claims.v1`
 
-La salida es `silver/claims/run_id=<run_id>/claims.jsonl`: una línea por
-noticia con `claims: []` o un arreglo de claims. Cada elemento recibe
+La salida es `silver/claims/claims_<run_id>.jsonl`: una línea por noticia con
+`claims: []` o un arreglo de claims. Cada elemento recibe
 `claim_id`, `claim_index`, `claim_text`, `claim_text_en`, `pubmed_query_en`,
-`claim_type` y `claim_status=PENDING_EVIDENCE`. El mismo directorio contiene
-`manifest.json` con conteos, duración y fallos. `llm_status=OK` solo confirma
+`claim_type` y `claim_status=PENDING_EVIDENCE`. El mismo prefijo contiene
+`claims_<run_id>.manifest.json` con conteos, duración y fallos. Las noticias con
+`llm_status != OK` se copian en `silver/rejected/claims/claims_<run_id>.jsonl`.
+`llm_status=OK` solo confirma
 JSON estructurado válido: jamás asigna `RESPALDADA` ni `REFUTADA`.
+
+La versión `claim-extraction-v4-high-recall` revisa título, subtítulo, cuerpo y
+citas atribuidas. Conserva la polaridad, negación, modalidad, cifras y
+atribución del texto, incluso cuando la afirmación sea negativa, polémica o
+parezca verdadera. También conserva afirmaciones concretas de salud pública y
+del sistema sanitario. `claims: []` solo significa que no se encontró una
+afirmación factual elegible después de revisar todo el artículo; no significa
+que la noticia sea verdadera.
 
 En v1 `LLM_MAX_ROWS=0` y `MAX_CLAIMS_PER_ARTICLE=0` son obligatorios: una
 invocación procesa todas las noticias válidas del objeto de Body y conserva
@@ -88,13 +98,15 @@ provider, quota and retry matrix.
 ## Output
 
 ```text
-silver/claims/run_id=<run_id>/claims.jsonl
-silver/claims/run_id=<run_id>/manifest.json
+silver/claims/claims_<run_id>.jsonl
+silver/claims/claims_<run_id>.manifest.json
+silver/rejected/claims/claims_<run_id>.jsonl
 ```
 
 The article envelope retains the metadata needed to join the Body CSV without
 duplicating its full text. The `claims` array holds the many-to-one relation;
-the manifest retains articles with no claims and all LLM error counts.
+the manifest retains articles with no claims, separates medical zero-claim
+articles from nonmedical ones, and records all LLM error counts.
 
 ## Manual invocation
 

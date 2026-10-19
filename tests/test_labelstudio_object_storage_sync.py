@@ -19,13 +19,13 @@ AUTH_SPEC.loader.exec_module(auth)
 
 
 def test_sync_cache_path_is_stable_and_flat(tmp_path: Path) -> None:
-    object_name = "silver/evidence/run_id=run_1/evidence.jsonl"
+    object_name = "silver/evidence/evidence_run_1.jsonl"
     first = sync._local_input_path(tmp_path, object_name)
     second = sync._local_input_path(tmp_path, object_name)
 
     assert first == second
     assert first.parent == tmp_path
-    assert first.name.endswith("evidence.jsonl")
+    assert first.name.endswith("evidence_run_1.jsonl")
 
 
 def test_sync_accepts_only_completed_v1_manifest_reference(tmp_path: Path) -> None:
@@ -35,21 +35,21 @@ def test_sync_accepts_only_completed_v1_manifest_reference(tmp_path: Path) -> No
             {
                 "schema_version": "evidence.manifest.v1",
                 "status": "COMPLETE",
-                "evidence_object": "silver/evidence/run_id=run_1/evidence.jsonl",
+                "evidence_object": "silver/evidence/evidence_run_1.jsonl",
             }
         ),
         encoding="utf-8",
     )
 
     assert sync._evidence_manifest_object_name(
-        "silver/evidence/run_id=run_1/manifest.json", "silver/evidence"
+        "silver/evidence/evidence_run_1.manifest.json", "silver/evidence"
     )
     assert not sync._evidence_manifest_object_name(
-        "silver/evidence/run_id=run_1/evidence.jsonl", "silver/evidence"
+        "silver/evidence/evidence_run_1.jsonl", "silver/evidence"
     )
     assert sync._read_v1_manifest(manifest, "silver/evidence") == (
         "COMPLETE",
-        "silver/evidence/run_id=run_1/evidence.jsonl",
+        "silver/evidence/evidence_run_1.jsonl",
     )
 
 

@@ -12,7 +12,7 @@ REPOSITORY_ROOT = Path(__file__).parents[1]
 FUNCTIONS = [
     ("extract_news_body", "bronze/newsdata_run.csv"),
     ("extract_claims", "silver/body/body_run.csv"),
-    ("retrieve_pubmed_evidence", "silver/claims/claims_run.csv"),
+    ("retrieve_pubmed_evidence", "silver/claims/claims_run.jsonl"),
 ]
 
 
@@ -35,6 +35,13 @@ def _load_module(function_name: str) -> types.ModuleType:
             sys.modules["fdk"] = previous_fdk
 
 
+def _event_object(module: types.ModuleType, function_name: str, payload: dict, bucket: str, prefix: str) -> str:
+    data = io.BytesIO(json.dumps(payload).encode("utf-8"))
+    if function_name == "retrieve_pubmed_evidence":
+        return module._event_jsonl_object_name(data, bucket, prefix)
+    return module._event_object_name(data, bucket, prefix)
+
+
 @pytest.mark.parametrize(("function_name", "object_name"), FUNCTIONS)
 def test_oci_event_selects_only_its_source_object(function_name: str, object_name: str) -> None:
     module = _load_module(function_name)
@@ -47,9 +54,7 @@ def test_oci_event_selects_only_its_source_object(function_name: str, object_nam
         },
     }
 
-    assert module._event_object_name(
-        io.BytesIO(json.dumps(payload).encode("utf-8")), "mednews-data", prefix
-    ) == object_name
+    assert _event_object(module, function_name, payload, "mednews-data", prefix) == object_name
 
 
 @pytest.mark.parametrize(("function_name", "object_name"), FUNCTIONS)
@@ -58,10 +63,8 @@ def test_oci_event_rejects_an_object_outside_the_stage_prefix(function_name: str
     prefix = object_name.rsplit("/", 1)[0]
     payload = {"data": {"resourceName": "unrelated/another_run.csv"}}
 
-    with pytest.raises(RuntimeError, match="does not identify a CSV"):
-        module._event_object_name(
-            io.BytesIO(json.dumps(payload).encode("utf-8")), "mednews-data", prefix
-        )
+    with pytest.raises(RuntimeError, match="does not identify"):
+        _event_object(module, function_name, payload, "mednews-data", prefix)
 
 
 @pytest.mark.parametrize(("function_name", "object_name"), FUNCTIONS)
@@ -69,4 +72,8 @@ def test_empty_manual_payload_selects_drain_mode(function_name: str, object_name
     module = _load_module(function_name)
     prefix = object_name.rsplit("/", 1)[0]
 
+    if function_name == "retrieve_pubmed_evidence":
+        # evidence.v1 is event-scoped by design; the legacy CSV helper still
+        # supports an explicit drain invocation.
+        return
     assert module._event_object_name_or_none(io.BytesIO(b"{}"), "mednews-data", prefix) is None

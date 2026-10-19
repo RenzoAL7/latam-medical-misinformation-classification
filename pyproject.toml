@@ -16,19 +16,9 @@ dev = [
     "pytest>=8.0",
 ]
 training = [
+    "jupyter>=1.0",
     "joblib>=1.4",
     "scikit-learn>=1.5",
-]
-sequence = [
-    "gensim>=4.3",
-    "torch>=2.2",
-]
-transformers = [
-    "joblib>=1.4",
-    "scikit-learn>=1.5",
-    "sentence-transformers>=3.0",
-    "torch>=2.2",
-    "transformers>=4.45",
 ]
 
 [tool.setuptools]

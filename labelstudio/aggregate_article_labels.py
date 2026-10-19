@@ -31,7 +31,6 @@ OUTPUT_FIELDS = (
     "best_pmid",
     "best_embedding_similarity",
     "best_tfidf_similarity",
-    "ranking_method",
     "embedding_model",
     "evidence_status",
     "evidence_run_id",
@@ -180,7 +179,6 @@ def _aggregate_record(
         "best_pmid": ";".join(dict.fromkeys(selected_pmids)) or _value(decisive_for_audit, "best_pmid"),
         "best_embedding_similarity": _value(decisive_for_audit, "best_embedding_similarity"),
         "best_tfidf_similarity": _value(decisive_for_audit, "best_tfidf_similarity"),
-        "ranking_method": "oci_cohere_embed_v4",
         "embedding_model": "cohere.embed-v4.0",
         "evidence_status": (
             "REQUIERE_CORRECCION"

@@ -6,7 +6,7 @@ verdadera o falsa. La unidad de revisión es un claim; la unidad del dataset de
 entrenamiento es una noticia.
 
 ```text
-evidence.jsonl -> Label Studio (una tarea por record_id + claim_id)
+silver/evidence/evidence_<run_id>.jsonl -> Label Studio (una tarea por record_id + claim_id)
        |                 |
        |                 v
        +-----> Evidence JSONL + Export JSON/JSONL + Body CSV de la misma corrida
@@ -42,12 +42,11 @@ resultados terminales de PubMed (`NO_RESULTS`/`NO_ABSTRACT`) con sus etapas
 marcadas `SKIPPED_NO_EVIDENCE`. Excluye fallos técnicos transitorios y
 deduplica por `record_id::claim_id`.
 
-Si una corrida Evidence deja traducciones pendientes, puede aparecer primero un
-manifest parcial y después un manifest final
-`run_id=<parent>_translation_final`. Ambos describen los mismos claims; el
-importador deduplica por `record_id::claim_id`, conserva cualquier anotación
-humana existente y añade únicamente los claims que la continuación dejó listos.
-No crea una tarea nueva por cada intento de traducción.
+La etapa de traducción consume exactamente
+`silver/translate/translate_<run_id>.jsonl` y publica el Evidence final. Si una
+traducción falla, el claim permanece en `silver/rejected/` y no se importa como
+evidencia lista. El importador deduplica por `record_id::claim_id`, conserva
+cualquier anotación humana existente y no crea tareas por reintentos.
 
 ```bash
 export LABEL_STUDIO_TOKEN='token-local-de-label-studio'

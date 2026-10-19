@@ -124,27 +124,21 @@ cantidad de abstracts ni el costo unitario. Las cuotas reales dependen del
 tenancy y región; se revisan en OCI antes de elevar más el paralelismo o el
 tamaño de lote.
 
-## Continuación de traducciones
+## Etapa de traducción
 
-La continuación evita que un lote con muchos claims pierda evidencia por el
-límite de cinco minutos. Evidence escribe un job solo para claims con
-`translation_status=TIME_BUDGET`, `PARTIAL` o un error temporal de Gemini y
-con `llm_status=OK` y `embedding_status=OK`. Cada job conserva los candidatos
-con sus PMIDs, abstracts originales, scores y vectores ya calculados.
+Retrieval termina después de PubMed y Embed 4 y deja todos los candidatos en
+`silver/translate/translate_<run_id>.jsonl`. La Function
+`continue-evidence-translation` consume exactamente ese objeto, traduce los
+abstracts que aún no tienen `abstract_es` y escribe
+`silver/evidence/evidence_<run_id>.jsonl`. No vuelve a buscar en PubMed ni a
+llamar a Embed 4, por lo que el presupuesto de traducción es independiente del
+de recuperación.
 
-`continue-evidence-translation` procesa un máximo de cuatro claims por
-invocación, con una sola ola de Gemini (`TRANSLATION_CONTINUATION_PARALLELISM=1`)
-para reducir errores 429/503. Si todavía hay trabajo, escribe un único job
-siguiente; si termina, fusiona sus resultados con el Evidence padre y publica
-un nuevo `evidence.jsonl` estándar bajo
-`run_id=<parent>_translation_final`. Los intentos se limitan a tres por claim;
-si los tres fallan, el claim sigue visible como `ERROR`, no se afirma que esté
-verificado.
-
-Los costos adicionales son exclusivamente de Gemini para abstracts que no
-tengan `abstract_es`; no hay nueva búsqueda PubMed ni nuevas llamadas Embed 4.
-Los objetos intermedios bajo `silver/evidence-translation-stage/` son de
-auditoría y no llegan a Label Studio.
+Si una traducción falla o se agota el presupuesto, el claim queda visible como
+`ERROR` y se copia en `silver/rejected/translate/` y
+`silver/rejected/evidence/`. No se generan jobs, staging ni `part-0001`: una
+invocación procesa el JSONL completo de su corrida y los errores se conservan
+como artefactos explícitos.
 
 ## Qué llega a Label Studio
 

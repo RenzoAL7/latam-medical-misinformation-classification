@@ -2,9 +2,10 @@
 """Synchronize final Evidence artifacts from OCI Object Storage into Label Studio.
 
 The program is intended for a private Label Studio VM. It authenticates to
-Object Storage with the VM's Instance Principal, accepts only the immutable
-``silver/evidence/run_id=*/manifest.json`` outputs for the multi-claim JSONL
-contract. Manifests can be ``COMPLETE`` or ``PARTIAL``. The importer accepts
+Object Storage with the VM's Instance Principal, accepts only immutable
+``silver/evidence/evidence_<run_id>.manifest.json`` outputs for the multi-claim
+JSONL contract. Legacy nested ``run_id=*/manifest.json`` objects remain
+readable during migration. Manifests can be ``COMPLETE`` or ``PARTIAL``. The importer accepts
 claims with a valid LLM extraction and either complete evidence processing or
 a terminal PubMed miss (``NO_RESULTS``/``NO_ABSTRACT``) so a human can triage
 their materiality. Transient evidence failures remain excluded.
@@ -50,10 +51,17 @@ def _evidence_manifest_object_name(object_name: str, prefix: str) -> bool:
     """Accept only immutable v1 manifests, never a data object by itself."""
 
     expected_prefix = f"{prefix.strip('/')}/"
+    basename = object_name[len(expected_prefix) :] if object_name.startswith(expected_prefix) else ""
+    flat_manifest = (
+        bool(basename)
+        and basename.startswith("evidence_")
+        and basename.endswith(".manifest.json")
+        and "/" not in basename
+    )
+    legacy_manifest = object_name.endswith("/manifest.json") and "/run_id=" in object_name
     return (
         object_name.startswith(expected_prefix)
-        and object_name.endswith("/manifest.json")
-        and "/run_id=" in object_name
+        and (flat_manifest or legacy_manifest)
     )
 
 
@@ -143,7 +151,15 @@ def _read_v1_manifest(path: Path, prefix: str) -> tuple[str, str]:
     status = str(payload.get("status", "")).upper()
     evidence_object = str(payload.get("evidence_object", "")).lstrip("/")
     expected_prefix = f"{prefix.strip('/')}/"
-    if not evidence_object.startswith(expected_prefix) or not evidence_object.endswith("/evidence.jsonl"):
+    basename = evidence_object[len(expected_prefix) :] if evidence_object.startswith(expected_prefix) else ""
+    flat_evidence = (
+        bool(basename)
+        and basename.startswith("evidence_")
+        and basename.endswith(".jsonl")
+        and "/" not in basename
+    )
+    legacy_evidence = evidence_object.endswith("/evidence.jsonl") and "/run_id=" in evidence_object
+    if not evidence_object.startswith(expected_prefix) or not (flat_evidence or legacy_evidence):
         raise RuntimeError(f"Evidence manifest references an invalid object: {evidence_object!r}")
     return status, evidence_object
 
