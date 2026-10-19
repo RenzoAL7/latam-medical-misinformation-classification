@@ -2,8 +2,8 @@
 
 > Estado de migración (2026-10-19): el contrato `claims.v1`/`evidence.v1`, las
 > Functions x86 y las reglas Events Body -> Claims -> Translate -> Evidence
-> están activas. El sincronizador consume manifests JSONL `COMPLETE` o
-> `PARTIAL`; no se reactivan los drains históricos ni el schedule de las 20:00.
+> están activas. La revisión de Label Studio se alimenta mediante importación
+> manual; no se reactivan los drains históricos ni el schedule de las 20:00.
 > No mezclar objetos CSV históricos con los selectores JSONL.
 
 ## Decisión de diseño
@@ -221,8 +221,8 @@ por `claim_id`, con claim y evidencia como entrada.
 ## Activación coordinada
 
 1. Mantener inactivos el schedule de las 20:00 y los drains históricos. Para
-   una corrida v1 limpia, activar solo el schedule de las 08:00 Lima, las reglas
-   Events y el timer de Label Studio del proyecto multi-claim.
+   una corrida v1 limpia, activar solo el schedule de las 08:00 Lima y las
+   reglas Events; la revisión de Label Studio se opera manualmente.
 2. Construir y subir las Functions para `linux/amd64`/`GENERIC_X86`; configurar
    `PIPELINE_SCHEMA=v1`, `LLM_MAX_ROWS=0`, `EVIDENCE_MAX_ROWS=0`,
    `PUBMED_CANDIDATES_FETCHED=5`.
@@ -231,10 +231,12 @@ por `claim_id`, con claim y evidencia como entrada.
    `silver/translate/translate_*.jsonl`; Body → Claims mantiene el CSV de Body
    como entrada.
 4. Crear o migrar explícitamente un proyecto limpio de Label Studio con
-   `config_multiclaim.xml`; configurar su sincronizador en formato `jsonl`.
+   `config_multiclaim.xml`; importar manualmente el Evidence JSONL en formato
+   `jsonl`.
 5. Ejecutar una corrida controlada nueva, revisar ambos manifests y completar
-   la revisión humana. El resultado define si se mantiene esa activación, no si
-   se habilitan automáticamente los schedules históricos.
+   la revisión humana. Exportar después las anotaciones y subirlas manualmente
+   a `silver/annotations/labelstudio/`. El resultado define si se mantiene esa
+   activación, no si se habilitan automáticamente los schedules históricos.
 
 La compatibilidad temporal debe ser explícita y con prefijos separados; los
 artefactos locales generados y los manifiestos con datos no se versionan.

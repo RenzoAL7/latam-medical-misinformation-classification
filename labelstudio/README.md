@@ -9,7 +9,7 @@ entrenamiento es una noticia.
 silver/evidence/evidence_<run_id>.jsonl -> Label Studio (una tarea por record_id + claim_id)
        |                 |
        |                 v
-       +-----> Evidence JSONL + Export JSON/JSONL + Body CSV de la misma corrida
+       +-----> Evidence JSONL + export manual JSON/JSONL + Body CSV de la misma corrida
                          |
                          v
            scripts/04_build_training_dataset.py
@@ -19,7 +19,7 @@ silver/evidence/evidence_<run_id>.jsonl -> Label Studio (una tarea por record_id
                          +-> training.csv            (binario: título + body)
 ```
 
-## Proyecto y sincronización
+## Proyecto e importación manual
 
 Usa [`config_multiclaim.xml`](config_multiclaim.xml) en el proyecto
 **MedNews LATAM — Multi-Claim**. Cada tarea requiere una decisión humana de
@@ -35,12 +35,12 @@ PMID y no afecta la etiqueta del artículo.
   permite `unclear` + `NO_DETERMINABLE`, con justificación y sin PMID;
 - los fallos técnicos transitorios no se convierten en veredictos.
 
-El sincronizador de la VM acepta únicamente manifests `evidence.manifest.v1`
-`COMPLETE` o `PARTIAL`. El importador acepta claims con `llm_status=OK` y
-evidencia completa (`evidence_status=OK`, embeddings/traducciones `OK`) o
-resultados terminales de PubMed (`NO_RESULTS`/`NO_ABSTRACT`) con sus etapas
-marcadas `SKIPPED_NO_EVIDENCE`. Excluye fallos técnicos transitorios y
-deduplica por `record_id::claim_id`.
+La importación se realiza manualmente desde el JSONL de Evidence descargado de
+OCI. El importador acepta claims con `llm_status=OK` y evidencia completa
+(`evidence_status=OK`, embeddings/traducciones `OK`) o resultados terminales de
+PubMed (`NO_RESULTS`/`NO_ABSTRACT`) con sus etapas marcadas
+`SKIPPED_NO_EVIDENCE`. Excluye fallos técnicos transitorios y deduplica por
+`record_id::claim_id`.
 
 La etapa de traducción consume exactamente
 `silver/translate/translate_<run_id>.jsonl` y publica el Evidence final. Si una
@@ -116,21 +116,18 @@ completas y válidas:
 Claims, PMIDs y similitudes se guardan en los reportes de auditoría. El modelo
 base usa únicamente `title + body` como entrada y `label` como objetivo.
 
-## Exportación automática hacia Gold
+## Gold en OCI y descarga manual
 
-La instalación de Label Studio está ligada a `127.0.0.1:18080` dentro de
-`PUB_VM`, por lo que la exportación programada se ejecuta en esa VM y no desde
-OCI Functions. El servicio `mednews-labelstudio-export.service` escribe el
-JSON crudo en:
+Cuando termines la revisión humana, usa **Export > JSON** o **JSONL** en Label
+Studio y sube manualmente el archivo crudo a OCI Object Storage:
 
 ```text
 silver/annotations/labelstudio/labelstudio_<utc_timestamp>.json
 ```
 
-El timer `mednews-labelstudio-export.timer` corre a las `13:55`
-(`America/Lima`), cinco minutos antes del Function que construye Gold. El
-Function `build-labelstudio-training` corre diariamente a las `14:00`
-(`America/Lima`) y escribe un único CSV por día:
+El Function `build-labelstudio-training` corre diariamente a las `14:00`
+(`America/Lima`) y toma el export más reciente para escribir un único CSV por
+día:
 
 ```text
 gold/training/training_<YYYYMMDD>.csv
@@ -140,8 +137,6 @@ silver/rejected/training/training_<YYYYMMDD>.jsonl
 Si se reintenta el mismo día, el CSV diario se reemplaza; no se generan
 fragmentos ni archivos `summary.json` en Gold.
 
-El exportador intenta primero el secreto de OCI Vault indicado por
-`LABEL_STUDIO_SECRET_OCID`. Si ese valor no autentica, continúa con el
-`LABEL_STUDIO_REFRESH_TOKEN` protegido que ya existe en la VM; ningún token se
-imprime ni se guarda en Object Storage. Los errores del exportador se guardan
-en `silver/rejected/labelstudio-export/`.
+Después descarga manualmente `gold/training/training_<YYYYMMDD>.csv` desde OCI
+para usarlo en el notebook local. No se requieren servicios `systemd`, timers
+ni tokens de Label Studio en la VM para este flujo.

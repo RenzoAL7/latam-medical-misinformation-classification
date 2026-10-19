@@ -55,8 +55,9 @@ procesar todos los claims del objeto disparador. El límite de cinco minutos se
 protege reduciendo candidatos por claim, no descartando claims. Los manifiestos
 registran `COMPLETE`, `PARTIAL` o `FAILED`. Una falla de LLM, PubMed, embedding
 o traducción queda explícita en el artefacto normal y se replica en
-`silver/rejected/`; el estado `ERROR` no se reintenta implícitamente. Mientras
-tanto, el sincronizador puede entregar a Label Studio los claims ya listos.
+`silver/rejected/`; el estado `ERROR` no se reintenta implícitamente. La entrega
+de los claims listos a Label Studio se realiza manualmente con
+`labelstudio/import_evidence.py`.
 
 La agregación humana aplica esta regla explícita: un claim central o material
 refutado vuelve la noticia `REFUTADA`; si todos los claims centrales/materiales
@@ -70,11 +71,11 @@ El contrato, los ejemplos JSONL y la compatibilidad temporal están en
 ## Automatización OCI
 
 Para una corrida v1 limpia, permanece activo solo el schedule de producción de
-las 08:00 Lima junto con OCI Events y el timer de sincronización del proyecto
-multi-claim de Label Studio. El schedule de las 20:00 y los drains históricos
-siguen inactivos: no son pasos de la cadena normal y podrían recorrer objetos
-históricos. No se deben crear datos de prueba productivos ni reprocesar CSV
-existentes durante la corrida.
+las 08:00 Lima junto con OCI Events. El schedule de las 20:00 y los drains
+históricos siguen inactivos: no son pasos de la cadena normal y podrían
+recorrer objetos históricos. La importación a Label Studio y la carga del
+export humano a OCI se hacen manualmente. No se deben crear datos de prueba
+productivos ni reprocesar CSV existentes durante la corrida.
 
 Con la configuración v1, OCI Events encadena el proceso así:
 
@@ -157,8 +158,8 @@ Después de `silver/evidence/`, importa solo los claims con `evidence_status`,
 `llm_status`, `embedding_status` y `translation_status` en `OK` mediante
 [`labelstudio/import_evidence.py`](labelstudio/import_evidence.py). El script
 deduplica por `claim_key` (`record_id::claim_id`), no por noticia. Exporta las
-anotaciones completadas desde Label Studio y coloca ese archivo junto al
-`evidence.jsonl` completo y al Body CSV de la misma corrida. Un solo comando local,
+anotaciones completadas desde Label Studio y súbelas manualmente a
+`silver/annotations/labelstudio/`. Un solo comando local,
 [`scripts/04_build_training_dataset.py`](scripts/04_build_training_dataset.py),
 genera salidas separadas de revisión por claim, revisión por noticia, errores y
 el CSV binario de entrenamiento. Solo este último se usa como entrada del
