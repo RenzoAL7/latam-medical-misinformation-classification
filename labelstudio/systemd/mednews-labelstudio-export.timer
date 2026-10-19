@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Label Studio export before the daily Gold build
+
+[Timer]
+# Peru has remained UTC-5; the Function itself uses America/Lima at 14:00.
+# 18:55 UTC gives the export a five-minute buffer.
+OnCalendar=*-*-* 18:55:00 UTC
+Persistent=true
+AccuracySec=1min
+Unit=mednews-labelstudio-export.service
+
+[Install]
+WantedBy=timers.target

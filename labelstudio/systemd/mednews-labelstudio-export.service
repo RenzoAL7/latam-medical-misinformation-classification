@@ -1,0 +1,18 @@
+[Unit]
+Description=Export reviewed Label Studio tasks to MedNews Silver Object Storage
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/mednews-labelstudio-sync.env
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+Environment=OBJECT_STORAGE_NAMESPACE=idur1kkrru56
+Environment=OBJECT_STORAGE_BUCKET=mednews-data
+Environment=LABEL_STUDIO_URL=http://127.0.0.1:18080
+Environment=LABEL_STUDIO_EXPORT_PREFIX=silver/annotations/labelstudio
+Environment=LABEL_STUDIO_SECRET_OCID=REPLACE_WITH_LABEL_STUDIO_TOKEN_SECRET_OCID
+EnvironmentFile=/etc/mednews-labelstudio-sync.env
+WorkingDirectory=/opt/mednews-labelstudio-sync/app
+ExecStart=/opt/mednews-labelstudio-sync/venv/bin/python /opt/mednews-labelstudio-sync/app/export_annotations_to_object_storage.py
