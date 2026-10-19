@@ -218,8 +218,8 @@ artefactos temporales siguen fuera de Git.
 
 ## Primer modelo local
 
-El entrenamiento empieza únicamente con el CSV compacto
-`gold/training/training_<run_id>.csv`
+El entrenamiento empieza únicamente con el CSV compacto diario
+`gold/training/training_<YYYYMMDD>.csv`
 generado por `04_build_training_dataset.py`, no con `silver/evidence`. Ese CSV contiene
 `record_id`, `title`, `body` y `label`; el notebook exige suficientes filas
 binarias revisadas por una persona, con `title` y `body` completos. Usa

@@ -16,6 +16,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import oci
 from fdk import response
@@ -25,6 +26,7 @@ import dataset_builder
 
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
+LIMA_TZ = ZoneInfo("America/Lima")
 
 
 def _required_env(name: str) -> str:
@@ -195,6 +197,12 @@ def _jsonl_bytes(rows: list[dict[str, Any]]) -> bytes:
     return ("\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + "\n").encode("utf-8")
 
 
+def _run_stamp() -> str:
+    """Use one stable object name per Lima calendar day."""
+
+    return datetime.now(LIMA_TZ).strftime("%Y%m%d")
+
+
 def _write_error(
     client: Any | None,
     namespace: str,
@@ -226,7 +234,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
     namespace = ""
     bucket = ""
     rejected_prefix = _prefix("SILVER_REJECTED_PREFIX", "silver/rejected/training")
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = _run_stamp()
     try:
         namespace = _required_env("OBJECT_STORAGE_NAMESPACE")
         bucket = _required_env("OBJECT_STORAGE_BUCKET")
@@ -250,7 +258,6 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         body_blobs = [(name, _get_object(client, namespace, bucket, name)) for name in body_names]
         result = dataset_builder.build_training(export_raw, export_name, evidence_blobs, body_blobs)
         training_name = f"{gold_prefix}/training_{stamp}.csv"
-        summary_name = f"{gold_prefix}/training_{stamp}.summary.json"
         rejected_name = ""
         _put_object(client, namespace, bucket, training_name, _csv_bytes(result.pop("training")), "text/csv; charset=utf-8")
         if result.get("rejected"):
@@ -261,11 +268,9 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "evidence_objects": evidence_names,
             "body_objects": body_names,
             "training_object": training_name,
-            "summary_object": summary_name,
             "rejected_object": rejected_name,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         })
-        _put_object(client, namespace, bucket, summary_name, (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8"), "application/json")
         LOGGER.info("Training CSV written: %s (%s records)", training_name, result["training_records"])
         return response.Response(ctx, response_data=json.dumps(result, ensure_ascii=False), headers={"Content-Type": "application/json"})
     except Exception as exc:  # noqa: BLE001 - persist a rejected artifact for operational diagnosis

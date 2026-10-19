@@ -188,7 +188,8 @@ El horario OCI
 `mednews-build-labelstudio-training-14-lima` ejecuta el Function a las
 `14:00` (`America/Lima`) con payload vacío. El Function toma el export más
 reciente, resuelve únicamente los Evidence y Body referenciados por ese
-export, y publica un solo CSV en `gold/training/`. Las filas pendientes,
+export, y publica `gold/training/training_<YYYYMMDD>.csv` usando la fecha de
+Lima. Si se reintenta el mismo día, reemplaza ese mismo objeto. Las filas pendientes,
 inconsistentes o sin Body se conservan en
 `silver/rejected/training/`; los fallos del exportador quedan en
 `silver/rejected/labelstudio-export/`.
