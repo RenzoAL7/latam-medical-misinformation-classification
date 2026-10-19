@@ -115,3 +115,31 @@ completas y válidas:
 
 Claims, PMIDs y similitudes se guardan en los reportes de auditoría. El modelo
 base usa únicamente `title + body` como entrada y `label` como objetivo.
+
+## Exportación automática hacia Gold
+
+La instalación de Label Studio está ligada a `127.0.0.1:18080` dentro de
+`PUB_VM`, por lo que la exportación programada se ejecuta en esa VM y no desde
+OCI Functions. El servicio `mednews-labelstudio-export.service` escribe el
+JSON crudo en:
+
+```text
+silver/annotations/labelstudio/labelstudio_<utc_timestamp>.json
+```
+
+El timer `mednews-labelstudio-export.timer` corre a las `13:55`
+(`America/Lima`), cinco minutos antes del Function que construye Gold. El
+Function `build-labelstudio-training` corre diariamente a las `14:00`
+(`America/Lima`) y escribe un único CSV versionado:
+
+```text
+gold/training/training_<utc_timestamp>.csv
+gold/training/training_<utc_timestamp>.summary.json
+silver/rejected/training/training_<utc_timestamp>.jsonl
+```
+
+El exportador intenta primero el secreto de OCI Vault indicado por
+`LABEL_STUDIO_SECRET_OCID`. Si ese valor no autentica, continúa con el
+`LABEL_STUDIO_REFRESH_TOKEN` protegido que ya existe en la VM; ningún token se
+imprime ni se guarda en Object Storage. Los errores del exportador se guardan
+en `silver/rejected/labelstudio-export/`.

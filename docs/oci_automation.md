@@ -27,7 +27,9 @@ fetch-newsdata
   -> continue-evidence-translation (mismo image, modo translation)
   -> silver/evidence/evidence_<run_id>.jsonl + manifest.json
   -> revisión humana por claim en Label Studio
-  -> una fila de Gold por noticia
+  -> export JSON de Label Studio en silver/annotations/labelstudio/
+  -> Function build-labelstudio-training
+  -> una fila de Gold por noticia en gold/training/
 ```
 
 Bronze y Body continúan siendo CSV. Claims y Evidence no usan un CSV plano
@@ -173,3 +175,25 @@ completa por accidente.
 Para generar el dataset final local después de la revisión humana, el único
 comando de ensamblado es `scripts/04_build_training_dataset.py`, que combina
 el export de Label Studio, Evidence y Body de la corrida correspondiente.
+
+## Exportación y Gold diarios
+
+Label Studio escucha solo en `127.0.0.1:18080` de `PUB_VM`. Por eso el
+servicio `mednews-labelstudio-export.service` corre en la VM a las `13:55`
+(`America/Lima`) y publica el export JSON en
+`silver/annotations/labelstudio/`. El timer es persistente y queda habilitado
+con `mednews-labelstudio-export.timer`.
+
+El horario OCI
+`mednews-build-labelstudio-training-14-lima` ejecuta el Function a las
+`14:00` (`America/Lima`) con payload vacío. El Function toma el export más
+reciente, resuelve únicamente los Evidence y Body referenciados por ese
+export, y publica un solo CSV en `gold/training/`. Las filas pendientes,
+inconsistentes o sin Body se conservan en
+`silver/rejected/training/`; los fallos del exportador quedan en
+`silver/rejected/labelstudio-export/`.
+
+La VM consulta primero `LABEL_STUDIO_SECRET_OCID` en OCI Vault. Si la
+credencial de Vault no autentica, usa como fallback el refresh token protegido
+del archivo de entorno existente de la VM; los valores nunca aparecen en los
+logs.
