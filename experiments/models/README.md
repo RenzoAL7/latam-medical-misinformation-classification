@@ -27,8 +27,9 @@ gold/training/training_<run_id>.csv
 ```
 
 El notebook consume solamente `gold/training/training_<run_id>.csv` o una copia
-local equivalente. El snapshot `training_20261019.csv` queda incluido para
-reproducir esta corrida. `NO_DETERMINABLE`, `EXCLUIDA`, `PENDIENTE_REVISION` y
+local equivalente. El snapshot `training_20261019.csv` de esta corrida se
+conserva localmente para reproducirla, pero no se incluye en Git.
+`NO_DETERMINABLE`, `EXCLUIDA`, `PENDIENTE_REVISION` y
 `PENDIENTE_EVIDENCIA` permanecen fuera del entrenamiento binario. El notebook
 se detiene si no hay suficientes ejemplos de ambas clases; dos noticias
 refutadas no son una base válida para entrenar.

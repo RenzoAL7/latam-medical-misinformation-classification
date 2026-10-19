@@ -7,10 +7,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_repository_tracks_only_the_training_snapshot() -> None:
-    expected = {
-        REPOSITORY_ROOT / "gold" / "training" / "training_20261019.csv",
-    }
+def test_repository_does_not_track_generated_csvs() -> None:
     tracked_csvs = {
         REPOSITORY_ROOT / path
         for path in subprocess.run(
@@ -21,11 +18,10 @@ def test_repository_tracks_only_the_training_snapshot() -> None:
             text=True,
         ).stdout.splitlines()
     }
-    present_csvs = set((REPOSITORY_ROOT / "gold").rglob("*.csv")) if (REPOSITORY_ROOT / "gold").is_dir() else set()
 
-    assert tracked_csvs <= expected
-    assert present_csvs <= expected
-    assert expected <= present_csvs
+    # A local Gold CSV is useful for the notebook, but generated datasets must
+    # stay outside Git so that annotations and snapshots are not published.
+    assert not tracked_csvs
 
 
 def test_legacy_local_collector_is_not_present() -> None:

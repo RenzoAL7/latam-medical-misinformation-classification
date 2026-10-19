@@ -174,8 +174,9 @@ El export crudo de Label Studio se conserva como respaldo en
 usa directamente como dataset. Body ya se obtiene en `silver/body/`, y el
 ensamblador genera las salidas de revisión y `gold/training/` cuando las tres
 entradas corresponden a la misma corrida. En este repositorio solo se conserva
-`gold/training/training_20261019.csv`; los CSV de revisión y rechazo se mantienen
-fuera de Git para no duplicar artefactos que el notebook no consume.
+el código y la configuración: ningún CSV generado se versiona. Puedes conservar
+`gold/training/training_<run_id>.csv` localmente para abrirlo en VS Code y usarlo
+en el notebook; los CSV de revisión y rechazo también quedan fuera de Git.
 
 ### Reintentos y recuperación
 
@@ -212,9 +213,9 @@ labelstudio/
 oci/functions/                   Functions desplegadas en OCI
 ```
 
-Los CSV generados no se versionan por defecto. Este PR incluye únicamente el
-snapshot Gold `20261019` para reproducir el notebook; las credenciales y los
-artefactos temporales siguen fuera de Git.
+Los CSV generados no se versionan. El snapshot Gold de una corrida debe quedar
+localmente en `gold/training/` para reproducir el notebook; las credenciales y
+los artefactos temporales siguen fuera de Git.
 
 ## Primer modelo local
 
