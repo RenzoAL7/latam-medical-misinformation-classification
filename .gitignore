@@ -19,13 +19,8 @@ checkpoints/
 
 # Snapshot Gold solicitado para reproducir el notebook de esta corrida.
 !gold/
-!gold/reviewed/
 !gold/training/
-!gold/rejected/
-!gold/reviewed/article_labels_20261019.csv
-!gold/reviewed/claim_reviews_20261019.csv
 !gold/training/training_20261019.csv
-!gold/rejected/rejected_20261019.csv
 labelstudio/artifacts/
 artifacts/training_runs/
 
