@@ -106,8 +106,8 @@ entrenar, el notebook local concatena `title + body` como una sola entrada y
 usa `label` como objetivo binario (`RESPALDADA=1`, `REFUTADA=0`). Las
 similitudes, claims, PMID, fuente y tema quedan en Silver y en el export humano
 para trazabilidad, no en el CSV que consume el modelo. `dataset_split`
-permanece vacío en Gold hasta que una corrida de entrenamiento genere su
-manifiesto estratificado 70/15/15.
+permanece vacío en Gold; el notebook crea su split estratificado 70/30 en
+memoria y no modifica el artefacto Gold.
 
 Con el formato multi-claim, el export humano conserva una tarea por claim y la
 Function registra los rechazos por noticia; el CSV compacto de

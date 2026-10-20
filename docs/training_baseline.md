@@ -25,26 +25,23 @@ entran al entrenamiento binario.
 ## Modelo piloto
 
 El notebook concatena `title` y `body`, transforma el texto con TF-IDF de
-unigramas y bigramas, y entrena `MultinomialNB`. Usa un split estratificado
-70 % train, 15 % validation y 15 % test, con seed 42. Se detiene si no hay
-suficientes ejemplos de ambas clases para que el resultado no sea una métrica
-engañosa.
+unigramas y bigramas, y entrena `MultinomialNB`. Usa un único split
+estratificado 70 % entrenamiento y 30 % prueba, con seed 42. Es suficiente
+para explicar el baseline sin introducir rutas de modelos, validación ni
+artefactos adicionales.
 
-Con al menos diez noticias por clase:
+Para ejecutar el flujo técnico se requieren al menos dos noticias por clase:
 
 ```bash
 python3 -m pip install -e '.[training]'
 jupyter notebook experiments/models/01_tfidf_naive_bayes/baseline.ipynb
 ```
 
-En la celda de configuración cambia `GOLD_CSV` a la ruta local del CSV. La
-salida queda en `artifacts/training_runs/notebook_tfidf_naive_bayes/` y contiene:
+En la celda de configuración cambia `GOLD_CSV` a la ruta local del CSV. El
+notebook muestra la distribución, el reporte de clasificación y la matriz de
+confusión; no guarda un modelo ni escribe archivos derivados.
 
-- `model.joblib`;
-- `metrics.json`;
-- `split_manifest.csv`;
-- `predictions.csv`.
-
-Dos noticias refutadas no son suficientes para entrenar ni para evaluar un
-detector de desinformación. El notebook conserva la distribución real en Gold,
-pero exige una cantidad mínima de ambas clases antes de ejecutar.
+Dos noticias refutadas bastan para demostrar el flujo, pero no para evaluar un
+detector de desinformación. Por ello el notebook muestra una advertencia si hay
+menos de diez noticias en alguna clase y los resultados deben presentarse solo
+como demostración técnica.

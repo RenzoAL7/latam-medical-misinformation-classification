@@ -17,6 +17,8 @@ def test_only_the_first_model_notebook_remains() -> None:
     )
 
     assert model_directories == ["01_tfidf_naive_bayes"]
+    assert not list((ROOT / "experiments").glob("*.ipynb"))
+    assert not (ROOT / "experiments" / "__init__.py").exists()
     assert not list(MODELS.rglob("train.py"))
     assert NOTEBOOK.is_file()
 
@@ -35,3 +37,6 @@ def test_baseline_notebook_contains_the_article_level_contract() -> None:
     assert "MultinomialNB" in source
     assert "gold/training/" in source
     assert "title" in source and "body" in source
+    assert "train_test_split" in source
+    assert "TEST_SIZE = 0.30" in source
+    assert "joblib" not in source

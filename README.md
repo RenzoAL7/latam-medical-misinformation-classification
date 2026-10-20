@@ -225,12 +225,11 @@ claims, PMIDs, similitudes, fuente ni tema como variables predictoras.
 
 En el MacBook instala las dependencias opcionales y abre el notebook
 [`baseline.ipynb`](experiments/models/01_tfidf_naive_bayes/baseline.ipynb).
-La corrida deja `model.joblib`, `metrics.json`, `split_manifest.csv` y
-`predictions.csv` dentro de un directorio ignorado por Git. Reporta el baseline
-de mayoría, precisión, recall, Macro-F1, F1 por clase, ROC-AUC cuando ambas
-clases aparecen en el split y matriz de confusión. Con 100 filas, la partición
-queda en 70 train, 15 validation y 15 test; los resultados deben presentarse
-como piloto por el tamaño pequeño del test.
+El flujo muestra la distribución, usa un split estratificado 70/30 y reporta
+precisión, recall, F1 y matriz de confusión. No guarda un modelo ni genera
+artefactos: es un único baseline sencillo para la exposición. Con pocas noticias
+en una clase, sus métricas son una demostración técnica y no un resultado
+concluyente.
 
 ## Verificación local
 
