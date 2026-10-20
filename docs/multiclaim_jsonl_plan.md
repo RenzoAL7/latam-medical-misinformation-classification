@@ -1,11 +1,11 @@
 # Contrato v1: múltiples claims y artefactos JSONL
 
-> Estado de migración (2026-10-15): el contrato `claims.v1`/`evidence.v1`, las
+> Estado de despliegue (2026-10-20): el contrato `claims.v1`/`evidence.v1`, las
 > Functions x86, las reglas Events Claims -> Evidence y Jobs -> continuación,
 > y el proyecto multi-claim de Label Studio están activos. El sincronizador
-> consume manifests JSONL `COMPLETE` o `PARTIAL`; no se reactivan los drains
-> históricos ni el schedule de las 20:00. No mezclar objetos CSV históricos con
-> los selectores JSONL.
+> consume manifests JSONL `COMPLETE` o `PARTIAL`. Las capturas de 08:00 y
+> 20:00 Lima avanzan por su objeto disparador; los drains históricos siguen
+> inactivos. No mezclar objetos CSV históricos con los selectores JSONL.
 
 ## Decisión de diseño
 
@@ -214,16 +214,18 @@ por `claim_id`, con claim y evidencia como entrada.
 
 ## Activación coordinada
 
-1. Mantener inactivos el schedule de las 20:00 y los drains históricos. Para
-   una corrida v1 limpia, activar solo el schedule de las 08:00 Lima, las reglas
-   Events y el timer de Label Studio del proyecto multi-claim.
+1. Mantener inactivos los drains históricos. Para las dos corridas productivas,
+   activar los schedules de las 08:00 y 20:00 Lima, las reglas Events y el
+   timer de Label Studio del proyecto multi-claim. Cada corrida debe recibir
+   solo el objeto que la disparó.
 2. Construir y subir las Functions para `linux/amd64`/`GENERIC_X86`; configurar
    `PIPELINE_SCHEMA=v1`, `LLM_MAX_ROWS=0`, `EVIDENCE_MAX_ROWS=0`,
    `PUBMED_CANDIDATES_FETCHED=5`.
 3. Mantener la regla Events Claims → Evidence para
-   `silver/claims/run_id=*/claims.jsonl` y agregar la regla Jobs → continuación
-   para `silver/evidence-translation-jobs/*.job.json`; Body → Claims mantiene
-   el CSV de Body como entrada.
+   `silver/claims/run_id=*/claims.jsonl` y las reglas Jobs → continuación para
+   `silver/evidence-retrieval-jobs/*.job.json` y
+   `silver/evidence-translation-jobs/*.job.json`; Body → Claims mantiene el
+   CSV de Body como entrada.
 4. Crear o migrar explícitamente un proyecto limpio de Label Studio con
    `config_multiclaim.xml`; configurar su sincronizador en formato `jsonl`.
 5. Ejecutar una corrida controlada nueva, revisar ambos manifests y completar

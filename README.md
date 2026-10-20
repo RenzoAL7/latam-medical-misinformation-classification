@@ -16,19 +16,20 @@ Las Functions desplegadas en OCI separan las etapas de datos:
 3. `extract-claims` toma cada cuerpo válido y genera **todos** los claims
    médicos verificables: una línea JSONL por noticia con un arreglo `claims`.
    Cada claim tiene `claim_id`, texto en español e inglés y su consulta PubMed.
-4. `retrieve-pubmed-evidence` procesa todos los claims elegibles del
-   `claims.jsonl` disparador. Recupera como máximo cinco candidatos PubMed por
-   claim, ordena el resultado y hace Embed 4 sobre todos los abstracts
-   utilizables; reutiliza la traducción y el embedding de un PMID/abstract
-   idéntico dentro de la corrida.
-   La salida es una línea JSONL por claim con sus candidatos y estados.
-5. Si solo falla o se agota el tiempo de **traducción**, Evidence deja un job
-   JSON inmutable. `continue-evidence-translation` reutiliza exactamente los
-   candidatos/PMIDs y embeddings ya guardados, traduce como máximo cuatro
-   claims por invocación y encadena el siguiente job hasta publicar un Evidence
-   final consolidado. No vuelve a consultar NewsData, Body, Claims, PubMed ni
-   Embed 4.
-6. Label Studio crea una tarea por `record_id + claim_id`. La persona revisora
+4. `retrieve-pubmed-evidence` conserva el inventario completo del
+   `claims.jsonl` disparador y recupera el primer tramo seguro de claims.
+   Recupera como máximo cinco candidatos PubMed por claim, ordena el resultado
+   y hace Embed 4 sobre todos los abstracts utilizables.
+5. Si quedan claims, `continue-evidence-retrieval` toma un job JSON inmutable,
+   procesa un tramo serial de hasta ocho claims y encadena el siguiente hasta
+   publicar un Evidence final consolidado. No se descarta ningún claim ni se
+   disparan búsquedas PubMed en paralelo.
+6. Si solo falla o se agota el tiempo de **traducción**,
+   `continue-evidence-translation` reutiliza exactamente los candidatos/PMIDs
+   y embeddings ya guardados, traduce como máximo cuatro claims por invocación
+   y encadena el siguiente job. No vuelve a consultar NewsData, Body, Claims,
+   PubMed ni Embed 4.
+7. Label Studio crea una tarea por `record_id + claim_id`. La persona revisora
    decide materialidad, relación y veredicto de cada claim; luego se agrega una
    única etiqueta de noticia para Gold y entrenamiento.
 
@@ -51,12 +52,11 @@ pendientes en la siguiente ejecución.
 Una noticia puede tener cero, uno o muchos claims. No se recorta por defecto:
 `MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` obligan a conservar y
 procesar todos los claims del objeto disparador. El límite de cinco minutos se
-protege reduciendo candidatos por claim, no descartando claims. Los manifiestos
-registran `COMPLETE`, `PARTIAL` o `FAILED`. Si la parte pendiente es únicamente
-una traducción transitoria o por presupuesto, se crea un job de continuación
-específico; una falla de LLM, PubMed o embedding sigue quedando explícita y no
-se reprocesa implícitamente. Mientras tanto, el sincronizador puede entregar a
-Label Studio los claims ya listos.
+protege encadenando tramos seriales de recuperación, no descartando claims ni
+reduciendo candidatos. Los manifiestos registran `COMPLETE`, `PARTIAL` o
+`FAILED`. La recuperación reintenta únicamente errores transitorios; una falla
+permanente de LLM, PubMed o embedding sigue quedando explícita. Mientras tanto,
+el sincronizador puede entregar a Label Studio los claims ya listos.
 
 La agregación humana aplica esta regla explícita: un claim central o material
 refutado vuelve la noticia `REFUTADA`; si todos los claims centrales/materiales
@@ -69,12 +69,12 @@ El contrato, los ejemplos JSONL y la compatibilidad temporal están en
 
 ## Automatización OCI
 
-Para una corrida v1 limpia, permanece activo solo el schedule de producción de
-las 08:00 Lima junto con OCI Events y el timer de sincronización del proyecto
-multi-claim de Label Studio. El schedule de las 20:00 y los drains históricos
-siguen inactivos: no son pasos de la cadena normal y podrían recorrer objetos
-históricos. No se deben crear datos de prueba productivos ni reprocesar CSV
-existentes durante la corrida.
+El despliegue de producción actual captura a las 08:00 y a las 20:00 Lima.
+Ambos schedules solo crean su propio objeto Bronze y OCI Events avanza desde
+ese objeto, sin mezclar corridas. Los drains horarios históricos permanecen
+inactivos porque sí usan un payload global y podrían recorrer objetos
+anteriores. No se deben crear datos de prueba productivos ni reprocesar CSV
+existentes durante una corrida.
 
 Con la configuración v1, OCI Events encadena el proceso así:
 
@@ -88,14 +88,15 @@ fetch-newsdata -> bronze/*.csv
                               extract-claims -> silver/claims/run_id=*/claims.jsonl
                                                    |
                                                    v
-                              retrieve-pubmed-evidence -> silver/evidence/run_id=*/evidence.jsonl
+                              retrieve-pubmed-evidence -> Evidence padre completo
+                                                   |
+                              (claims pendientes, serial)
+                                                   v
+                              continue-evidence-retrieval -> Evidence final consolidado
                                                    |
                               (solo traducción pendiente)
                                                    v
-                              silver/evidence-translation-jobs/*.job.json
-                                                   |
-                                                   v
-                              continue-evidence-translation -> evidencia final consolidada
+                              continue-evidence-translation -> evidencia final de traducción
 ```
 
 Events procesa únicamente el objeto que lo disparó. Claims y Evidence v1 no
@@ -156,10 +157,13 @@ filas candidatas, páginas y slots de API utilizados para auditar cada ejecució
 
 ## Revisión humana y Gold
 
-Después de `silver/evidence/`, importa solo los claims con `evidence_status`,
-`llm_status`, `embedding_status` y `translation_status` en `OK` mediante
-[`labelstudio/import_evidence.py`](labelstudio/import_evidence.py). El script
-deduplica por `claim_key` (`record_id::claim_id`), no por noticia. Exporta las
+Después de `silver/evidence/`,
+[`labelstudio/import_evidence.py`](labelstudio/import_evidence.py) importa los
+claims con evidencia completa (`evidence_status`, `llm_status`,
+`embedding_status` y `translation_status` en `OK`) y los resultados terminales
+de PubMed (`NO_RESULTS` o `NO_ABSTRACT` con embedding/traducción
+`SKIPPED_NO_EVIDENCE`) para triage humano. Excluye fallos técnicos transitorios
+y deduplica por `claim_key` (`record_id::claim_id`), no por noticia. Exporta las
 anotaciones completadas desde Label Studio y coloca ese archivo junto al
 `evidence.jsonl` completo y al Body CSV de la misma corrida. Un solo comando local,
 [`scripts/04_build_training_dataset.py`](scripts/04_build_training_dataset.py),

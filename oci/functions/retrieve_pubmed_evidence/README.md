@@ -7,10 +7,11 @@ translates returned abstracts with a separate Gemini secret, and writes one
 JSONL record per claim under `silver/evidence/`. An Object Storage event
 processes only its triggering Claims object; v1 has no global drain.
 
-The same x86 image is also deployed as the separate OCI Function
+The same x86 image is also deployed as `continue-evidence-retrieval`, with
+`PIPELINE_MODE=retrieval_continuation`, and as
 `continue-evidence-translation`, with `PIPELINE_MODE=translation_continuation`.
-It is not another retrieval pass: it consumes only durable translation jobs
-created by this Function after a bounded partial run.
+The first serializes a large Claims fanout; the second consumes only durable
+translation jobs after PubMed and Embed 4 have completed.
 
 This Function does not assign a truth label. `evidence_status=OK` means that
 PubMed returned candidate records, not that the news claim is supported. The
@@ -70,6 +71,13 @@ TRANSLATION_CONTINUATION_MAX_ATTEMPTS=3
 TRANSLATION_CONTINUATION_MAX_SECONDS=285
 TRANSLATION_CONTINUATION_TIME_BUFFER=10
 TRANSLATION_CONTINUATION_PARALLELISM=1
+RETRIEVAL_CONTINUATION_ENABLED=true
+SILVER_RETRIEVAL_JOB_PREFIX=silver/evidence-retrieval-jobs
+SILVER_RETRIEVAL_STAGE_PREFIX=silver/evidence-retrieval-stage
+RETRIEVAL_CONTINUATION_MAX_CLAIMS=8
+RETRIEVAL_CONTINUATION_MAX_ATTEMPTS=3
+RETRIEVAL_CONTINUATION_MAX_SECONDS=285
+RETRIEVAL_CONTINUATION_TIME_BUFFER=10
 EMBEDDINGS_ENABLED=true
 GENAI_COMPARTMENT_ID=<OCI compartment OCID allowed to use Generative AI>
 EMBEDDING_REGION=us-ashburn-1
@@ -99,13 +107,18 @@ from that object is represented in the resulting JSONL, even if it terminates
 in `ERROR`.
 
 The 285-second work budget leaves ten seconds to persist JSONL and the
-manifest before OCI's 300-second limit. It gets at most five PubMed PMIDs per
-claim, and embeds and translates every returned candidate with a usable
-abstract. The query embedding remains per claim, while a repeated identical
-PMID+abstract reuses one document embedding and one translation inside the
-invocation. It waits 0.4 seconds between PubMed requests. The Embed 4 requests
-are chunked by input count and a conservative 100,000-token estimate so a
-large set of claims does not exceed the model input limit. See
+manifest before OCI's 300-second limit. The first invocation always writes an
+auditable row for every claim; when its source contains more than eight ready
+claims it processes the first tranche and leaves the rest in a durable,
+serial retrieval queue. Each continuation reads the immutable Claims object,
+processes its next tranche, and finalizes one normal Evidence JSONL only after
+all claims have an outcome. It gets at most five PubMed PMIDs per claim, and
+embeds and translates every returned candidate with a usable abstract. The
+query embedding remains per claim, while a repeated identical PMID+abstract
+reuses one document embedding and one translation inside the invocation. It
+waits 0.4 seconds between PubMed requests. The Embed 4 requests are chunked by
+input count and a conservative 100,000-token estimate so a large set of claims
+does not exceed the model input limit. See
 [`docs/limits_and_timing.md`](../../../docs/limits_and_timing.md) for the
 complete duration, PubMed and Embed 4 limits.
 
@@ -120,7 +133,24 @@ manifest records the effective batch limits, request/cache statistics, and
 abstract character counts, so a future tuning decision can use observed work
 rather than lower `TRANSLATION_MAX_TOKENS` blindly.
 
-## Continuación de traducción sin recomputar evidencia
+## Continuación de recuperación y traducción
+
+Cuando el fanout supera el tramo seguro, Evidence escribe un job bajo:
+
+```text
+silver/evidence-retrieval-jobs/run_id=<evidence_run>/job-0001.job.json
+```
+
+`continue-evidence-retrieval` procesa como máximo ocho claims por invocación y
+escribe su etapa bajo `silver/evidence-retrieval-stage/`. Los jobs solo guardan
+identidades de claim y referencias a los objetos inmutables; no copian cuerpos
+ni permiten un drenaje global. Los fallos transitorios de red, PubMed, Embed 4
+o presupuesto se reintentan hasta tres veces. La consolidación final mantiene
+la misma estructura `evidence.v1`, por lo que el sincronizador de Label Studio
+puede importar los claims listos sin ruta especial.
+
+Después de completar recuperación, Evidence identifica solamente los claims
+con traducción pendiente y usa la continuación siguiente.
 
 Después de escribir el resultado normal, Evidence identifica solamente los
 claims con `llm_status=OK`, `embedding_status=OK` y una traducción transitoria

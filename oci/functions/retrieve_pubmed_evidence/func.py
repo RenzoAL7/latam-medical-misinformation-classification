@@ -47,6 +47,8 @@ EVIDENCE_SCHEMA_VERSION = "evidence.v1"
 EVIDENCE_MANIFEST_SCHEMA_VERSION = "evidence.manifest.v1"
 TRANSLATION_JOB_SCHEMA_VERSION = "evidence.translation.job.v1"
 TRANSLATION_CONTINUATION_STAGE = "translation_continuation"
+RETRIEVAL_JOB_SCHEMA_VERSION = "evidence.retrieval.job.v1"
+RETRIEVAL_CONTINUATION_STAGE = "retrieval_continuation"
 
 OUTPUT_FIELDS = [
     "record_id",
@@ -2108,6 +2110,170 @@ def _gate_evidence_for_human_review(
             row["evidence_error"] = "; ".join([part for part in [prior_error, *issues] if part])[:1500]
 
 
+def _process_v1_evidence_rows(
+    claim_rows: list[dict[str, str]],
+    run_id: str,
+    retrieved_at: str,
+    *,
+    candidates_fetched: int,
+    request_delay: float,
+    request_timeout: float,
+    abstract_max_chars: int,
+    embedding_model: str,
+    embedding_region: str,
+    embedding_compartment_id: str,
+    embedding_dimensions: int,
+    embedding_max_chars: int,
+    embedding_timeout: float,
+    embedding_max_inputs: int,
+    embedding_max_input_tokens: int,
+    translation_api_keys: list[str],
+    translation_model: str,
+    translation_batch_size: int,
+    translation_batch_max_input_chars: int,
+    translation_batch_max_abstracts: int,
+    translation_max_tokens: int,
+    translation_timeout: float,
+    translation_parallelism: int,
+    tool: str,
+    email: str,
+    api_key: str,
+    deadline: float,
+    deferred_claim_ids: set[str] | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Retrieve, rank and translate a bounded set of Claims v1 rows.
+
+    ``deferred_claim_ids`` is used only by the first invocation of a large
+    source object.  It still writes one auditable ERROR row per deferred claim
+    before a durable continuation job takes over the actual retrieval.
+    """
+
+    deferred_claim_ids = deferred_claim_ids or set()
+    query_pmids: dict[str, list[str]] = {}
+    errors: dict[str, str] = {}
+    pubmed_requests = 0
+    ready_rows = [
+        row
+        for row in claim_rows
+        if not row.get("_input_error", "") and _claim_identity(row) not in deferred_claim_ids
+    ]
+    for row in ready_rows:
+        identity = _claim_identity(row)
+        if time.monotonic() >= deadline:
+            errors[identity] = "EVIDENCE_TIME_BUDGET"
+            continue
+        try:
+            query_pmids[identity] = _search_pubmed(
+                row.get("pubmed_query_en", "")[:1000],
+                candidates_fetched,
+                tool,
+                email,
+                api_key,
+                request_timeout,
+            )
+            pubmed_requests += 1
+        except Exception as exc:  # noqa: BLE001 - every claim remains represented in JSONL
+            errors[identity] = f"{type(exc).__name__}: {exc}"[:1500]
+        remaining = deadline - time.monotonic()
+        if remaining > request_delay:
+            time.sleep(request_delay)
+
+    all_pmids: list[str] = []
+    for pmids in query_pmids.values():
+        for pmid in pmids:
+            if pmid not in all_pmids:
+                all_pmids.append(pmid)
+    records: dict[str, dict[str, Any]] = {}
+    if all_pmids and time.monotonic() < deadline:
+        try:
+            records = _fetch_pubmed(all_pmids, tool, email, api_key, request_timeout)
+            pubmed_requests += 1
+        except Exception as exc:  # noqa: BLE001 - retain claim-level error detail
+            fetch_error = f"{type(exc).__name__}: {exc}"[:1500]
+            for identity in query_pmids:
+                errors[identity] = fetch_error
+
+    output_rows: list[dict[str, str]] = []
+    for row in claim_rows:
+        identity = _claim_identity(row)
+        output = _base_output_row(row, run_id, retrieved_at)
+        input_error = row.get("_input_error", "")
+        if input_error:
+            output["evidence_status"] = "ERROR"
+            output["evidence_error"] = input_error[:1500]
+        elif identity in deferred_claim_ids:
+            output["evidence_status"] = "ERROR"
+            output["evidence_error"] = "EVIDENCE_RETRIEVAL_CONTINUATION_QUEUED"
+        elif identity in errors:
+            output["evidence_status"] = "ERROR"
+            output["evidence_error"] = errors[identity]
+        else:
+            pmids = query_pmids.get(identity, [])
+            candidates = _candidate_results(row, pmids, records, candidates_fetched, abstract_max_chars)
+            # Every usable abstract among the bounded PubMed results is
+            # embedded and translated.  Lexical TF-IDF only establishes a
+            # deterministic presentation order; it must not discard a
+            # candidate before semantic ranking.
+            candidates = _prefilter_candidates(row, candidates)
+            output["pubmed_result_count"] = str(len(pmids))
+            output["pubmed_results_json"] = json.dumps(candidates, ensure_ascii=False)
+            if not pmids:
+                output["evidence_status"] = "NO_RESULTS"
+            elif not candidates:
+                output["evidence_status"] = "NO_ABSTRACT"
+            else:
+                output["evidence_status"] = "OK"
+        output_rows.append(output)
+
+    embedding_stats: dict[str, Any] = {"status": "not_run", "model": embedding_model}
+    if any(row.get("evidence_status", "").upper() == "OK" for row in output_rows):
+        try:
+            embedding_stats = _apply_embeddings(
+                output_rows,
+                _generative_ai_client(embedding_region, embedding_timeout),
+                embedding_compartment_id,
+                embedding_model,
+                embedding_dimensions,
+                embedding_max_chars,
+                embedding_timeout,
+                deadline,
+                embedding_max_inputs,
+                embedding_max_input_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 - gate turns the affected rows into ERROR
+            detail = f"{type(exc).__name__}: {exc}"[:1500]
+            embedding_stats = {"status": "error", "error": detail}
+            for row in output_rows:
+                if row.get("evidence_status", "").upper() == "OK":
+                    row["embedding_status"] = "ERROR"
+                    row["embedding_model"] = embedding_model
+                    row["evidence_error"] = detail
+
+    translation_stats = _apply_translations(
+        output_rows,
+        translation_api_keys,
+        translation_model,
+        translation_batch_size,
+        translation_max_tokens,
+        translation_timeout,
+        deadline,
+        run_id,
+        True,
+        parallelism=translation_parallelism,
+        batch_max_input_chars=translation_batch_max_input_chars,
+        batch_max_abstracts=translation_batch_max_abstracts,
+    )
+    _gate_evidence_for_human_review(output_rows, require_embeddings=True, require_translation=True)
+    workload = {
+        "claims_ready_for_pubmed": len(ready_rows),
+        "claims_deferred_to_continuation": len(deferred_claim_ids),
+        "pubmed_search_requests": len(query_pmids),
+        "pubmed_requests": pubmed_requests,
+        "unique_pmids_requested": len(all_pmids),
+    }
+    return output_rows, workload, embedding_stats, translation_stats
+
+
 def _handler_legacy(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
     started = time.monotonic()
     now = datetime.now(timezone.utc)
@@ -3371,8 +3537,366 @@ def _schedule_translation_continuation(
     }
 
 
+def _v1_runtime_settings() -> dict[str, Any]:
+    """Read the shared Evidence v1 contract for first and continued work."""
+
+    configured_max_rows = _env_int("EVIDENCE_MAX_ROWS", 0, minimum=0, maximum=1000)
+    if configured_max_rows:
+        raise RuntimeError("EVIDENCE_MAX_ROWS must be 0 in evidence.v1; every claim must be processed")
+    candidates_fetched = _env_int("PUBMED_CANDIDATES_FETCHED", 5, minimum=1, maximum=10)
+    request_delay = _env_float("PUBMED_REQUEST_DELAY", 0.4, minimum=0.34)
+    request_timeout = _env_float("PUBMED_REQUEST_TIMEOUT", 20.0, minimum=5.0)
+    abstract_max_chars = _env_int("ABSTRACT_MAX_CHARS", 1500, minimum=500, maximum=10000)
+    translate_enabled = _env_bool("TRANSLATE_ABSTRACTS", True)
+    embeddings_enabled = _env_bool("EMBEDDINGS_ENABLED", True)
+    if not translate_enabled or not embeddings_enabled:
+        raise RuntimeError("evidence.v1 requires TRANSLATE_ABSTRACTS=true and EMBEDDINGS_ENABLED=true")
+    translation_secret_ids = _secret_ids(
+        "GOOGLE_TRANSLATION_SECRET_OCIDS", "GOOGLE_TRANSLATION_SECRET_OCID"
+    )
+    settings = {
+        "candidates_fetched": candidates_fetched,
+        "request_delay": request_delay,
+        "request_timeout": request_timeout,
+        "abstract_max_chars": abstract_max_chars,
+        "translation_secret_ids": translation_secret_ids,
+        "translation_model": os.getenv("TRANSLATION_MODEL_ID", "gemini-3.5-flash-lite").strip(),
+        "translation_batch_size": _env_int("TRANSLATION_BATCH_SIZE", 1, minimum=1, maximum=5),
+        "translation_batch_max_input_chars": _env_int(
+            "TRANSLATION_BATCH_MAX_INPUT_CHARS", 9000, minimum=1000, maximum=50000
+        ),
+        "translation_batch_max_abstracts": _env_int(
+            "TRANSLATION_BATCH_MAX_ABSTRACTS", 6, minimum=1, maximum=25
+        ),
+        "translation_max_tokens": _env_int("TRANSLATION_MAX_TOKENS", 8000, minimum=500, maximum=12000),
+        "translation_timeout": _env_float("TRANSLATION_REQUEST_TIMEOUT", 30.0, minimum=5.0),
+        "translation_parallelism": _env_int("TRANSLATION_PARALLELISM", 1, minimum=1, maximum=10),
+        "translation_continuation_enabled": _env_bool("TRANSLATION_CONTINUATION_ENABLED", True),
+        "translation_job_prefix": os.getenv(
+            "SILVER_TRANSLATION_JOB_PREFIX", "silver/evidence-translation-jobs"
+        ).strip("/"),
+        "translation_chunk_size": _env_int(
+            "TRANSLATION_CONTINUATION_MAX_CLAIMS", 4, minimum=1, maximum=20
+        ),
+        "translation_max_attempts": _env_int(
+            "TRANSLATION_CONTINUATION_MAX_ATTEMPTS", 3, minimum=1, maximum=5
+        ),
+        "embedding_model": os.getenv("EMBEDDING_MODEL_ID", "cohere.embed-v4.0").strip(),
+        "embedding_region": os.getenv("EMBEDDING_REGION", "us-ashburn-1").strip(),
+        "embedding_compartment_id": _required_env("GENAI_COMPARTMENT_ID"),
+        "embedding_dimensions": _env_int("EMBEDDING_OUTPUT_DIMENSIONS", 512, minimum=256, maximum=1536),
+        "embedding_max_chars": _env_int("EMBEDDING_MAX_CHARS", 6000, minimum=500, maximum=20000),
+        "embedding_max_inputs": _env_int("EMBEDDING_MAX_INPUTS", 96, minimum=1, maximum=1000),
+        "embedding_max_input_tokens": _env_int(
+            "EMBEDDING_MAX_INPUT_TOKENS", 100000, minimum=1000, maximum=128000
+        ),
+        "embedding_timeout": _env_float("EMBEDDING_REQUEST_TIMEOUT", 45.0, minimum=5.0),
+        "tool": os.getenv("PUBMED_TOOL", "mednews-thesis").strip() or "mednews-thesis",
+        "email": _required_env("PUBMED_EMAIL"),
+        "api_key": os.getenv("PUBMED_API_KEY", "").strip(),
+        "retrieval_continuation_enabled": _env_bool("RETRIEVAL_CONTINUATION_ENABLED", True),
+        "retrieval_job_prefix": os.getenv(
+            "SILVER_RETRIEVAL_JOB_PREFIX", "silver/evidence-retrieval-jobs"
+        ).strip("/"),
+        "retrieval_stage_prefix": os.getenv(
+            "SILVER_RETRIEVAL_STAGE_PREFIX", "silver/evidence-retrieval-stage"
+        ).strip("/"),
+        "retrieval_chunk_size": _env_int(
+            "RETRIEVAL_CONTINUATION_MAX_CLAIMS", 8, minimum=1, maximum=20
+        ),
+        "retrieval_max_attempts": _env_int(
+            "RETRIEVAL_CONTINUATION_MAX_ATTEMPTS", 3, minimum=1, maximum=5
+        ),
+    }
+    return settings
+
+
+def _process_v1_evidence_rows_with_settings(
+    claim_rows: list[dict[str, str]],
+    run_id: str,
+    retrieved_at: str,
+    settings: dict[str, Any],
+    deadline: float,
+    deferred_claim_ids: set[str] | None = None,
+) -> tuple[list[dict[str, str]], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Keep both retrieval entrypoints on the exact same evidence contract."""
+
+    return _process_v1_evidence_rows(
+        claim_rows,
+        run_id,
+        retrieved_at,
+        candidates_fetched=settings["candidates_fetched"],
+        request_delay=settings["request_delay"],
+        request_timeout=settings["request_timeout"],
+        abstract_max_chars=settings["abstract_max_chars"],
+        embedding_model=settings["embedding_model"],
+        embedding_region=settings["embedding_region"],
+        embedding_compartment_id=settings["embedding_compartment_id"],
+        embedding_dimensions=settings["embedding_dimensions"],
+        embedding_max_chars=settings["embedding_max_chars"],
+        embedding_timeout=settings["embedding_timeout"],
+        embedding_max_inputs=settings["embedding_max_inputs"],
+        embedding_max_input_tokens=settings["embedding_max_input_tokens"],
+        translation_api_keys=_translation_api_keys(settings["translation_secret_ids"]),
+        translation_model=settings["translation_model"],
+        translation_batch_size=settings["translation_batch_size"],
+        translation_batch_max_input_chars=settings["translation_batch_max_input_chars"],
+        translation_batch_max_abstracts=settings["translation_batch_max_abstracts"],
+        translation_max_tokens=settings["translation_max_tokens"],
+        translation_timeout=settings["translation_timeout"],
+        translation_parallelism=settings["translation_parallelism"],
+        tool=settings["tool"],
+        email=settings["email"],
+        api_key=settings["api_key"],
+        deadline=deadline,
+        deferred_claim_ids=deferred_claim_ids,
+    )
+
+
+def _retrieval_job_object_name(prefix: str, parent_run_id: str, sequence: int) -> str:
+    if sequence < 1:
+        raise RuntimeError("Retrieval continuation sequence must be positive")
+    return f"{prefix.strip('/')}/run_id={parent_run_id}/job-{sequence:04d}.job.json"
+
+
+def _retrieval_stage_object_names(
+    prefix: str,
+    parent_run_id: str,
+    sequence: int,
+) -> tuple[str, str]:
+    base = f"{prefix.strip('/')}/run_id={parent_run_id}/job-{sequence:04d}"
+    return f"{base}/evidence.jsonl", f"{base}/completion.json"
+
+
+def _retrieval_completion_object_name(job_object: str) -> str:
+    if not job_object.endswith(".job.json"):
+        raise RuntimeError("Retrieval continuation job object has an invalid suffix")
+    return f"{job_object[:-len('.job.json')]}.done"
+
+
+def _retrieval_job_document(
+    parent_run_id: str,
+    parent_evidence_object: str,
+    source_claims_object: str,
+    sequence: int,
+    chunk_size: int,
+    max_attempts: int,
+    items: list[dict[str, Any]],
+    staging_objects: list[str],
+) -> dict[str, Any]:
+    """Build an immutable queue of Claims that have not reached PubMed yet."""
+
+    if not items:
+        raise RuntimeError("Retrieval continuation jobs require at least one claim")
+    return {
+        "schema_version": RETRIEVAL_JOB_SCHEMA_VERSION,
+        "stage": RETRIEVAL_CONTINUATION_STAGE,
+        "parent_run_id": parent_run_id,
+        "parent_evidence_object": parent_evidence_object,
+        "source_claims_object": source_claims_object,
+        "sequence": sequence,
+        "chunk_size": chunk_size,
+        "max_attempts": max_attempts,
+        "items": items,
+        "staging_objects": staging_objects,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _retrieval_continuation_items(document: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_items = document.get("items", [])
+    if not isinstance(raw_items, list) or not raw_items:
+        raise RuntimeError("Retrieval continuation job has no items")
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"Retrieval continuation job item {index} is invalid")
+        claim_key = _as_text(item.get("claim_key"))
+        if "::" not in claim_key:
+            raise RuntimeError(f"Retrieval continuation job item {index} has an invalid claim key")
+        if claim_key in seen:
+            raise RuntimeError(f"Retrieval continuation job repeats {claim_key}")
+        seen.add(claim_key)
+        try:
+            attempt = int(item.get("attempt", 0))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Retrieval continuation job item {index} has an invalid attempt") from exc
+        if attempt < 0:
+            raise RuntimeError(f"Retrieval continuation job item {index} has a negative attempt")
+        items.append({"claim_key": claim_key, "attempt": attempt})
+    return items
+
+
+def _claim_rows_by_key(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    by_key: dict[str, dict[str, str]] = {}
+    for row in rows:
+        claim_key = _evidence_claim_key(row)
+        if claim_key in by_key:
+            raise RuntimeError(f"Claims source repeats {claim_key}")
+        by_key[claim_key] = row
+    return by_key
+
+
+def _retrieval_retryable_evidence_record(record: dict[str, Any]) -> bool:
+    """Return whether a full PubMed/Embed retry may safely recover a claim."""
+
+    if _as_text(record.get("schema_version")) != EVIDENCE_SCHEMA_VERSION:
+        return False
+    if _as_text(record.get("llm_status")).upper() != "OK":
+        return False
+    if _as_text(record.get("translation_status")).upper() in {"TIME_BUDGET", "PARTIAL"}:
+        # The separate translation continuation retains the already-retrieved
+        # candidates, so do not repeat PubMed or Embed 4 for that case.
+        return False
+    if _as_text(record.get("evidence_status")).upper() != "ERROR":
+        return False
+    error_text = " ".join(
+        (
+            _as_text(record.get("evidence_error")),
+            _as_text(record.get("embedding_status")),
+        )
+    ).lower()
+    transient_markers = (
+        "evidence_time_budget",
+        "time budget",
+        "timeout",
+        "timed out",
+        "network",
+        "temporarily",
+        "unavailable",
+        "connection",
+        "http 408",
+        "http 425",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+    )
+    return any(marker in error_text for marker in transient_markers)
+
+
+def _schedule_retrieval_continuation(
+    storage: Any,
+    namespace: str,
+    bucket: str,
+    job_prefix: str,
+    parent_run_id: str,
+    parent_evidence_object: str,
+    source_claims_object: str,
+    pending_rows: list[dict[str, str]],
+    enabled: bool,
+    chunk_size: int,
+    max_attempts: int,
+) -> dict[str, Any]:
+    """Persist the remaining claim identities without duplicating source bodies."""
+
+    if not enabled:
+        return {"status": "DISABLED", "pending_claims": len(pending_rows)}
+    if not pending_rows:
+        return {"status": "NOT_NEEDED", "pending_claims": 0}
+    items = [{"claim_key": _evidence_claim_key(row), "attempt": 0} for row in pending_rows]
+    job_object = _retrieval_job_object_name(job_prefix, parent_run_id, 1)
+    job = _retrieval_job_document(
+        parent_run_id,
+        parent_evidence_object,
+        source_claims_object,
+        1,
+        chunk_size,
+        max_attempts,
+        items,
+        [],
+    )
+    _write_json_object(storage, namespace, bucket, job_object, job)
+    return {
+        "status": "SCHEDULED",
+        "pending_claims": len(items),
+        "job_object": job_object,
+        "chunk_size": chunk_size,
+        "max_attempts": max_attempts,
+    }
+
+
+def _finalize_retrieval_continuation(
+    storage: Any,
+    namespace: str,
+    bucket: str,
+    evidence_prefix: str,
+    parent_run_id: str,
+    parent_evidence_object: str,
+    source_claims_object: str,
+    staging_objects: list[str],
+    started_at: datetime,
+) -> tuple[str, str, str, dict[str, Any], list[dict[str, Any]]]:
+    """Overlay retrieval stages on the complete parent inventory of claims."""
+
+    parent_records = _read_jsonl_object(storage, namespace, bucket, parent_evidence_object)
+    if not parent_records:
+        raise RuntimeError("Parent evidence output is empty")
+    overrides: dict[str, dict[str, Any]] = {}
+    for stage_object in staging_objects:
+        for record in _read_jsonl_object(storage, namespace, bucket, stage_object):
+            overrides[_evidence_claim_key(record)] = record
+
+    final_run_id = f"{parent_run_id}_retrieval_final"
+    now = datetime.now(timezone.utc)
+    final_records: list[dict[str, Any]] = []
+    parent_keys: set[str] = set()
+    for record in parent_records:
+        claim_key = _evidence_claim_key(record)
+        if claim_key in parent_keys:
+            raise RuntimeError(f"Parent evidence output repeats {claim_key}")
+        parent_keys.add(claim_key)
+        selected = dict(overrides.get(claim_key, record))
+        selected["schema_version"] = EVIDENCE_SCHEMA_VERSION
+        selected["run_id"] = final_run_id
+        selected["evidence_run_id"] = final_run_id
+        selected["retrieved_at"] = now.isoformat()
+        final_records.append(selected)
+    unexpected = sorted(set(overrides) - parent_keys)
+    if unexpected:
+        raise RuntimeError(
+            "Retrieval continuation stage contains claims absent from the parent Evidence output: "
+            + ", ".join(unexpected[:5])
+        )
+
+    evidence_object, manifest_object = _evidence_v1_object_names(evidence_prefix, final_run_id)
+    manifest_status, evidence_counts = _translation_manifest_status(final_records)
+    _write_jsonl_object(storage, namespace, bucket, evidence_object, final_records)
+    manifest = {
+        "schema_version": EVIDENCE_MANIFEST_SCHEMA_VERSION,
+        "stage": "evidence",
+        "run_id": final_run_id,
+        "status": manifest_status,
+        "source_object": source_claims_object,
+        "evidence_object": evidence_object,
+        "started_at": started_at.isoformat(),
+        "finished_at": now.isoformat(),
+        "elapsed_seconds": 0.0,
+        "evidence_claims_processed": len(final_records),
+        "candidates_total": sum(
+            len(record.get("candidates", []))
+            for record in final_records
+            if isinstance(record.get("candidates"), list)
+        ),
+        "evidence_status_counts": dict(evidence_counts),
+        "continuation": {
+            "status": "COMPLETE",
+            "stage": RETRIEVAL_CONTINUATION_STAGE,
+            "parent_run_id": parent_run_id,
+            "parent_evidence_object": parent_evidence_object,
+            "staging_objects": staging_objects,
+            "stages_processed": len(staging_objects),
+        },
+        "workload": {"abstracts": _evidence_abstract_metrics(final_records)},
+    }
+    _write_json_object(storage, namespace, bucket, manifest_object, manifest)
+    return final_run_id, evidence_object, manifest_object, manifest, final_records
+
+
 def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
-    """Retrieve/rank evidence for every eligible claim in one Claims run."""
+    """Start a durable, serial retrieval chain for one Claims v1 object."""
 
     started = time.monotonic()
     now = datetime.now(timezone.utc)
@@ -3383,202 +3907,91 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         bucket = _required_env("OBJECT_STORAGE_BUCKET")
         claims_prefix = os.getenv("SILVER_CLAIMS_PREFIX", "silver/claims").strip("/")
         evidence_prefix = os.getenv("SILVER_EVIDENCE_PREFIX", "silver/evidence").strip("/")
-        configured_max_rows = _env_int("EVIDENCE_MAX_ROWS", 0, minimum=0, maximum=1000)
-        if configured_max_rows:
-            raise RuntimeError("EVIDENCE_MAX_ROWS must be 0 in evidence.v1; every claim must be processed")
-        candidates_fetched = _env_int("PUBMED_CANDIDATES_FETCHED", 5, minimum=1, maximum=10)
-        request_delay = _env_float("PUBMED_REQUEST_DELAY", 0.4, minimum=0.34)
-        request_timeout = _env_float("PUBMED_REQUEST_TIMEOUT", 20.0, minimum=5.0)
         max_seconds = _env_float("EVIDENCE_MAX_SECONDS", 285.0, minimum=30.0)
         time_buffer = _env_float("EVIDENCE_TIME_BUFFER", 10.0, minimum=1.0)
-        abstract_max_chars = _env_int("ABSTRACT_MAX_CHARS", 1500, minimum=500, maximum=10000)
-        translate_enabled = _env_bool("TRANSLATE_ABSTRACTS", True)
-        embeddings_enabled = _env_bool("EMBEDDINGS_ENABLED", True)
-        if not translate_enabled or not embeddings_enabled:
-            raise RuntimeError("evidence.v1 requires TRANSLATE_ABSTRACTS=true and EMBEDDINGS_ENABLED=true")
-        translation_secret_ids = _secret_ids(
-            "GOOGLE_TRANSLATION_SECRET_OCIDS", "GOOGLE_TRANSLATION_SECRET_OCID"
-        )
-        translation_model = os.getenv("TRANSLATION_MODEL_ID", "gemini-3.5-flash-lite").strip()
-        translation_batch_size = _env_int("TRANSLATION_BATCH_SIZE", 1, minimum=1, maximum=5)
-        translation_batch_max_input_chars = _env_int(
-            "TRANSLATION_BATCH_MAX_INPUT_CHARS", 9000, minimum=1000, maximum=50000
-        )
-        translation_batch_max_abstracts = _env_int(
-            "TRANSLATION_BATCH_MAX_ABSTRACTS", 6, minimum=1, maximum=25
-        )
-        translation_max_tokens = _env_int("TRANSLATION_MAX_TOKENS", 8000, minimum=500, maximum=12000)
-        translation_timeout = _env_float("TRANSLATION_REQUEST_TIMEOUT", 30.0, minimum=5.0)
-        translation_parallelism = _env_int("TRANSLATION_PARALLELISM", 1, minimum=1, maximum=10)
-        continuation_enabled = _env_bool("TRANSLATION_CONTINUATION_ENABLED", True)
-        continuation_job_prefix = os.getenv(
-            "SILVER_TRANSLATION_JOB_PREFIX", "silver/evidence-translation-jobs"
-        ).strip("/")
-        continuation_chunk_size = _env_int(
-            "TRANSLATION_CONTINUATION_MAX_CLAIMS", 4, minimum=1, maximum=20
-        )
-        continuation_max_attempts = _env_int(
-            "TRANSLATION_CONTINUATION_MAX_ATTEMPTS", 3, minimum=1, maximum=5
-        )
-        embedding_model = os.getenv("EMBEDDING_MODEL_ID", "cohere.embed-v4.0").strip()
-        embedding_region = os.getenv("EMBEDDING_REGION", "us-ashburn-1").strip()
-        embedding_compartment_id = _required_env("GENAI_COMPARTMENT_ID")
-        embedding_dimensions = _env_int("EMBEDDING_OUTPUT_DIMENSIONS", 512, minimum=256, maximum=1536)
-        embedding_max_chars = _env_int("EMBEDDING_MAX_CHARS", 6000, minimum=500, maximum=20000)
-        embedding_max_inputs = _env_int("EMBEDDING_MAX_INPUTS", 96, minimum=1, maximum=1000)
-        embedding_max_input_tokens = _env_int(
-            "EMBEDDING_MAX_INPUT_TOKENS", 100000, minimum=1000, maximum=128000
-        )
-        embedding_timeout = _env_float("EMBEDDING_REQUEST_TIMEOUT", 45.0, minimum=5.0)
-        tool = os.getenv("PUBMED_TOOL", "mednews-thesis").strip() or "mednews-thesis"
-        email = _required_env("PUBMED_EMAIL")
-        api_key = os.getenv("PUBMED_API_KEY", "").strip()
         if time_buffer >= max_seconds:
             raise RuntimeError("EVIDENCE_TIME_BUFFER must be smaller than EVIDENCE_MAX_SECONDS")
+        settings = _v1_runtime_settings()
         deadline = started + max_seconds - time_buffer
 
         storage = _object_storage_client()
         source_object = _event_jsonl_object_name(data, bucket, claims_prefix)
         claim_rows, scan = _v1_claim_rows(storage, namespace, bucket, source_object)
-
-        translation_api_keys = _translation_api_keys(translation_secret_ids)
-
-        query_pmids: dict[str, list[str]] = {}
-        errors: dict[str, str] = {}
-        pubmed_requests = 0
         ready_rows = [row for row in claim_rows if not row.get("_input_error", "")]
-        for row in ready_rows:
-            identity = _claim_identity(row)
-            if time.monotonic() >= deadline:
-                errors[identity] = "EVIDENCE_TIME_BUDGET"
-                continue
-            try:
-                query_pmids[identity] = _search_pubmed(
-                    row.get("pubmed_query_en", "")[:1000],
-                    candidates_fetched,
-                    tool,
-                    email,
-                    api_key,
-                    request_timeout,
-                )
-                pubmed_requests += 1
-            except Exception as exc:  # noqa: BLE001 - every claim remains represented in JSONL
-                errors[identity] = f"{type(exc).__name__}: {exc}"[:1500]
-            remaining = deadline - time.monotonic()
-            if remaining > request_delay:
-                time.sleep(request_delay)
+        # Validate the durable identities before publishing a parent that the
+        # continuation must later overlay exactly once.
+        _claim_rows_by_key(claim_rows)
 
-        all_pmids: list[str] = []
-        for pmids in query_pmids.values():
-            for pmid in pmids:
-                if pmid not in all_pmids:
-                    all_pmids.append(pmid)
-        records: dict[str, dict[str, Any]] = {}
-        if all_pmids and time.monotonic() < deadline:
-            try:
-                records = _fetch_pubmed(all_pmids, tool, email, api_key, request_timeout)
-                pubmed_requests += 1
-            except Exception as exc:  # noqa: BLE001 - retain claim-level error detail
-                fetch_error = f"{type(exc).__name__}: {exc}"[:1500]
-                for identity in query_pmids:
-                    errors[identity] = fetch_error
+        pending_rows: list[dict[str, str]] = []
+        deferred_claim_ids: set[str] = set()
+        if settings["retrieval_continuation_enabled"]:
+            initial_rows = ready_rows[: settings["retrieval_chunk_size"]]
+            pending_rows = ready_rows[len(initial_rows) :]
+            deferred_claim_ids = {_claim_identity(row) for row in pending_rows}
 
-        output_rows: list[dict[str, str]] = []
-        for row in claim_rows:
-            identity = _claim_identity(row)
-            output = _base_output_row(row, run_id, retrieved_at)
-            input_error = row.get("_input_error", "")
-            if input_error:
-                output["evidence_status"] = "ERROR"
-                output["evidence_error"] = input_error[:1500]
-            elif identity in errors:
-                output["evidence_status"] = "ERROR"
-                output["evidence_error"] = errors[identity]
-            else:
-                pmids = query_pmids.get(identity, [])
-                candidates = _candidate_results(row, pmids, records, candidates_fetched, abstract_max_chars)
-                # Every usable abstract among the bounded PubMed results is
-                # embedded and translated.  Lexical TF-IDF only establishes a
-                # deterministic presentation order; it must not discard a
-                # candidate before semantic ranking.
-                candidates = _prefilter_candidates(row, candidates)
-                output["pubmed_result_count"] = str(len(pmids))
-                output["pubmed_results_json"] = json.dumps(candidates, ensure_ascii=False)
-                if not pmids:
-                    output["evidence_status"] = "NO_RESULTS"
-                elif not candidates:
-                    output["evidence_status"] = "NO_ABSTRACT"
-                else:
-                    output["evidence_status"] = "OK"
-            output_rows.append(output)
-
-        embedding_stats: dict[str, Any] = {"status": "not_run", "model": embedding_model}
-        if any(row.get("evidence_status", "").upper() == "OK" for row in output_rows):
-            try:
-                embedding_stats = _apply_embeddings(
-                    output_rows,
-                    _generative_ai_client(embedding_region, embedding_timeout),
-                    embedding_compartment_id,
-                    embedding_model,
-                    embedding_dimensions,
-                    embedding_max_chars,
-                    embedding_timeout,
-                    deadline,
-                    embedding_max_inputs,
-                    embedding_max_input_tokens,
-                )
-            except Exception as exc:  # noqa: BLE001 - gate turns the affected rows into ERROR
-                detail = f"{type(exc).__name__}: {exc}"[:1500]
-                embedding_stats = {"status": "error", "error": detail}
-                for row in output_rows:
-                    if row.get("evidence_status", "").upper() == "OK":
-                        row["embedding_status"] = "ERROR"
-                        row["embedding_model"] = embedding_model
-                        row["evidence_error"] = detail
-
-        translation_stats = _apply_translations(
-            output_rows,
-            translation_api_keys,
-            translation_model,
-            translation_batch_size,
-            translation_max_tokens,
-            translation_timeout,
-            deadline,
+        output_rows, workload, embedding_stats, translation_stats = _process_v1_evidence_rows_with_settings(
+            claim_rows,
             run_id,
-            True,
-            parallelism=translation_parallelism,
-            batch_max_input_chars=translation_batch_max_input_chars,
-            batch_max_abstracts=translation_batch_max_abstracts,
+            retrieved_at,
+            settings,
+            deadline,
+            deferred_claim_ids,
         )
-        _gate_evidence_for_human_review(output_rows, require_embeddings=True, require_translation=True)
-
         evidence_object, manifest_object = _evidence_v1_object_names(evidence_prefix, run_id)
         evidence_records = [_evidence_v1_record(row, run_id) for row in output_rows]
         _write_jsonl_object(storage, namespace, bucket, evidence_object, evidence_records)
-        try:
-            continuation = _schedule_translation_continuation(
-                storage,
-                namespace,
-                bucket,
-                continuation_job_prefix,
-                run_id,
-                evidence_object,
-                source_object,
-                evidence_records,
-                continuation_enabled,
-                continuation_chunk_size,
-                continuation_max_attempts,
-            )
-        except Exception as exc:  # noqa: BLE001 - preserve the partial Evidence output for audit/recovery
-            LOGGER.exception("Unable to schedule translation continuation")
-            continuation = {
-                "status": "ERROR",
-                "retryable_claims": sum(
-                    1 for record in evidence_records if _translation_retryable_evidence_record(record)
-                ),
-                "error": f"{type(exc).__name__}: {exc}"[:1500],
-                "reused_pubmed_and_embeddings": True,
-            }
+
+        if pending_rows:
+            try:
+                continuation: dict[str, Any] = _schedule_retrieval_continuation(
+                    storage,
+                    namespace,
+                    bucket,
+                    settings["retrieval_job_prefix"],
+                    run_id,
+                    evidence_object,
+                    source_object,
+                    pending_rows,
+                    True,
+                    settings["retrieval_chunk_size"],
+                    settings["retrieval_max_attempts"],
+                )
+                continuation["stage"] = RETRIEVAL_CONTINUATION_STAGE
+                continuation["translation"] = {"status": "DEFERRED_UNTIL_RETRIEVAL_COMPLETE"}
+            except Exception as exc:  # noqa: BLE001 - preserve the parent inventory for recovery
+                LOGGER.exception("Unable to schedule retrieval continuation")
+                continuation = {
+                    "status": "ERROR",
+                    "stage": RETRIEVAL_CONTINUATION_STAGE,
+                    "pending_claims": len(pending_rows),
+                    "error": f"{type(exc).__name__}: {exc}"[:1500],
+                }
+        else:
+            try:
+                continuation = _schedule_translation_continuation(
+                    storage,
+                    namespace,
+                    bucket,
+                    settings["translation_job_prefix"],
+                    run_id,
+                    evidence_object,
+                    source_object,
+                    evidence_records,
+                    settings["translation_continuation_enabled"],
+                    settings["translation_chunk_size"],
+                    settings["translation_max_attempts"],
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve the partial Evidence output for audit/recovery
+                LOGGER.exception("Unable to schedule translation continuation")
+                continuation = {
+                    "status": "ERROR",
+                    "retryable_claims": sum(
+                        1 for record in evidence_records if _translation_retryable_evidence_record(record)
+                    ),
+                    "error": f"{type(exc).__name__}: {exc}"[:1500],
+                    "reused_pubmed_and_embeddings": True,
+                }
+
         status_counts = Counter(row.get("evidence_status", "") for row in output_rows)
         manifest_status = "COMPLETE"
         if status_counts.get("ERROR"):
@@ -3598,21 +4011,17 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "evidence_status_counts": dict(status_counts),
             "scan": scan,
             "configuration": {
-                "candidates_fetched_per_claim": candidates_fetched,
+                "candidates_fetched_per_claim": settings["candidates_fetched"],
                 "embed_all_retrieved_candidates_with_abstract": True,
-                "translation_batch_size": translation_batch_size,
-                "translation_batch_max_input_chars": translation_batch_max_input_chars,
-                "translation_batch_max_abstracts": translation_batch_max_abstracts,
-                "translation_max_tokens": translation_max_tokens,
-                "translation_parallelism": translation_parallelism,
-                "embedding_model": embedding_model,
+                "retrieval_continuation_max_claims": settings["retrieval_chunk_size"],
+                "translation_batch_size": settings["translation_batch_size"],
+                "translation_batch_max_input_chars": settings["translation_batch_max_input_chars"],
+                "translation_batch_max_abstracts": settings["translation_batch_max_abstracts"],
+                "translation_max_tokens": settings["translation_max_tokens"],
+                "translation_parallelism": settings["translation_parallelism"],
+                "embedding_model": settings["embedding_model"],
             },
-            "workload": {
-                "claims_ready_for_pubmed": len(ready_rows),
-                "pubmed_search_requests": len(query_pmids),
-                "unique_pmids_requested": len(all_pmids),
-                "abstracts": _evidence_abstract_metrics(evidence_records),
-            },
+            "workload": {**workload, "abstracts": _evidence_abstract_metrics(evidence_records)},
             "embedding": embedding_stats,
             "translation": translation_stats,
             "continuation": continuation,
@@ -3627,7 +4036,7 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "manifest_object": manifest_object,
             "evidence_claims_processed": len(output_rows),
             "status_counts": dict(status_counts),
-            "pubmed_requests": pubmed_requests,
+            "pubmed_requests": workload["pubmed_requests"],
             "continuation": continuation,
             "elapsed_seconds": f"{time.monotonic() - started:.2f}",
         }
@@ -3647,14 +4056,234 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         )
 
 
+def _handler_retrieval_continuation(
+    ctx: Any,
+    data: io.BytesIO | None = None,
+) -> response.Response:
+    """Retrieve one small claim tranche and enqueue the next one serially."""
+
+    started_monotonic = time.monotonic()
+    started_at = datetime.now(timezone.utc)
+    continuation_run_id = f"retrieval_{started_at.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+    try:
+        namespace = _required_env("OBJECT_STORAGE_NAMESPACE")
+        bucket = _required_env("OBJECT_STORAGE_BUCKET")
+        claims_prefix = os.getenv("SILVER_CLAIMS_PREFIX", "silver/claims").strip("/")
+        evidence_prefix = os.getenv("SILVER_EVIDENCE_PREFIX", "silver/evidence").strip("/")
+        settings = _v1_runtime_settings()
+        max_seconds = _env_float("RETRIEVAL_CONTINUATION_MAX_SECONDS", 285.0, minimum=30.0)
+        time_buffer = _env_float("RETRIEVAL_CONTINUATION_TIME_BUFFER", 10.0, minimum=1.0)
+        if time_buffer >= max_seconds:
+            raise RuntimeError("RETRIEVAL_CONTINUATION_TIME_BUFFER must be smaller than the max seconds")
+        deadline = started_monotonic + max_seconds - time_buffer
+
+        storage = _object_storage_client()
+        job_object = _event_object_name_under_prefix(
+            data, bucket, settings["retrieval_job_prefix"], ".job.json"
+        )
+        completion_object = _retrieval_completion_object_name(job_object)
+        if _object_exists(storage, namespace, bucket, completion_object):
+            result = {
+                "status": "already_complete",
+                "mode": RETRIEVAL_CONTINUATION_STAGE,
+                "job_object": job_object,
+                "completion_object": completion_object,
+            }
+            return response.Response(
+                ctx,
+                response_data=json.dumps(result, ensure_ascii=False),
+                headers={"Content-Type": "application/json"},
+            )
+
+        job = _read_json_object(storage, namespace, bucket, job_object)
+        if job.get("schema_version") != RETRIEVAL_JOB_SCHEMA_VERSION or job.get("stage") != RETRIEVAL_CONTINUATION_STAGE:
+            raise RuntimeError("Unsupported retrieval continuation job schema or stage")
+        parent_run_id = _as_text(job.get("parent_run_id"))
+        parent_evidence_object = _as_text(job.get("parent_evidence_object"))
+        source_claims_object = _as_text(job.get("source_claims_object"))
+        if not parent_run_id or not parent_evidence_object or not source_claims_object:
+            raise RuntimeError("Retrieval continuation job lacks parent source metadata")
+        if not source_claims_object.startswith(f"{claims_prefix}/") or not source_claims_object.endswith("/claims.jsonl"):
+            raise RuntimeError("Retrieval continuation job has an invalid Claims source object")
+        try:
+            sequence = int(job.get("sequence", 0))
+            chunk_size = int(job.get("chunk_size", 0))
+            max_attempts = int(job.get("max_attempts", 0))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Retrieval continuation job has invalid numeric limits") from exc
+        if sequence < 1 or not 1 <= chunk_size <= 20 or not 1 <= max_attempts <= 5:
+            raise RuntimeError("Retrieval continuation job has unsafe numeric limits")
+        staging_objects = job.get("staging_objects", [])
+        if not isinstance(staging_objects, list) or not all(isinstance(value, str) and value for value in staging_objects):
+            raise RuntimeError("Retrieval continuation job has invalid staging object references")
+        items = _retrieval_continuation_items(job)
+        current_items = items[:chunk_size]
+        remaining_items = items[chunk_size:]
+        source_rows, scan = _v1_claim_rows(storage, namespace, bucket, source_claims_object)
+        rows_by_key = _claim_rows_by_key(source_rows)
+        missing = [item["claim_key"] for item in current_items if item["claim_key"] not in rows_by_key]
+        if missing:
+            raise RuntimeError("Retrieval continuation source no longer contains " + ", ".join(missing[:5]))
+        current_rows = [rows_by_key[item["claim_key"]] for item in current_items]
+
+        output_rows, workload, embedding_stats, translation_stats = _process_v1_evidence_rows_with_settings(
+            current_rows,
+            continuation_run_id,
+            started_at.isoformat(),
+            settings,
+            deadline,
+        )
+        stage_records = [_evidence_v1_record(row, continuation_run_id) for row in output_rows]
+        stage_object, stage_manifest_object = _retrieval_stage_object_names(
+            settings["retrieval_stage_prefix"], parent_run_id, sequence
+        )
+        _write_jsonl_object(storage, namespace, bucket, stage_object, stage_records)
+        _write_json_object(
+            storage,
+            namespace,
+            bucket,
+            stage_manifest_object,
+            {
+                "schema_version": RETRIEVAL_JOB_SCHEMA_VERSION,
+                "stage": RETRIEVAL_CONTINUATION_STAGE,
+                "parent_run_id": parent_run_id,
+                "job_object": job_object,
+                "sequence": sequence,
+                "records_processed": len(stage_records),
+                "scan": scan,
+                "workload": {**workload, "abstracts": _evidence_abstract_metrics(stage_records)},
+                "embedding": embedding_stats,
+                "translation": translation_stats,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        retry_items: list[dict[str, Any]] = []
+        for item, record in zip(current_items, stage_records):
+            attempt = int(item["attempt"]) + 1
+            if _retrieval_retryable_evidence_record(record) and attempt < max_attempts:
+                retry_items.append({"claim_key": item["claim_key"], "attempt": attempt})
+        next_staging_objects = [*staging_objects, stage_object]
+        next_items = [*retry_items, *remaining_items]
+        result: dict[str, Any] = {
+            "status": "continued",
+            "mode": RETRIEVAL_CONTINUATION_STAGE,
+            "job_object": job_object,
+            "records_processed": len(stage_records),
+            "retry_claims": len(retry_items),
+            "remaining_claims": len(next_items),
+            "stage_object": stage_object,
+        }
+        if next_items:
+            next_job_object = _retrieval_job_object_name(
+                settings["retrieval_job_prefix"], parent_run_id, sequence + 1
+            )
+            next_job = _retrieval_job_document(
+                parent_run_id,
+                parent_evidence_object,
+                source_claims_object,
+                sequence + 1,
+                chunk_size,
+                max_attempts,
+                next_items,
+                next_staging_objects,
+            )
+            _write_json_object(storage, namespace, bucket, next_job_object, next_job)
+            result["next_job_object"] = next_job_object
+        else:
+            final_run_id, evidence_object, manifest_object, manifest, final_records = _finalize_retrieval_continuation(
+                storage,
+                namespace,
+                bucket,
+                evidence_prefix,
+                parent_run_id,
+                parent_evidence_object,
+                source_claims_object,
+                next_staging_objects,
+                started_at,
+            )
+            try:
+                translation_continuation = _schedule_translation_continuation(
+                    storage,
+                    namespace,
+                    bucket,
+                    settings["translation_job_prefix"],
+                    final_run_id,
+                    evidence_object,
+                    source_claims_object,
+                    final_records,
+                    settings["translation_continuation_enabled"],
+                    settings["translation_chunk_size"],
+                    settings["translation_max_attempts"],
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve the final retrieval result
+                LOGGER.exception("Unable to schedule translation continuation after retrieval")
+                translation_continuation = {
+                    "status": "ERROR",
+                    "error": f"{type(exc).__name__}: {exc}"[:1500],
+                    "reused_pubmed_and_embeddings": True,
+                }
+            manifest["continuation"]["translation"] = translation_continuation
+            _write_json_object(storage, namespace, bucket, manifest_object, manifest)
+            result.update(
+                {
+                    "status": manifest["status"].lower(),
+                    "final_run_id": final_run_id,
+                    "object_name": evidence_object,
+                    "manifest_object": manifest_object,
+                    "status_counts": manifest["evidence_status_counts"],
+                    "translation_continuation": translation_continuation,
+                }
+            )
+
+        result["elapsed_seconds"] = round(time.monotonic() - started_monotonic, 3)
+        _write_json_object(
+            storage,
+            namespace,
+            bucket,
+            completion_object,
+            {
+                "schema_version": RETRIEVAL_JOB_SCHEMA_VERSION,
+                "stage": RETRIEVAL_CONTINUATION_STAGE,
+                "job_object": job_object,
+                "result": result,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return response.Response(
+            ctx,
+            response_data=json.dumps(result, ensure_ascii=False),
+            headers={"Content-Type": "application/json"},
+        )
+    except Exception as exc:  # noqa: BLE001 - ensure Event retries expose a useful reason
+        LOGGER.exception("retrieval continuation failed")
+        return response.Response(
+            ctx,
+            response_data=json.dumps(
+                {
+                    "status": "error",
+                    "mode": RETRIEVAL_CONTINUATION_STAGE,
+                    "run_id": continuation_run_id,
+                    "message": str(exc),
+                }
+            ),
+            status_code=500,
+            headers={"Content-Type": "application/json"},
+        )
+
+
 def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
-    """Dispatch Evidence retrieval or its isolated translation continuation."""
+    """Dispatch Evidence retrieval or one of its durable continuations."""
 
     mode = os.getenv("PIPELINE_MODE", "retrieve").strip().lower()
     if mode in {"translation_continuation", "continue_evidence_translation"}:
         return _handler_translation_continuation(ctx, data)
+    if mode in {"retrieval_continuation", "continue_evidence_retrieval"}:
+        return _handler_retrieval_continuation(ctx, data)
     if mode not in {"", "retrieve", "evidence"}:
-        raise RuntimeError("PIPELINE_MODE must be retrieve or translation_continuation")
+        raise RuntimeError(
+            "PIPELINE_MODE must be retrieve, retrieval_continuation, or translation_continuation"
+        )
 
     schema = os.getenv("PIPELINE_SCHEMA", "v1").strip().lower()
     if schema in {"v1", "evidence.v1", "jsonl"}:

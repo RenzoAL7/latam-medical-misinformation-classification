@@ -5,13 +5,13 @@ OCID concretos pertenecen a la configuración de OCI, no al repositorio.
 
 ## Activación segura para una corrida v1
 
-La corrida limpia activa únicamente el schedule de NewsData de las 08:00 Lima,
-las tres reglas Events y el timer del proyecto multi-claim de Label Studio. El
-schedule de las 20:00 y los tres schedules históricos de drenaje permanecen
-inactivos: un drain usa un payload global y podría volver a recorrer objetos
-históricos, mientras que Claims y Evidence v1 deben procesar el objeto que
-disparó el evento. No borres ni reproceses CSV históricos como parte de la
-activación.
+El despliegue de producción actual activa los schedules de NewsData de las
+08:00 y 20:00 Lima, las cinco reglas Events y el timer del proyecto multi-claim
+de Label Studio. Cada schedule crea su propio Bronze y cada Function procesa
+exclusivamente el objeto que disparó el evento. Los tres schedules históricos
+de drenaje permanecen inactivos: un drain usa un payload global y podría volver
+a recorrer objetos históricos. No borres ni reproceses CSV históricos como
+parte de la activación.
 
 ## Cadena de objetos
 
@@ -23,7 +23,10 @@ fetch-newsdata
   -> extract-claims (claims.v1)
   -> silver/claims/run_id=<run_id>/claims.jsonl + manifest.json
   -> retrieve-pubmed-evidence (evidence.v1)
-  -> silver/evidence/run_id=<run_id>/evidence.jsonl + manifest.json
+  -> silver/evidence/run_id=<run_id>/evidence.jsonl + manifest.json (inventario completo)
+  -> [claims pendientes] silver/evidence-retrieval-jobs/*.job.json
+  -> continue-evidence-retrieval (mismo image, otro modo)
+  -> silver/evidence/run_id=<parent>_retrieval_final/evidence.jsonl + manifest.json
   -> [solo traducción pendiente] silver/evidence-translation-jobs/*.job.json
   -> continue-evidence-translation (mismo image, otro modo)
   -> silver/evidence/run_id=<parent>_translation_final/evidence.jsonl + manifest.json
@@ -41,6 +44,7 @@ porque una noticia puede tener muchos claims y cada claim muchos candidatos.
 | `CreateObject` | `bronze/*.csv` | `extract-news-body` |
 | `CreateObject` | `silver/body/*.csv` | `extract-claims` |
 | `CreateObject` | `silver/claims/run_id=*/claims.jsonl` | `retrieve-pubmed-evidence` |
+| `CreateObject` | `silver/evidence-retrieval-jobs/*.job.json` | `continue-evidence-retrieval` |
 | `CreateObject` | `silver/evidence-translation-jobs/*.job.json` | `continue-evidence-translation` |
 
 La tercera regla no debe seguir coincidiendo con `silver/claims/*.csv` después
@@ -49,6 +53,12 @@ exactamente un `claims.jsonl`; por ello un selector amplio de prefijo causaría
 errores al crear también `manifest.json`.
 
 La cuarta regla debe limitarse al prefijo
+`silver/evidence-retrieval-jobs/` y al sufijo `.job.json`. La continuación
+lee el Claims JSONL inmutable, procesa un tramo serial y escribe el siguiente
+job solo cuando el actual ya quedó auditado. No debe escuchar el prefijo de
+staging ni `silver/evidence/`.
+
+La quinta regla debe limitarse al prefijo
 `silver/evidence-translation-jobs/` y al sufijo `.job.json`. No debe apuntar al
 prefijo de staging ni a `silver/evidence/`, porque esos objetos no son entrada
 de recuperación. El destino usa la misma imagen x86 que Evidence pero tiene
@@ -88,11 +98,20 @@ TRANSLATION_CONTINUATION_MAX_ATTEMPTS=3
 TRANSLATION_CONTINUATION_MAX_SECONDS=285
 TRANSLATION_CONTINUATION_TIME_BUFFER=10
 TRANSLATION_CONTINUATION_PARALLELISM=1
+RETRIEVAL_CONTINUATION_ENABLED=true
+SILVER_RETRIEVAL_JOB_PREFIX=silver/evidence-retrieval-jobs
+SILVER_RETRIEVAL_STAGE_PREFIX=silver/evidence-retrieval-stage
+RETRIEVAL_CONTINUATION_MAX_CLAIMS=8
+RETRIEVAL_CONTINUATION_MAX_ATTEMPTS=3
+RETRIEVAL_CONTINUATION_MAX_SECONDS=285
+RETRIEVAL_CONTINUATION_TIME_BUFFER=10
 ```
 
 `MAX_CLAIMS_PER_ARTICLE=0` y `EVIDENCE_MAX_ROWS=0` son reglas de integridad:
-no se descarta un claim por ser el sexto o por superar un lote arbitrario.
-Cada claim recupera como máximo cinco PMIDs y se embeben todos los candidatos
+no se descarta un claim por ser el sexto o por superar un lote arbitrario. Si
+el objeto excede un tramo seguro, Recovery lo deja explícito en el Evidence
+padre y continúa por jobs seriales de ocho claims. Cada claim recupera como
+máximo cinco PMIDs y se embeben todos los candidatos
 con abstract. El embedding del query siempre es por claim; un mismo
 PMID+abstract reaprovecha su embedding y traducción dentro de la misma
 invocación. Con las dos claves Gemini independientes configuradas, la
@@ -102,19 +121,22 @@ de abstracts traducidos ni el límite de cinco PMIDs por claim.
 ## Presupuesto y errores
 
 OCI Functions tiene un timeout de 300 segundos. Claims se detiene a 270 s con
-20 s de margen y Evidence a 285 s con 10 s de margen. El límite se aplica a
-la corrida, no a un claim: si una llamada falla o se acaba el tiempo, el claim
-queda en `ERROR` dentro de `claims.jsonl` o `evidence.jsonl` y el manifest pasa
-a `PARTIAL` o `FAILED`. Para `RECITATION`, Evidence puede usar en la misma
-invocación un fallback acotado de resumen fiel. Si tras ello solo queda
-traducción transitoria, deja un job de continuación con los candidatos ya
-recuperados; la Function nueva no consulta nuevamente PubMed ni Embed 4 y
-publica una revisión final del mismo conjunto de claims.
+20 s de margen y cada tramo de Evidence a 285 s con 10 s de margen. Ante un
+objeto grande, el Evidence padre conserva todos los claims y deja un job para
+los no iniciados; `continue-evidence-retrieval` los procesa serialmente hasta
+publicar la consolidación. Un timeout o error transitorio dentro de un tramo se
+reintenta hasta tres veces; una falla permanente queda como `ERROR` y el
+manifest como `PARTIAL` o `FAILED`. Para `RECITATION`, Evidence puede usar en
+la misma invocación un fallback acotado de resumen fiel. Si tras ello solo queda
+traducción transitoria, deja un job que no consulta nuevamente PubMed ni Embed
+4.
 
 `evidence_status=OK` solo se conserva si `llm_status`, `embedding_status` y
 `translation_status` son `OK`. `NO_RESULTS` y `NO_ABSTRACT` también son
-resultados explícitos y quedan en la salida para auditoría, aunque no lleguen
-a Label Studio.
+resultados explícitos: cuando `llm_status=OK` y embedding/traducción son
+`SKIPPED_NO_EVIDENCE`, llegan a Label Studio para triage humano sin presentarse
+como evidencia que apoya o contradice el claim. Los fallos técnicos
+transitorios no se importan.
 
 ## Permisos
 
@@ -142,10 +164,11 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 fn deploy --no-bump
 El orden de activación es:
 
 1. Ejecutar las pruebas locales y construir la imagen x86.
-2. Subir/desplegar Evidence y crear `continue-evidence-translation` con esa
-   misma imagen y `PIPELINE_MODE=translation_continuation`.
-3. Mantener el selector Claims → Evidence al sufijo `claims.jsonl` y añadir la
-   regla Jobs → continuación al sufijo `.job.json`.
+2. Subir/desplegar Evidence y crear `continue-evidence-retrieval` y
+   `continue-evidence-translation` con esa misma imagen, usando
+   `PIPELINE_MODE=retrieval_continuation` y `translation_continuation`.
+3. Mantener el selector Claims → Evidence al sufijo `claims.jsonl` y añadir
+   una regla Jobs → continuación por cada prefijo de jobs y sufijo `.job.json`.
 4. Crear un proyecto nuevo de Label Studio con `config_multiclaim.xml` y
    configurar su sincronizador en formato `jsonl`.
 5. Hacer una corrida controlada nueva, inspeccionar ambos manifests y revisar
