@@ -1,6 +1,6 @@
 schema_version: 20180708
 name: extract-claims
-version: 0.6.8
+version: 0.7.2
 runtime: python
 build_image: fnproject/python:3.12-dev
 run_image: fnproject/python:3.12

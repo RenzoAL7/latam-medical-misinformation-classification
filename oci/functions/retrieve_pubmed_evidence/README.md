@@ -109,6 +109,10 @@ large set of claims does not exceed the model input limit. See
 [`docs/limits_and_timing.md`](../../../docs/limits_and_timing.md) for the
 complete duration, PubMed and Embed 4 limits.
 
+PubMed ESearch and EFetch send their URL-encoded parameters in an HTTP POST
+body. This keeps long claim queries out of the request URI and avoids NCBI
+HTTP 414 failures while retaining the same bounded query and fetch contract.
+
 Translation may group up to two *small* claim rows in one Gemini request. It
 never splits a claim or removes one of its candidates: the 9,000-character and
 six-abstract ceilings force a larger claim to remain in a batch of one. The

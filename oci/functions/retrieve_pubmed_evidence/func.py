@@ -671,13 +671,27 @@ def _http_request(
     params: dict[str, str],
     timeout: float,
     accept: str,
+    *,
+    method: str = "GET",
 ) -> bytes:
-    query = urllib.parse.urlencode(params, doseq=True)
-    request = urllib.request.Request(
-        f"{endpoint}?{query}",
-        headers={"Accept": accept, "User-Agent": "mednews-thesis/0.1"},
-        method="GET",
-    )
+    encoded_params = urllib.parse.urlencode(params, doseq=True).encode("utf-8")
+    request_method = method.upper()
+    headers = {"Accept": accept, "User-Agent": "mednews-thesis/0.1"}
+    if request_method == "POST":
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        request = urllib.request.Request(
+            endpoint,
+            data=encoded_params,
+            headers=headers,
+            method=request_method,
+        )
+    else:
+        query = encoded_params.decode("ascii")
+        request = urllib.request.Request(
+            f"{endpoint}?{query}",
+            headers=headers,
+            method=request_method,
+        )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as result:
             return result.read()
@@ -713,6 +727,7 @@ def _search_pubmed(
             params,
             timeout,
             "application/json",
+            method="POST",
         ).decode("utf-8", errors="replace")
     )
     return [str(value) for value in payload.get("esearchresult", {}).get("idlist", [])]
@@ -1611,6 +1626,7 @@ def _fetch_pubmed(
             params,
             timeout,
             "application/xml",
+            method="POST",
         )
     )
     records: dict[str, dict[str, Any]] = {}
