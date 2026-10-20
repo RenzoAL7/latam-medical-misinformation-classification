@@ -47,14 +47,6 @@ def test_evidence_rejection_reason_is_explicit() -> None:
     assert module._evidence_rejection_reason({"evidence_status": "NO_RESULTS"}) == "PUBMED_NO_RESULTS"
 
 
-def test_retrieval_rejections_are_written_under_translate() -> None:
-    module = _load_module()
-
-    assert module._retrieval_rejected_object_name(
-        "silver/rejected", "run_123"
-    ) == "silver/rejected/translate/translate_run_123.jsonl"
-
-
 def test_evidence_output_carries_training_text_and_audit_fields() -> None:
     module = _load_module()
     row = module._base_output_row(
@@ -113,7 +105,7 @@ def test_embedding_ranking_sets_best_pmid_even_before_translation(monkeypatch) -
     assert "best_cosine_similarity" not in row
 
 
-def test_translation_stage_consumes_flat_translate_jsonl_and_publishes_evidence(monkeypatch) -> None:
+def test_translation_continuation_chains_without_refetching_pubmed_or_embeddings(monkeypatch) -> None:
     module = _load_module()
 
     class FakeStorage:
@@ -140,21 +132,20 @@ def test_translation_stage_consumes_flat_translate_jsonl_and_publishes_evidence(
             "record_id": "news_001",
             "claim_id": claim_id,
             "article": {"title": "Noticia médica", "country": "pe"},
-            "body": "Cuerpo completo de la noticia.",
             "llm_status": "OK",
             "claim_text": f"Claim {claim_id}",
             "claim_text_en": f"Claim {claim_id}",
             "pubmed_query_en": f"query {claim_id}",
             "claim_type": "tratamiento",
-            "evidence_status": "OK",
-            "evidence_error": "",
+            "evidence_status": "ERROR",
+            "evidence_error": "TRANSLATION_TIME_BUDGET",
             "pubmed_result_count": 1,
             "best_pmid": pmid,
             "best_embedding_similarity": "0.7",
             "embedding_status": "OK",
             "embedding_model": "cohere.embed-v4.0",
-            "translation_status": "PENDING",
-            "translation_error": "",
+            "translation_status": "TIME_BUDGET",
+            "translation_error": "Translation time budget reached",
             "candidates": [
                 {
                     "pmid": pmid,
@@ -166,12 +157,25 @@ def test_translation_stage_consumes_flat_translate_jsonl_and_publishes_evidence(
             ],
         }
 
-    translate_object = "silver/translate/translate_run_parent.jsonl"
+    parent_object = "silver/evidence/run_id=run_parent/evidence.jsonl"
     first = record("c01", "111")
     second = record("c02", "222")
+    job_prefix = "silver/evidence-translation-jobs"
+    job_object = module._translation_job_object_name(job_prefix, "run_parent", 1)
+    job = module._translation_job_document(
+        "run_parent",
+        parent_object,
+        "silver/claims/run_id=claims_parent/claims.jsonl",
+        1,
+        1,
+        3,
+        [{"record": first, "attempt": 0}, {"record": second, "attempt": 0}],
+        [],
+    )
     storage = FakeStorage(
         {
-            translate_object: (json.dumps(first) + "\n" + json.dumps(second) + "\n").encode("utf-8"),
+            parent_object: (json.dumps(first) + "\n" + json.dumps(second) + "\n").encode("utf-8"),
+            job_object: json.dumps(job).encode("utf-8"),
         }
     )
     monkeypatch.setattr(module, "_object_storage_client", lambda: storage)
@@ -193,31 +197,43 @@ def test_translation_stage_consumes_flat_translate_jsonl_and_publishes_evidence(
     monkeypatch.setenv("OBJECT_STORAGE_NAMESPACE", "ns")
     monkeypatch.setenv("OBJECT_STORAGE_BUCKET", "bucket")
     monkeypatch.setenv("GOOGLE_TRANSLATION_SECRET_OCIDS", "secret")
-    monkeypatch.setenv("PIPELINE_MODE", "translation")
-    monkeypatch.setenv("SILVER_TRANSLATE_PREFIX", "silver/translate")
-    monkeypatch.setenv("SILVER_EVIDENCE_PREFIX", "silver/evidence")
-    monkeypatch.setenv("SILVER_REJECTED_PREFIX", "silver/rejected")
-    monkeypatch.setenv("TRANSLATION_MAX_SECONDS", "60")
-    monkeypatch.setenv("TRANSLATION_TIME_BUFFER", "1")
+    monkeypatch.setenv("SILVER_TRANSLATION_JOB_PREFIX", job_prefix)
+    monkeypatch.setenv("TRANSLATION_CONTINUATION_MAX_SECONDS", "60")
+    monkeypatch.setenv("TRANSLATION_CONTINUATION_TIME_BUFFER", "1")
 
-    event = {"data": {"resourceName": translate_object, "additionalDetails": {"bucketName": "bucket"}}}
-    response = module.handler(None, io.BytesIO(json.dumps(event).encode("utf-8")))
-    result = json.loads(response.response_data)
-    assert result["status"] == "complete"
+    first_event = {"data": {"resourceName": job_object, "additionalDetails": {"bucketName": "bucket"}}}
+    first_response = module._handler_translation_continuation(
+        None, io.BytesIO(json.dumps(first_event).encode("utf-8"))
+    )
+    first_result = json.loads(first_response.response_data)
+    assert first_result["status"] == "continued"
+    next_job_object = first_result["next_job_object"]
+    assert next_job_object in storage.objects
+
+    duplicate_response = module._handler_translation_continuation(
+        None, io.BytesIO(json.dumps(first_event).encode("utf-8"))
+    )
+    assert json.loads(duplicate_response.response_data)["status"] == "already_complete"
+
+    second_event = {"data": {"resourceName": next_job_object, "additionalDetails": {"bucketName": "bucket"}}}
+    second_response = module._handler_translation_continuation(
+        None, io.BytesIO(json.dumps(second_event).encode("utf-8"))
+    )
+    second_result = json.loads(second_response.response_data)
+    assert second_result["status"] == "complete"
     final_records = [
         json.loads(line)
-        for line in storage.objects[result["object_name"]].decode("utf-8").splitlines()
+        for line in storage.objects[second_result["object_name"]].decode("utf-8").splitlines()
     ]
     assert [item["claim_id"] for item in final_records] == ["c01", "c02"]
     assert all(item["evidence_status"] == "OK" for item in final_records)
     assert all(item["translation_status"] == "OK" for item in final_records)
     assert all(item["candidates"][0]["abstract_es"] for item in final_records)
-    assert all(item["body"] == "Cuerpo completo de la noticia." for item in final_records)
-    assert result["manifest_object"] == "silver/evidence/evidence_run_parent.manifest.json"
-    assert not any(name.startswith("silver/rejected/") for name in storage.objects)
 
 
-def test_translation_failure_is_written_to_rejected(monkeypatch) -> None:
+def test_retrieval_continuation_serializes_large_claim_fanout(monkeypatch) -> None:
+    """A parent keeps every claim while only one bounded tranche hits PubMed."""
+
     module = _load_module()
 
     class FakeStorage:
@@ -236,45 +252,141 @@ def test_translation_failure_is_written_to_rejected(monkeypatch) -> None:
             self.status_code = status_code
             self.headers = headers or {}
 
-    translate_object = "silver/translate/translate_run_failed.jsonl"
-    record = {
-        "schema_version": "evidence.v1",
-        "run_id": "run_failed",
-        "evidence_run_id": "run_failed",
-        "record_id": "news_001",
-        "claim_id": "c01",
-        "article": {"title": "Noticia"},
-        "body": "Cuerpo",
-        "llm_status": "OK",
-        "claim_text": "Claim",
-        "claim_text_en": "Claim",
-        "pubmed_query_en": "claim",
-        "evidence_status": "OK",
-        "embedding_status": "OK",
-        "translation_status": "PENDING",
-        "candidates": [{"pmid": "111", "title": "Study", "abstract_excerpt": "Abstract"}],
-    }
-    storage = FakeStorage({translate_object: (json.dumps(record) + "\n").encode("utf-8")})
+    body_object = "silver/body/body_parent.csv"
+    claims_object = "silver/claims/run_id=claims_parent/claims.jsonl"
+    claim_ids = ["news_001_c01", "news_002_c01", "news_003_c01"]
+    claims_records = []
+    for number, claim_id in enumerate(claim_ids, start=1):
+        record_id = f"news_{number:03d}"
+        claims_records.append(
+            {
+                "schema_version": "claims.v1",
+                "record_id": record_id,
+                "source_body_object": body_object,
+                "llm_status": "OK",
+                "article": {"title": f"Noticia {number}", "country": "pe"},
+                "claims": [
+                    {
+                        "claim_id": claim_id,
+                        "claim_index": 1,
+                        "claim_text": f"El tratamiento {number} mejora el resultado.",
+                        "claim_text_en": f"Treatment {number} improves the outcome.",
+                        "pubmed_query_en": f"treatment {number} outcome",
+                        "query_status": "OK",
+                        "claim_type": "tratamiento",
+                        "is_claim_eligible": True,
+                    }
+                ],
+            }
+        )
+    body_rows = [
+        "record_id,country,source_name,canonical_url,title,topic,body,extraction_status",
+        *[
+            f"news_{number:03d},pe,Fuente,https://example.test/{number},Noticia {number},health,Texto médico {number},OK"
+            for number in range(1, 4)
+        ],
+    ]
+    storage = FakeStorage(
+        {
+            body_object: ("\n".join(body_rows) + "\n").encode("utf-8"),
+            claims_object: (
+                "".join(json.dumps(record) + "\n" for record in claims_records)
+            ).encode("utf-8"),
+        }
+    )
+
     monkeypatch.setattr(module, "_object_storage_client", lambda: storage)
     monkeypatch.setattr(module, "_vault_secret_value", lambda _secret: "translation-key")
-    monkeypatch.setattr(module, "_translate_batch", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("provider down")))
-    monkeypatch.setattr(module, "_translate_row_individually", lambda *args, **kwargs: ({}, ["provider down"], 1, set()))
+    monkeypatch.setattr(module, "_search_pubmed", lambda query, *_args: [f"pmid-{query.split()[1]}"])
+    monkeypatch.setattr(
+        module,
+        "_fetch_pubmed",
+        lambda pmids, *_args: {
+            pmid: {
+                "pmid": pmid,
+                "title": "Clinical study",
+                "abstract": "A biomedical abstract with usable evidence.",
+                "journal": "Journal",
+                "publication_date": "2026",
+                "doi": "",
+                "publication_types": ["Clinical Trial"],
+            }
+            for pmid in pmids
+        },
+    )
+    monkeypatch.setattr(module, "_generative_ai_client", lambda *_args: object())
+    monkeypatch.setattr(
+        module,
+        "_embed_in_batches",
+        lambda _client, texts, *_args: [[1.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(
+        module,
+        "_translate_batch",
+        lambda _key, _model, rows, _tokens, _timeout: {
+            module._claim_identity(row): {
+                candidate["pmid"]: "Un abstract biomédico en español."
+                for candidate in module._candidate_list(row)
+            }
+            for row in rows
+        },
+    )
     monkeypatch.setattr(module.response, "Response", FakeResponse)
+    monkeypatch.setenv("PIPELINE_SCHEMA", "v1")
+    monkeypatch.setenv("PIPELINE_MODE", "retrieve")
     monkeypatch.setenv("OBJECT_STORAGE_NAMESPACE", "ns")
     monkeypatch.setenv("OBJECT_STORAGE_BUCKET", "bucket")
-    monkeypatch.setenv("PIPELINE_MODE", "translation")
+    monkeypatch.setenv("GENAI_COMPARTMENT_ID", "compartment")
+    monkeypatch.setenv("PUBMED_EMAIL", "research@example.test")
     monkeypatch.setenv("GOOGLE_TRANSLATION_SECRET_OCIDS", "secret")
-    monkeypatch.setenv("TRANSLATION_MAX_SECONDS", "60")
-    monkeypatch.setenv("TRANSLATION_TIME_BUFFER", "1")
+    monkeypatch.setenv("EVIDENCE_MAX_SECONDS", "60")
+    monkeypatch.setenv("EVIDENCE_TIME_BUFFER", "1")
+    monkeypatch.setenv("RETRIEVAL_CONTINUATION_ENABLED", "true")
+    monkeypatch.setenv("RETRIEVAL_CONTINUATION_MAX_CLAIMS", "1")
+    monkeypatch.setenv("RETRIEVAL_CONTINUATION_MAX_SECONDS", "60")
+    monkeypatch.setenv("RETRIEVAL_CONTINUATION_TIME_BUFFER", "1")
+    monkeypatch.setenv("SILVER_RETRIEVAL_JOB_PREFIX", "silver/evidence-retrieval-jobs")
+    monkeypatch.setenv("SILVER_RETRIEVAL_STAGE_PREFIX", "silver/evidence-retrieval-stage")
 
-    event = {"data": {"resourceName": translate_object, "additionalDetails": {"bucketName": "bucket"}}}
-    response = module.handler(None, io.BytesIO(json.dumps(event).encode("utf-8")))
-    result = json.loads(response.response_data)
-    assert result["status"] == "failed"
-    rejected_translate = "silver/rejected/translate/translate_run_failed.jsonl"
-    rejected_evidence = "silver/rejected/evidence/evidence_run_failed.jsonl"
-    assert rejected_translate in storage.objects
-    assert rejected_evidence in storage.objects
-    rejected_record = json.loads(storage.objects[rejected_translate].decode("utf-8").strip())
-    assert rejected_record["translation_status"] == "ERROR"
-    assert rejected_record["evidence_status"] == "ERROR"
+    parent_event = {"data": {"resourceName": claims_object, "additionalDetails": {"bucketName": "bucket"}}}
+    parent_response = module.handler(None, io.BytesIO(json.dumps(parent_event).encode("utf-8")))
+    parent_result = json.loads(parent_response.response_data)
+    assert parent_result["status"] == "partial"
+    assert parent_result["continuation"]["stage"] == "retrieval_continuation"
+    parent_records = [
+        json.loads(line)
+        for line in storage.objects[parent_result["object_name"]].decode("utf-8").splitlines()
+    ]
+    assert len(parent_records) == 3
+    assert sum(record["evidence_status"] == "OK" for record in parent_records) == 1
+    assert sum(
+        record["evidence_error"] == "EVIDENCE_RETRIEVAL_CONTINUATION_QUEUED"
+        for record in parent_records
+    ) == 2
+
+    monkeypatch.setenv("PIPELINE_MODE", "retrieval_continuation")
+    first_job = parent_result["continuation"]["job_object"]
+    first_event = {"data": {"resourceName": first_job, "additionalDetails": {"bucketName": "bucket"}}}
+    first_response = module.handler(None, io.BytesIO(json.dumps(first_event).encode("utf-8")))
+    first_result = json.loads(first_response.response_data)
+    assert first_result["status"] == "continued"
+    duplicate_response = module.handler(None, io.BytesIO(json.dumps(first_event).encode("utf-8")))
+    assert json.loads(duplicate_response.response_data)["status"] == "already_complete"
+
+    second_event = {
+        "data": {
+            "resourceName": first_result["next_job_object"],
+            "additionalDetails": {"bucketName": "bucket"},
+        }
+    }
+    second_response = module.handler(None, io.BytesIO(json.dumps(second_event).encode("utf-8")))
+    second_result = json.loads(second_response.response_data)
+    assert second_result["status"] == "complete"
+    final_records = [
+        json.loads(line)
+        for line in storage.objects[second_result["object_name"]].decode("utf-8").splitlines()
+    ]
+    assert [record["claim_id"] for record in final_records] == claim_ids
+    assert all(record["evidence_status"] == "OK" for record in final_records)
+    assert all(record["embedding_status"] == "OK" for record in final_records)
+    assert all(record["translation_status"] == "OK" for record in final_records)

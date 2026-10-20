@@ -6,12 +6,12 @@ Gemini o NewsData.
 
 ## Activación segura
 
-Para una corrida v1 limpia, activa el schedule de captura de las 08:00 Lima,
-las reglas Events y el timer de Label Studio del proyecto multi-claim. Mantén
-inactivos el schedule de las 20:00 y los drenajes horarios: su payload global
-puede seleccionar trabajo histórico, mientras que v1 debe avanzar por el
-objeto fuente que dispara cada evento. Esta activación no autoriza borrar ni
-reprocesar datos existentes.
+El despliegue de producción actual usa dos capturas aisladas por evento: 08:00
+y 20:00 Lima. Ambas avanzan exclusivamente desde su propio objeto Bronze a
+través de las reglas Events y el timer de Label Studio del proyecto
+multi-claim. Los drenajes horarios permanecen inactivos porque su payload
+global puede seleccionar trabajo histórico. Esta activación no autoriza borrar
+ni reprocesar datos existentes.
 
 ## Resumen por corrida
 
@@ -20,16 +20,17 @@ reprocesar datos existentes.
 | NewsData | Scheduler 08:00 Lima | hasta 50 noticias nuevas | 150 s + 10 s | `bronze/*.csv` |
 | Body | Event Bronze | hasta 50 cuerpos | 150 s + 10 s | `silver/body/*.csv` |
 | Claims | Event Body | todas las noticias válidas del objeto | 270 s + 20 s | `claims.jsonl` + manifest |
-| Evidence | Event Claims JSONL | todos los claims elegibles del objeto | 285 s + 10 s | `evidence.jsonl` + manifest |
+| Evidence | Event Claims JSONL | inventario completo + primer tramo de hasta 8 claims | 285 s + 10 s | `evidence.jsonl` + manifest |
+| Continuación recuperación | Event `*.job.json` | hasta 8 claims pendientes, serial | 285 s + 10 s | Evidence final consolidado |
 | Continuación traducción | Event `*.job.json` | hasta 4 claims ya recuperados | 285 s + 10 s | Evidence final consolidado |
 | Revisión | Persona | una tarea por claim | sin timeout OCI | Gold por noticia |
 
-Claims y Evidence no usan un drenaje de payload vacío en v1. Si no alcanzan
-tiempo o un proveedor falla, guardan el estado por artículo o claim y el
-manifest queda `PARTIAL` o `FAILED`. La única continuación automática es la
-de traducción: consume el `evidence.jsonl` parcial ya escrito, nunca el objeto
-histórico de Claims ni Body, y solo se programa para errores transitorios con
-LLM y Embed 4 ya correctos.
+Claims y Evidence no usan un drenaje de payload vacío en v1. Si un objeto de
+Claims supera el tramo seguro, Evidence conserva cada claim en el padre y
+encadena una recuperación serial desde ese mismo objeto inmutable. Si un
+proveedor falla, mantiene el estado por artículo o claim y el manifest queda
+`PARTIAL` o `FAILED`. La continuación de traducción se programa después de
+que PubMed y Embed 4 terminaron, por lo que no los vuelve a consultar.
 
 ## Cardinalidad: qué se limita y qué no
 
@@ -43,9 +44,11 @@ EVIDENCE_MAX_ROWS=0
 ```
 
 El primer valor permite todas las noticias válidas del Body disparador; el
-segundo conserva todos los claims detectados y el tercero procesa todos los
-claims elegibles de `claims.jsonl`. Los lotes de cinco artículos para Gemini
-limitan solo el tamaño de una solicitud, no la cantidad total de claims.
+segundo conserva todos los claims detectados y el tercero conserva el
+inventario de todos los claims elegibles de `claims.jsonl`. La recuperación se
+serializa en tramos de ocho cuando hace falta, sin modificar esa cardinalidad.
+Los lotes de cinco artículos para Gemini limitan solo el tamaño de una
+solicitud, no la cantidad total de claims.
 
 El ahorro se aplica a los candidatos:
 
@@ -124,44 +127,70 @@ cantidad de abstracts ni el costo unitario. Las cuotas reales dependen del
 tenancy y región; se revisan en OCI antes de elevar más el paralelismo o el
 tamaño de lote.
 
-## Etapa de traducción
+## Continuación de recuperación y traducciones
 
-Retrieval termina después de PubMed y Embed 4 y deja todos los candidatos en
-`silver/translate/translate_<run_id>.jsonl`. La Function
-`continue-evidence-translation` consume exactamente ese objeto, traduce los
-abstracts que aún no tienen `abstract_es` y escribe
-`silver/evidence/evidence_<run_id>.jsonl`. No vuelve a buscar en PubMed ni a
-llamar a Embed 4, por lo que el presupuesto de traducción es independiente del
-de recuperación.
+`continue-evidence-retrieval` evita que un lote grande se agote antes de
+consultar todos sus claims. El Evidence padre contiene una fila por claim: los
+no iniciados quedan marcados como en cola y un job inmutable conserva solo sus
+identidades. Cada invocación recupera, embebe y traduce como máximo ocho claims
+y crea el siguiente job únicamente después de escribir su etapa. Al final
+fusiona las etapas con el padre y publica un `evidence.jsonl` estándar. Los
+reintentos de PubMed, red, Embed 4 o presupuesto se limitan a tres por claim;
+una falla persistente sigue visible como `ERROR`.
 
-Si una traducción falla o se agota el presupuesto, el claim queda visible como
-`ERROR` y se copia en `silver/rejected/translate/` y
-`silver/rejected/evidence/`. No se generan jobs, staging ni `part-0001`: una
-invocación procesa el JSONL completo de su corrida y los errores se conservan
-como artefactos explícitos.
+## Continuación de traducciones
+
+La continuación evita que un lote con muchos claims pierda evidencia por el
+límite de cinco minutos. Evidence escribe un job solo para claims con
+`translation_status=TIME_BUDGET`, `PARTIAL` o un error temporal de Gemini y
+con `llm_status=OK` y `embedding_status=OK`. Cada job conserva los candidatos
+con sus PMIDs, abstracts originales, scores y vectores ya calculados.
+
+`continue-evidence-translation` procesa un máximo de cuatro claims por
+invocación, con una sola ola de Gemini (`TRANSLATION_CONTINUATION_PARALLELISM=1`)
+para reducir errores 429/503. Si todavía hay trabajo, escribe un único job
+siguiente; si termina, fusiona sus resultados con el Evidence padre y publica
+un nuevo `evidence.jsonl` estándar bajo
+`run_id=<parent>_translation_final`. Los intentos se limitan a tres por claim;
+si los tres fallan, el claim sigue visible como `ERROR`, no se afirma que esté
+verificado.
+
+Los costos adicionales son exclusivamente de Gemini para abstracts que no
+tengan `abstract_es`; no hay nueva búsqueda PubMed ni nuevas llamadas Embed 4.
+Los objetos intermedios bajo `silver/evidence-translation-stage/` son de
+auditoría y no llegan a Label Studio.
 
 ## Qué llega a Label Studio
 
-Un claim se importa solo si simultáneamente:
+Un claim se importa si cumple una de estas dos rutas revisables:
 
 ```text
+# evidencia utilizable
 llm_status=OK
 evidence_status=OK
 embedding_status=OK
 translation_status=OK
+
+# resultado terminal de PubMed para triage humano
+llm_status=OK
+evidence_status=NO_RESULTS o NO_ABSTRACT
+embedding_status=SKIPPED_NO_EVIDENCE
+translation_status=SKIPPED_NO_EVIDENCE
 ```
 
-Esto evita tratar como evidencia útil una fila con error de infraestructura.
-Un manifest `PARTIAL` no bloquea los demás claims: la revisión manual importa
-solo las filas que cumplen esta compuerta y conserva las fallidas fuera de
-Label Studio. Cuando aparece el manifest final de continuación, el importador
-manual deduplica por `record_id::claim_id`: añade solo los claims recuperados y
-no duplica ni sobrescribe una anotación humana existente.
+La segunda ruta nunca se presenta como evidencia que apoya o contradice el
+claim; permite que la persona revisora determine materialidad y, si es central,
+registre `NO_DETERMINABLE`. Esto evita tratar un error de infraestructura como
+evidencia útil. Un manifest `PARTIAL` no bloquea los demás claims: el
+sincronizador importa solo las filas revisables y conserva las fallidas fuera
+de Label Studio. Cuando aparece el manifest final de continuación, el
+importador deduplica por `record_id::claim_id`: añade solo los claims
+recuperados y no duplica ni sobrescribe una anotación humana existente.
 Label Studio no recibe un `final_label`; la persona clasifica materialidad,
-relación de evidencia y veredicto del claim. Al construir Gold, la Function
-`build-labelstudio-training` usa el Evidence JSONL como inventario de todos los
-claims: si uno no fue revisable o no tiene revisión humana, bloquea la noticia.
-Solo entonces aplica la regla artículo: un claim central/material
+relación de evidencia y veredicto del claim. Al construir Gold,
+`build-labelstudio-training` usa el Evidence JSONL como inventario
+de todos los claims: si uno no fue revisable o no tiene revisión humana, bloquea
+la noticia. Solo entonces aplica la regla artículo: un claim central/material
 refutado implica `REFUTADA`; todos respaldados implica `RESPALDADA`; los
 otros casos quedan `NO_DETERMINABLE`.
 

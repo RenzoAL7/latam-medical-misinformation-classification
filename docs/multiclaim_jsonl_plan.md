@@ -1,10 +1,11 @@
 # Contrato v1: múltiples claims y artefactos JSONL
 
-> Estado de migración (2026-10-19): el contrato `claims.v1`/`evidence.v1`, las
-> Functions x86 y las reglas Events Body -> Claims -> Translate -> Evidence
-> están activas. La revisión de Label Studio se alimenta mediante importación
-> manual; no se reactivan los drains históricos ni el schedule de las 20:00.
-> No mezclar objetos CSV históricos con los selectores JSONL.
+> Estado de despliegue (2026-10-20): el contrato `claims.v1`/`evidence.v1`, las
+> Functions x86, las reglas Events Claims -> Evidence y Jobs -> continuación,
+> y el proyecto multi-claim de Label Studio están activos. El sincronizador
+> consume manifests JSONL `COMPLETE` o `PARTIAL`. Las capturas de 08:00 y
+> 20:00 Lima avanzan por su objeto disparador; los drains históricos siguen
+> inactivos. No mezclar objetos CSV históricos con los selectores JSONL.
 
 ## Decisión de diseño
 
@@ -19,32 +20,33 @@ esa etiqueta, no son variables predictoras del primer modelo.
 
 ## Organización por corrida
 
-Cada etapa derivada debe conservar un `run_id` inmutable en el nombre del
-archivo y no sobrescribir la salida de otra corrida:
+Cada etapa derivada debe conservar un `run_id` inmutable y no sobrescribir la
+salida de otra corrida:
 
 ```text
 silver/
-  body/body_<run_id>.csv
-  claims/claims_<run_id>.jsonl
-  claims/claims_<run_id>.manifest.json
-  translate/translate_<run_id>.jsonl
-  translate/translate_<run_id>.manifest.json
-  evidence/evidence_<run_id>.jsonl
-  evidence/evidence_<run_id>.manifest.json
+  claims/
+    run_id=<run_id>/
+      claims.jsonl
+      manifest.json
+  evidence/
+    run_id=<run_id>/
+      evidence.jsonl
+      manifest.json
   rejected/
-    body/body_<run_id>.csv
-    claims/claims_<run_id>.jsonl
-    translate/translate_<run_id>.jsonl
-    evidence/evidence_<run_id>.jsonl
+    evidence/
+      run_id=<run_id>/
+        evidence.jsonl
 ```
 
 `JSONL` significa que cada línea es un objeto JSON independiente. No se crea
 un archivo por noticia ni por claim: se crea un archivo por etapa y corrida.
-Esto permite comparar versiones del prompt sin mezclar resultados de
-ejecuciones distintas. La v1 no hace drenajes globales: todo el objeto
-disparador se procesa en una sola invocación y cualquier degradación queda
-explícita en el manifest y en `rejected/`. La etapa Translate usa el JSONL ya
-persistido y no vuelve a procesar Claims, PubMed ni embeddings.
+Esto permite comparar versiones del prompt y mantener la trazabilidad sin
+mezclar resultados de ejecuciones distintas. La v1 no hace drenajes globales:
+todo el objeto disparador se procesa en una sola invocación y cualquier
+degradación queda explícita en el manifest. La excepción acotada es una cola de
+traducción que usa el Evidence parcial ya persistido; no vuelve a procesar
+Claims, PubMed ni embeddings.
 
 ## `claims.jsonl`
 
@@ -58,7 +60,7 @@ evitar duplicar payload innecesariamente.
   "schema_version": "claims.v1",
   "run_id": "20261013T080000Z",
   "record_id": "news_001",
-  "source_body_object": "silver/body/body_run_20261019T080000Z_ab12cd34.csv",
+  "source_body_object": "silver/body/body_current_abc.csv",
   "body_sha256": "...",
   "llm_status": "OK",
   "claims_count": 2,
@@ -99,13 +101,6 @@ Reglas mínimas:
   se configura de forma explícita un límite de emergencia.
 - `llm_status=OK` solo significa que la respuesta estructurada fue válida; no
   significa que la afirmación sea verdadera.
-- La extracción usa una política de alta cobertura: revisa título, subtítulo,
-  cuerpo y citas atribuidas, e incluye afirmaciones de medicina, salud pública
-  y sistema sanitario aunque parezcan verdaderas, negativas, polémicas o estén
-  atribuidas a otra persona. Conserva negación, modalidad, cifras, causalidad
-  y polaridad; no convierte el texto en una versión más positiva.
-- `claims: []` requiere haber revisado todo el artículo y significa únicamente
-  que no quedó una afirmación factual elegible. No es un veredicto de verdad.
 - `claim_id` debe ser único dentro de la corrida y relacionar Claims, Evidence,
   revisión humana y Gold.
 - La extracción no asigna `RESPALDADA` ni `REFUTADA`.
@@ -154,10 +149,12 @@ Los claims sin resultados o con abstracts inutilizables se conservan con su
 estado terminal y una lista `candidates` vacía. Una falla de LLM, Embed 4 o
 traducción hace que `evidence_status=ERROR`, por lo que ese claim no llega a
 Label Studio como si tuviera evidencia lista. Una respuesta Gemini bloqueada
-por `RECITATION` puede usar, dentro de la etapa de traducción y con presupuesto
-acotado, un resumen fiel marcado `PARAPHRASED`. Los fallos se copian en el
-subdirectorio correspondiente de `silver/rejected/`; no se crean jobs ni
-staging.
+por `RECITATION` puede usar, dentro de la misma invocación y con presupuesto de
+tiempo acotado, un resumen fiel marcado `PARAPHRASED`. Si al finalizar quedan
+solo errores de traducción temporales, se crea un job con esos `candidates`
+para `continue-evidence-translation`; al acabar publica un Evidence final con
+un nuevo `run_id` derivado del padre. Los errores de LLM, PubMed o Embed 4 no
+entran en esa cola.
 
 ## `manifest.json`
 
@@ -166,9 +163,6 @@ Cada corrida debe tener un manifest por etapa con, como mínimo:
 - `schema_version`, `run_id`, `stage`, `source_object` y versión del código;
 - `started_at`, `finished_at`, `elapsed_seconds` y estado de la corrida;
 - `articles_processed`, `articles_with_claims`, `articles_without_claims`;
-- `coverage.medical_articles_with_claims`,
-  `coverage.medical_articles_without_claims` y
-  `coverage.nonmedical_articles_without_claims`;
 - `claims_total`, `claims_truncated` y conteos por estado;
 - `evidence_claims_processed`, `candidates_total` y estados de PubMed,
   traducción y embeddings;
@@ -189,7 +183,7 @@ veredicto; el claim permanece en la auditoría y no determina la etiqueta. Si
 es `central` o `material`, también revisa `evidence_relation` y
 `claim_verdict`. Para `NO_RESULTS`/`NO_ABSTRACT`, un claim decisivo solo puede
 recibir `NO_DETERMINABLE`. Los errores técnicos no se convierten en veredictos.
-Después, el Function `build-labelstudio-training` genera una sola fila por
+Después, la Function `build-labelstudio-training` genera una sola fila por
 `record_id` solo cuando reúne el Evidence JSONL completo, la exportación de
 Label Studio y el Body de la misma corrida. Un resultado terminal
 `NO_RESULTS`/`NO_ABSTRACT` sí se puede revisar para clasificar materialidad y,
@@ -220,23 +214,23 @@ por `claim_id`, con claim y evidencia como entrada.
 
 ## Activación coordinada
 
-1. Mantener inactivos el schedule de las 20:00 y los drains históricos. Para
-   una corrida v1 limpia, activar solo el schedule de las 08:00 Lima y las
-   reglas Events; la revisión de Label Studio se opera manualmente.
+1. Mantener inactivos los drains históricos. Para las dos corridas productivas,
+   activar los schedules de las 08:00 y 20:00 Lima, las reglas Events y el
+   timer de Label Studio del proyecto multi-claim. Cada corrida debe recibir
+   solo el objeto que la disparó.
 2. Construir y subir las Functions para `linux/amd64`/`GENERIC_X86`; configurar
    `PIPELINE_SCHEMA=v1`, `LLM_MAX_ROWS=0`, `EVIDENCE_MAX_ROWS=0`,
    `PUBMED_CANDIDATES_FETCHED=5`.
-3. Mantener la regla Events Claims → retrieval para
-   `silver/claims/claims_*.jsonl` y la regla Translate → Evidence para
-   `silver/translate/translate_*.jsonl`; Body → Claims mantiene el CSV de Body
-   como entrada.
+3. Mantener la regla Events Claims → Evidence para
+   `silver/claims/run_id=*/claims.jsonl` y las reglas Jobs → continuación para
+   `silver/evidence-retrieval-jobs/*.job.json` y
+   `silver/evidence-translation-jobs/*.job.json`; Body → Claims mantiene el
+   CSV de Body como entrada.
 4. Crear o migrar explícitamente un proyecto limpio de Label Studio con
-   `config_multiclaim.xml`; importar manualmente el Evidence JSONL en formato
-   `jsonl`.
+   `config_multiclaim.xml`; configurar su sincronizador en formato `jsonl`.
 5. Ejecutar una corrida controlada nueva, revisar ambos manifests y completar
-   la revisión humana. Exportar después las anotaciones y subirlas manualmente
-   a `silver/annotations/labelstudio/`. El resultado define si se mantiene esa
-   activación, no si se habilitan automáticamente los schedules históricos.
+   la revisión humana. El resultado define si se mantiene esa activación, no si
+   se habilitan automáticamente los schedules históricos.
 
 La compatibilidad temporal debe ser explícita y con prefijos separados; los
 artefactos locales generados y los manifiestos con datos no se versionan.

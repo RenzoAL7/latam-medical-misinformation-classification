@@ -21,20 +21,26 @@ Cada tarea representa un `record_id::claim_id`. La persona revisora decide:
 
 Los errores técnicos no se convierten en veredictos humanos.
 
-## Flujo manual
+## Flujo operativo
 
-1. En la consola de OCI, descarga el Evidence JSONL de la corrida que quieras
-   revisar.
-2. Trabaja en el proyecto de Label Studio que ya tienes configurado y completa
-   la revisión por claim.
-3. Usa **Export > JSON** o **JSONL** para descargar las anotaciones terminadas.
-4. Sube manualmente ese export a:
+1. El servicio `mednews-labelstudio-sync` de la VM privada lee los manifests
+   de Evidence y ejecuta
+   [`sync_evidence_from_object_storage.py`](sync_evidence_from_object_storage.py)
+   de forma periódica. Crea o actualiza las tareas elegibles en este proyecto
+   sin duplicarlas: la identidad es `record_id::claim_id`.
+2. Se importan claims con los cuatro estados técnicos en `OK` y los resultados
+   terminales `NO_RESULTS` o `NO_ABSTRACT` con
+   `SKIPPED_NO_EVIDENCE`. Los errores técnicos transitorios no se presentan
+   como evidencia revisable.
+3. Trabaja en el proyecto de Label Studio y completa la revisión por claim.
+4. Usa **Export > JSON** o **JSONL** para descargar las anotaciones terminadas.
+5. Sube manualmente ese export a:
 
    ```text
    silver/annotations/labelstudio/labelstudio_<utc_timestamp>.json
    ```
 
-5. El Function `build-labelstudio-training` toma el export más reciente a las
+6. El Function `build-labelstudio-training` toma el export más reciente a las
    `14:00` (`America/Lima`) y publica:
 
    ```text
@@ -42,9 +48,9 @@ Los errores técnicos no se convierten en veredictos humanos.
    silver/rejected/training/training_<YYYYMMDD>.jsonl
    ```
 
-6. Descarga manualmente el CSV de `gold/training/` desde la consola de OCI y
+7. Descarga manualmente el CSV de `gold/training/` desde la consola de OCI y
    cópialo a `gold/training/` en este repositorio.
-7. Abre [`baseline.ipynb`](../experiments/models/01_tfidf_naive_bayes/baseline.ipynb)
+8. Abre [`baseline.ipynb`](../experiments/models/01_tfidf_naive_bayes/baseline.ipynb)
    y ajusta `GOLD_CSV` si cambiaste el nombre o ubicación local.
 
 El notebook consume únicamente `record_id`, `title`, `body` y `label`; no usa

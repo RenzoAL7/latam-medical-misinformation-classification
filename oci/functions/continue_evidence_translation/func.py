@@ -7,7 +7,7 @@ sixth OCI Function visible and testable in the repository while delegating to
 the shared module next to it.
 
 The production image is built from ``retrieve_pubmed_evidence/`` and the OCI
-Function is configured with ``PIPELINE_MODE=translation``.  The relative load
+Function is configured with ``PIPELINE_MODE=translation_continuation``.  The relative load
 below is therefore a repository-level source map and local entry point; it is
 not a second copy of the implementation.
 """
@@ -50,10 +50,10 @@ _SHARED_FUNCTION = _load_shared_function()
 
 
 def handler(ctx: Any, data: Any = None) -> Any:
-    """Dispatch only the translation mode of the shared Function."""
+    """Dispatch only the translation-continuation mode of the shared Function."""
 
     previous_mode = os.environ.get("PIPELINE_MODE")
-    os.environ["PIPELINE_MODE"] = "translation"
+    os.environ["PIPELINE_MODE"] = "translation_continuation"
     try:
         return _SHARED_FUNCTION.handler(ctx, data)
     finally:

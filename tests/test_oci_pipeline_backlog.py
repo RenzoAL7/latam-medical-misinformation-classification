@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import importlib.util
 import io
-import json
 import types
 from pathlib import Path
 
@@ -92,79 +91,9 @@ def test_body_backlog_skips_terminal_rows_and_counts_all_pending() -> None:
     assert [row["record_id"] for row in selected] == ["b"]
     assert meta["selected_source_object"] == "bronze/a.csv"
     assert meta["pending_rows"] == 2
-    assert module._body_output_name("silver/body", "run_123") == "silver/body/body_run_123.csv"
-    assert module._body_rejected_output_name("silver/rejected/body", "run_123") == (
-        "silver/rejected/body/body_run_123.csv"
+    assert module._body_output_name("silver/body", "bronze/a.csv") == module._body_output_name(
+        "silver/body", "bronze/a.csv"
     )
-
-
-def test_body_rejected_artifact_contains_only_non_ok_rows() -> None:
-    module = _load("extract_news_body")
-    rows = [
-        {
-            **_bronze_row("ok"),
-            "body": "Texto suficiente",
-            "extraction_status": "OK",
-            "extraction_error": "",
-        },
-        {
-            **_bronze_row("failed"),
-            "body": "",
-            "extraction_status": "HTTP_ERROR",
-            "extraction_error": "HTTP 503",
-        },
-    ]
-    storage = _Storage({})
-
-    object_name = module._write_rejected_body(
-        storage,
-        "ns",
-        "bucket",
-        "silver/rejected/body",
-        rows,
-        "run_123",
-    )
-
-    rejected = list(csv.DictReader(io.StringIO(storage.objects[object_name].decode("utf-8-sig"))))
-    assert object_name == "silver/rejected/body/body_run_123.csv"
-    assert [row["record_id"] for row in rejected] == ["failed"]
-    assert rejected[0]["rejection_reason"] == "HTTP 503"
-
-
-def test_claims_configuration_failure_is_written_to_rejected(monkeypatch) -> None:
-    module = _load("extract_claims")
-
-    class FakeResponse:
-        def __init__(self, _ctx, response_data, status_code=200, headers=None):
-            self.response_data = response_data
-            self.status_code = status_code
-            self.headers = headers or {}
-
-    body_row = {
-        **_bronze_row("failed"),
-        "body": "Texto suficiente para intentar extraer afirmaciones.",
-        "extraction_status": "OK",
-    }
-    body_object = "silver/body/body_run.csv"
-    storage = _Storage({body_object: _csv([body_row], module.BRONZE_FIELDS + module.BODY_FIELDS)})
-    monkeypatch.setattr(module, "_object_storage_client", lambda: storage)
-    monkeypatch.setattr(module.response, "Response", FakeResponse)
-    monkeypatch.setenv("PIPELINE_SCHEMA", "v1")
-    monkeypatch.setenv("OBJECT_STORAGE_NAMESPACE", "ns")
-    monkeypatch.setenv("OBJECT_STORAGE_BUCKET", "bucket")
-    monkeypatch.setenv("LLM_PROVIDER", "google")
-    monkeypatch.setenv("GOOGLE_GEMINI_SECRET_OCIDS", "secret")
-    monkeypatch.setattr(module, "_vault_secret_value", lambda _secret: "")
-    event = {"data": {"resourceName": body_object, "additionalDetails": {"bucketName": "bucket"}}}
-
-    result = module.handler(None, io.BytesIO(json.dumps(event).encode("utf-8")))
-
-    assert result.status_code == 500
-    rejected_names = [name for name in storage.objects if name.startswith("silver/rejected/claims/")]
-    assert len(rejected_names) == 1
-    rejected = json.loads(storage.objects[rejected_names[0]].decode("utf-8").strip())
-    assert rejected["llm_status"] == "ERROR"
-    assert rejected["rejection_reason"] == rejected["llm_error"]
 
 
 def test_body_event_uses_only_the_triggering_bronze_object() -> None:

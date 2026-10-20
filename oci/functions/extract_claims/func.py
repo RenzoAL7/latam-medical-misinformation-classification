@@ -36,7 +36,7 @@ from fdk import response
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-PROMPT_VERSION = "claim-extraction-v4-high-recall"
+PROMPT_VERSION = "claim-extraction-v3-english-pubmed"
 QUERY_PROMPT_VERSION = "pubmed-query-v1"
 DEFAULT_MODEL_ID = "google.gemini-2.5-flash"
 DEFAULT_GOOGLE_MODEL_ID = "gemini-3.5-flash-lite"
@@ -551,9 +551,6 @@ Reglas obligatorias:
 - Conserva cada record_id exactamente; no lo inventes ni lo cambies.
 - Mantén el mismo orden de los artículos.
 - Extrae la afirmación principal sin inventar datos ni completar información ausente.
-- Conserva exactamente la polaridad, negación, modalidad, cifras, comparaciones,
-  causalidad y atribución de la fuente; no conviertas una afirmación negativa o
-  controvertida en una recomendación positiva.
 - No decidas si la afirmación es verdadera o falsa; esa decisión requiere evidencia y revisión humana.
 - is_medical es false si el texto no trata sobre salud, enfermedad, medicina o bienestar.
 - is_claim_eligible es false y claim_text debe ser "" si no existe una afirmación médica concreta que pueda verificarse.
@@ -1172,14 +1169,8 @@ def _handler_legacy(ctx: Any, data: io.BytesIO | None = None) -> response.Respon
 def _claims_v1_object_names(prefix: str, run_id: str) -> tuple[str, str]:
     """Return immutable Claims data and manifest names for one invocation."""
 
-    base = prefix.strip("/")
-    return f"{base}/claims_{run_id}.jsonl", f"{base}/claims_{run_id}.manifest.json"
-
-
-def _claims_rejected_object_name(prefix: str, run_id: str) -> str:
-    """Return the rejected Claims artifact for one invocation."""
-
-    return f"{prefix.strip('/')}/claims_{run_id}.jsonl"
+    base = f"{prefix.strip('/')}/run_id={run_id}"
+    return f"{base}/claims.jsonl", f"{base}/manifest.json"
 
 
 def _write_jsonl_object(
@@ -1399,13 +1390,8 @@ Analiza todos los artículos. Devuelve únicamente JSON válido con esta forma:
 
 Reglas obligatorias:
 - Devuelve exactamente un item por artículo de entrada, mantiene el orden y conserva cada record_id.
-- Haz una pasada de cobertura sobre el título, subtítulo, cuerpo y citas o declaraciones atribuidas.
-- claims debe incluir TODAS las afirmaciones médicas, de salud pública o del sistema sanitario que sean distintas, concretas y verificables; no elijas solo la principal ni impongas un máximo.
-- Incluye afirmaciones sobre tratamientos, prevención, diagnóstico, síntomas, riesgos, causas, resultados, cifras, prevalencia, acceso a servicios, medicamentos, recursos o políticas sanitarias.
-- No descartes una afirmación por parecer verdadera, positiva, negativa, alarmista, polémica o por estar atribuida a un tercero o a una fuente confiable. La veracidad se decide después con evidencia y revisión humana.
-- Conserva la polaridad, negación, modalidad, cifras, comparaciones, causalidad y atribución del texto. No conviertas "no garantiza", "podría" o "se asocia" en una afirmación más fuerte o positiva.
-- Si una afirmación factual aparece en el título o subtítulo, inclúyela aunque el cuerpo sea breve.
-- Si no hay afirmaciones factuales médicas o sanitarias después de revisar todo el artículo, devuelve "claims": []. No devuelvas un arreglo vacío solo porque todavía no exista evidencia PubMed obvia.
+- claims debe incluir TODAS las afirmaciones médicas distintas, concretas y verificables que aparezcan en el artículo; no elijas solo la principal ni impongas un máximo.
+- Si no hay afirmaciones verificables, devuelve "claims": [].
 - No inventes datos, no completes información ausente y no decidas si una afirmación es verdadera o falsa.
 - Un claim debe ser una sola oración y no debe fusionar dos afirmaciones independientes.
 - Para cada claim elegible, claim_text_en es una traducción fiel y pubmed_query_en solo busca esa afirmación; ambos van en inglés.
@@ -1698,50 +1684,12 @@ def _claims_input_metrics(rows: list[dict[str, str]], max_body_chars: int) -> di
     }
 
 
-def _claims_coverage_metrics(records: list[dict[str, Any]]) -> dict[str, int]:
-    """Separate genuine zero-claim results from failed LLM rows.
-
-    A medical article with no extracted claim is an audit signal, not a true or
-    false label. Keeping this count in the manifest makes possible recall
-    audits visible without treating provider failures as model decisions.
-    """
-
-    successful = [
-        record
-        for record in records
-        if str(record.get("llm_status", "")).strip().upper() == "OK"
-    ]
-    zero_claims = [
-        record
-        for record in successful
-        if int(record.get("claims_count", 0) or 0) == 0
-    ]
-    return {
-        "medical_articles_with_claims": sum(
-            _as_bool(record.get("is_medical"))
-            for record in successful
-            if int(record.get("claims_count", 0) or 0) > 0
-        ),
-        "medical_articles_without_claims": sum(
-            _as_bool(record.get("is_medical")) for record in zero_claims
-        ),
-        "nonmedical_articles_without_claims": sum(
-            not _as_bool(record.get("is_medical")) for record in zero_claims
-        ),
-    }
-
-
 def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
     """Extract all claims from one Body event and write immutable JSONL output."""
 
     started = time.monotonic()
     now = datetime.now(timezone.utc)
     run_id = f"run_{now.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
-    namespace = ""
-    bucket = ""
-    source_object = ""
-    storage: Any | None = None
-    rejected_prefix = os.getenv("SILVER_REJECTED_CLAIMS_PREFIX", "silver/rejected/claims").strip("/")
     try:
         namespace = _required_env("OBJECT_STORAGE_NAMESPACE")
         bucket = _required_env("OBJECT_STORAGE_BUCKET")
@@ -1920,25 +1868,9 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
 
         claims_object, manifest_object = _claims_v1_object_names(claims_prefix, run_id)
         _write_jsonl_object(storage, namespace, bucket, claims_object, records)
-        rejected_records = []
-        for record in records:
-            if str(record.get("llm_status", "")).strip().upper() == "OK":
-                continue
-            rejected = dict(record)
-            rejected["rejection_reason"] = (
-                str(rejected.get("llm_error", "") or "").strip()
-                or str(rejected.get("llm_status", "") or "").strip()
-                or "CLAIMS_NOT_USABLE"
-            )
-            rejected_records.append(rejected)
-        rejected_object = ""
-        if rejected_records:
-            rejected_object = _claims_rejected_object_name(rejected_prefix, run_id)
-            _write_jsonl_object(storage, namespace, bucket, rejected_object, rejected_records)
         article_statuses = Counter(str(record.get("llm_status", "")) for record in records)
         claims_total = sum(int(record.get("claims_count", 0) or 0) for record in records)
         truncated_articles = sum(bool(record.get("claims_truncated")) for record in records)
-        coverage = _claims_coverage_metrics(records)
         manifest_status = "COMPLETE"
         if article_statuses.get("ERROR"):
             manifest_status = "FAILED" if article_statuses.get("OK", 0) == 0 else "PARTIAL"
@@ -1949,7 +1881,6 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "status": manifest_status,
             "source_object": source_object,
             "claims_object": claims_object,
-            "rejected_object": rejected_object,
             "started_at": now.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
             "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -1959,7 +1890,6 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "claims_total": claims_total,
             "articles_with_truncated_claims": truncated_articles,
             "llm_status_counts": dict(article_statuses),
-            "coverage": coverage,
             "recovery": {
                 "malformed_batches_split": split_recovery_batches,
                 "articles_retried_individually": split_recovery_articles,
@@ -1984,10 +1914,8 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "source_object": source_object,
             "object_name": claims_object,
             "manifest_object": manifest_object,
-            "rejected_object": rejected_object,
             "articles_processed": len(records),
             "claims_total": claims_total,
-            "coverage": coverage,
             "llm_requests": llm_requests,
             "llm_error": last_error,
             "elapsed_seconds": f"{time.monotonic() - started:.2f}",
@@ -2000,25 +1928,6 @@ def _handler_v1(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         )
     except Exception as exc:  # noqa: BLE001 - make configuration failure visible to OCI Events
         LOGGER.exception("extract-claims v1 failed")
-        if storage is not None and namespace and bucket:
-            try:
-                failed_source_row = {"source_silver_object": source_object}
-                failed_record = _failed_claims_v1_record(
-                    failed_source_row,
-                    run_id,
-                    os.getenv("LLM_MODEL_ID", "").strip(),
-                    f"{type(exc).__name__}: {exc}",
-                )
-                failed_record["rejection_reason"] = failed_record["llm_error"]
-                _write_jsonl_object(
-                    storage,
-                    namespace,
-                    bucket,
-                    _claims_rejected_object_name(rejected_prefix, run_id),
-                    [failed_record],
-                )
-            except Exception:  # noqa: BLE001 - preserve the original invocation failure
-                LOGGER.exception("Unable to persist Claims rejected artifact")
         return response.Response(
             ctx,
             response_data=json.dumps({"status": "error", "run_id": run_id, "message": str(exc)}),

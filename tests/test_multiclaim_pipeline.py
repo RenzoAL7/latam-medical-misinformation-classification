@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import types
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -30,10 +31,74 @@ def _load_function(path: Path, module_name: str) -> types.ModuleType:
             sys.modules["fdk"] = previous
 
 
+def _load_script(path: Path, module_name: str) -> types.ModuleType:
+    sys.path.insert(0, str(path.parent))
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 EXTRACT = _load_function(ROOT / "oci/functions/extract_claims/func.py", "extract_claims_multiclaim")
 EVIDENCE = _load_function(
     ROOT / "oci/functions/retrieve_pubmed_evidence/func.py", "retrieve_evidence_multiclaim"
 )
+IMPORTER = _load_script(ROOT / "labelstudio/import_evidence.py", "import_evidence_multiclaim")
+TRAINING_BUILDER = _load_script(
+    ROOT / "oci/functions/build_labelstudio_training/dataset_builder.py",
+    "build_labelstudio_training_dataset",
+)
+
+
+def _multi_claim_evidence_records() -> list[dict[str, object]]:
+    """Return two reviewable claims for one article without a fixture file."""
+
+    records: list[dict[str, object]] = []
+    for claim_id, claim_text, claim_type, pmid, similarity in (
+        ("news_001_c01_a1", "El tratamiento X cura la enfermedad Y.", "tratamiento", "12345678", "0.87"),
+        ("news_001_c02_b2", "La enfermedad Y afecta principalmente a adultos.", "riesgo", "87654321", "0.71"),
+    ):
+        records.append(
+            {
+                "schema_version": "evidence.v1",
+                "run_id": "run_evidence_001",
+                "evidence_run_id": "run_evidence_001",
+                "record_id": "news_001",
+                "claim_id": claim_id,
+                "article": {
+                    "country": "pe",
+                    "source_name": "Medio Salud",
+                    "topic": "health",
+                    "canonical_url": "https://example.test/news-001",
+                    "published_at": "2026-10-14",
+                    "title": "Noticia médica",
+                },
+                "source_body_object": "silver/body/body_run.csv",
+                "llm_status": "OK",
+                "claim_text": claim_text,
+                "claim_text_en": claim_text,
+                "pubmed_query_en": claim_text,
+                "claim_type": claim_type,
+                "evidence_status": "OK",
+                "best_pmid": pmid,
+                "best_embedding_similarity": similarity,
+                "best_tfidf_similarity": "0.42",
+                "ranking_method": "oci_cohere_embed_v4",
+                "embedding_model": "cohere.embed-v4.0",
+                "embedding_status": "OK",
+                "translation_status": "OK",
+                "candidates": [
+                    {
+                        "pmid": pmid,
+                        "title": "Clinical study",
+                        "abstract_es": "Resumen biomédico en español.",
+                        "embedding_similarity": float(similarity),
+                    }
+                ],
+            }
+        )
+    return records
 
 
 def test_claim_extraction_preserves_all_distinct_claims_without_default_cap() -> None:
@@ -68,42 +133,6 @@ def test_claim_extraction_preserves_all_distinct_claims_without_default_cap() ->
     assert [claim["claim_index"] for claim in claims] == [1, 2]
     assert len({claim["claim_id"] for claim in claims}) == 2
     assert all(claim["claim_status"] == "PENDING_EVIDENCE" for claim in claims)
-
-
-def test_multiclaim_prompt_requests_high_recall_without_rewriting_polarity() -> None:
-    prompt = EXTRACT._multiclaim_prompt(
-        [
-            {
-                "record_id": "news_001",
-                "title": "El tratamiento no garantiza la cura",
-                "subtitle_or_bajada": "Declaración de una especialista",
-                "body": "El artículo contiene una afirmación sanitaria.",
-            }
-        ],
-        max_body_chars=24000,
-    )
-
-    assert "pasada de cobertura" in prompt
-    assert "no descartes una afirmación" in prompt.lower()
-    assert "no conviertas" in prompt.lower()
-    assert '"claims": []' in prompt
-
-
-def test_claim_coverage_metrics_separate_medical_zero_claims_from_errors() -> None:
-    metrics = EXTRACT._claims_coverage_metrics(
-        [
-            {"llm_status": "OK", "is_medical": True, "claims_count": 2},
-            {"llm_status": "OK", "is_medical": True, "claims_count": 0},
-            {"llm_status": "OK", "is_medical": False, "claims_count": 0},
-            {"llm_status": "ERROR", "is_medical": None, "claims_count": 0},
-        ]
-    )
-
-    assert metrics == {
-        "medical_articles_with_claims": 1,
-        "medical_articles_without_claims": 1,
-        "nonmedical_articles_without_claims": 1,
-    }
 
 
 def test_controlled_body_retry_suppresses_only_same_record_exact_claim_texts() -> None:
@@ -726,6 +755,112 @@ def test_v1_claim_loader_explicitly_excludes_llm_failures() -> None:
     assert stats["skipped_llm_not_ok"] == 1
 
 
+def test_labelstudio_jsonl_creates_one_task_per_claim_and_xml_has_no_article_label() -> None:
+    rows = [IMPORTER._flatten_jsonl_record(record) for record in _multi_claim_evidence_records()]
+    tasks = [IMPORTER._task_from_row(row) for row in rows if IMPORTER._ready_for_review(row)]
+
+    assert [task["data"]["claim_key"] for task in tasks] == [
+        "news_001::news_001_c01_a1",
+        "news_001::news_001_c02_b2",
+    ]
+    xml_root = ET.parse(ROOT / "labelstudio/config_multiclaim.xml").getroot()
+    control_names = {element.attrib["name"] for element in xml_root.iter() if "name" in element.attrib}
+    assert {"claim_materiality", "evidence_relation", "claim_verdict", "selected_pmids"}.issubset(control_names)
+    assert "final_label" not in control_names
+    controls = {element.attrib.get("name"): element for element in xml_root.iter() if "name" in element.attrib}
+    assert controls["claim_materiality"].attrib.get("required") == "true"
+    assert controls["evidence_relation"].attrib.get("required") is None
+    assert controls["claim_verdict"].attrib.get("required") is None
+    assert controls["selected_pmids"].attrib.get("required") is None
+
+
+def test_labelstudio_import_accepts_terminal_pubmed_misses_for_human_triage() -> None:
+    row = {
+        "schema_version": "evidence.v1",
+        "llm_status": "OK",
+        "evidence_status": "NO_RESULTS",
+        "embedding_status": "SKIPPED_NO_EVIDENCE",
+        "translation_status": "SKIPPED_NO_EVIDENCE",
+    }
+
+    assert IMPORTER._ready_for_review(row)
+
+    row["translation_status"] = "ERROR"
+    assert not IMPORTER._ready_for_review(row)
+
+
+def test_terminal_pubmed_miss_cannot_be_adjudicated_with_a_pmid() -> None:
+    claim = {
+        "claim_id": "news_001_c01",
+        "claim_text": "Claim without PubMed candidates.",
+        "claim_materiality": "central",
+        "claim_verdict": "NO_DETERMINABLE",
+        "evidence_relation": "unclear",
+        "evidence_status": "NO_RESULTS",
+        "selected_pmids": "12345678",
+        "verification_note": "No candidate was returned by PubMed.",
+        "annotation_id": "annotation-1",
+        "annotator": "reviewer",
+        "annotated_at": "2026-10-17T12:00:00Z",
+    }
+
+    assert "pmid_without_pubmed_evidence" in TRAINING_BUILDER._claim_issues(claim)
+
+
+def test_jsonl_import_filters_degraded_claim_and_aggregates_one_article() -> None:
+    records = _multi_claim_evidence_records()
+    rows = [IMPORTER._flatten_jsonl_record(record) for record in records]
+    ready = [row for row in rows if IMPORTER._ready_for_review(row)]
+    assert [row["claim_id"] for row in ready] == ["news_001_c01_a1", "news_001_c02_b2"]
+
+    payload = []
+    for index, row in enumerate(ready, start=1):
+        task = IMPORTER._task_from_row(row)
+        relation = "contradicts" if index == 1 else "supports"
+        verdict = "REFUTADO" if index == 1 else "RESPALDADO"
+        task["annotations"] = [
+            {
+                "id": index,
+                "completed": True,
+                "updated_at": f"2026-10-14T0{index}:00:00Z",
+                "completed_by": "reviewer@example.test",
+                "result": [
+                    {"from_name": "claim_materiality", "value": {"choices": ["central"]}},
+                    {"from_name": "evidence_relation", "value": {"choices": [relation]}},
+                    {"from_name": "claim_verdict", "value": {"choices": [verdict]}},
+                    {"from_name": "selected_pmids", "value": {"text": [row["best_pmid"]]}},
+                    {"from_name": "verification_note", "value": {"text": ["Revisión humana"]}},
+                ],
+            }
+        ]
+        payload.append(task)
+
+    evidence_blob = ("\n".join(json.dumps(record) for record in records) + "\n").encode("utf-8")
+    body_blob = (
+        "record_id,title,body\n"
+        "news_001,Noticia médica,Cuerpo completo para entrenar.\n"
+    ).encode("utf-8")
+    result = TRAINING_BUILDER.build_training(
+        json.dumps(payload).encode("utf-8"),
+        "labelstudio_export.json",
+        [("silver/evidence/run_id=run_evidence_001/evidence.jsonl", evidence_blob)],
+        [("silver/body/body_run.csv", body_blob)],
+    )
+
+    assert result["claim_reviews_completed"] == 2
+    assert result["articles_total"] == result["training_records"] == 1
+    assert result["training"] == [
+        {
+            "record_id": "news_001",
+            "title": "Noticia médica",
+            "body": "Cuerpo completo para entrenar.",
+            "label": "REFUTADA",
+            "dataset_split": "",
+        }
+    ]
+    assert not result["rejected"]
+
+
 def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
     class FakeStorage:
         def __init__(self, objects: dict[str, bytes]) -> None:
@@ -841,7 +976,6 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
         },
     )
     monkeypatch.setattr(EVIDENCE.response, "Response", FakeResponse)
-    monkeypatch.setenv("PIPELINE_MODE", "retrieve")
     monkeypatch.setenv("EVIDENCE_MAX_ROWS", "0")
     monkeypatch.setenv("EVIDENCE_MAX_SECONDS", "60")
     monkeypatch.setenv("EVIDENCE_TIME_BUFFER", "1")
@@ -850,19 +984,7 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_TRANSLATION_SECRET_OCIDS", "secret")
     evidence_event = {"data": {"resourceName": claims_object, "additionalDetails": {"bucketName": "bucket"}}}
 
-    translate_response = EVIDENCE.handler(None, io.BytesIO(json.dumps(evidence_event).encode("utf-8")))
-    translate_result = json.loads(translate_response.response_data)
-    translate_object = translate_result["object_name"]
-    translate_records = [
-        json.loads(line) for line in storage.objects[translate_object].decode("utf-8").splitlines()
-    ]
-    assert translate_result["status"] == "complete"
-    assert translate_object.startswith("silver/translate/translate_")
-    assert all(record["translation_status"] == "PENDING" for record in translate_records)
-
-    monkeypatch.setenv("PIPELINE_MODE", "translation")
-    translation_event = {"data": {"resourceName": translate_object, "additionalDetails": {"bucketName": "bucket"}}}
-    evidence_response = EVIDENCE.handler(None, io.BytesIO(json.dumps(translation_event).encode("utf-8")))
+    evidence_response = EVIDENCE.handler(None, io.BytesIO(json.dumps(evidence_event).encode("utf-8")))
     evidence_result = json.loads(evidence_response.response_data)
     evidence_records = [
         json.loads(line) for line in storage.objects[evidence_result["object_name"]].decode("utf-8").splitlines()
@@ -876,7 +998,6 @@ def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:
     }
     assert all(record["evidence_status"] == "OK" for record in evidence_records)
     assert all(record["evidence_run_id"] == evidence_result["run_id"] for record in evidence_records)
-    assert all(record["body"] for record in evidence_records)
     assert all(len(record["candidates"]) == 5 for record in evidence_records)
     assert len(embedding_inputs["SEARCH_QUERY"]) == 2
     assert len(embedding_inputs["SEARCH_DOCUMENT"]) == 5

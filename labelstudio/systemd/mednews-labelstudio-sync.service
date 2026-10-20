@@ -1,0 +1,17 @@
+[Unit]
+Description=Synchronize review-ready MedNews Evidence JSONL claims to Label Studio
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/mednews-labelstudio-sync.env
+
+[Service]
+Type=oneshot
+User=opc
+Group=opc
+Environment=OBJECT_STORAGE_NAMESPACE=idur1kkrru56
+Environment=OBJECT_STORAGE_BUCKET=mednews-data
+Environment=OBJECT_STORAGE_PREFIX=silver/evidence
+Environment=LABEL_STUDIO_URL=http://127.0.0.1:18080
+EnvironmentFile=/etc/mednews-labelstudio-sync.env
+WorkingDirectory=/opt/mednews-labelstudio-sync/app
+ExecStart=/opt/mednews-labelstudio-sync/venv/bin/python /opt/mednews-labelstudio-sync/app/sync_evidence_from_object_storage.py --work-dir /opt/mednews-labelstudio-sync/state

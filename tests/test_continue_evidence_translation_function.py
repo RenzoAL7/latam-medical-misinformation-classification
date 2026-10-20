@@ -22,7 +22,7 @@ def _load_module() -> types.ModuleType:
     return module
 
 
-def test_translation_entrypoint_delegates_with_translation_mode(monkeypatch) -> None:
+def test_translation_entrypoint_delegates_with_translation_continuation_mode(monkeypatch) -> None:
     module = _load_module()
     calls: list[str | None] = []
 
@@ -34,7 +34,7 @@ def test_translation_entrypoint_delegates_with_translation_mode(monkeypatch) -> 
     monkeypatch.setenv("PIPELINE_MODE", "retrieve")
 
     assert module.handler(None, b"{}") == "translation-result"
-    assert calls == ["translation"]
+    assert calls == ["translation_continuation"]
     assert os.environ["PIPELINE_MODE"] == "retrieve"
 
 
@@ -43,7 +43,7 @@ def test_translation_entrypoint_restores_missing_mode(monkeypatch) -> None:
     monkeypatch.delenv("PIPELINE_MODE", raising=False)
 
     def fake_handler(_ctx, _data):
-        assert os.environ["PIPELINE_MODE"] == "translation"
+        assert os.environ["PIPELINE_MODE"] == "translation_continuation"
         return "ok"
 
     monkeypatch.setattr(module._SHARED_FUNCTION, "handler", fake_handler)

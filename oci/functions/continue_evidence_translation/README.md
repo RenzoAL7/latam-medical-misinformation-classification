@@ -3,7 +3,7 @@
 Esta es una segunda OCI Function que usa **la misma imagen x86** de
 `retrieve-pubmed-evidence`. El repositorio tiene ahora una entrada explícita en
 `func.py`, pero esa entrada delega al único código fuente compartido de
-`retrieve-pubmed-evidence` y fija `PIPELINE_MODE=translation`. Así las seis
+`retrieve-pubmed-evidence` y fija `PIPELINE_MODE=translation_continuation`. Así las seis
 Functions desplegadas quedan representadas en el repo sin mantener dos copias
 de la lógica de PubMed y traducción que puedan desalinearse.
 
@@ -14,24 +14,27 @@ crear una segunda imagen con una copia de `retrieve_pubmed_evidence/func.py`.
 
 ## Entrada y salida
 
-La regla Events le entrega únicamente objetos:
+La regla Events le entrega únicamente objetos de job inmutables:
 
 ```text
-silver/translate/translate_<run_id>.jsonl
+silver/evidence-translation-jobs/run_id=<parent>/job-0001.job.json
 ```
 
-El JSONL contiene claims que ya pasaron Claims, PubMed y Embed 4, con sus
-`candidates` y abstracts originales. La Function traduce solamente los
-abstracts que aún no tienen `abstract_es` y escribe:
+El job conserva los claims que ya pasaron Claims, PubMed y Embed 4, con sus
+`candidates`, abstracts originales, el Evidence padre y los objetos de staging
+ya procesados. La Function traduce solamente los abstracts que aún no tienen
+`abstract_es`, procesa como máximo cuatro claims por invocación y escribe:
 
-- `silver/evidence/evidence_<run_id>.jsonl` y su manifest;
-- errores en `silver/rejected/translate/` y `silver/rejected/evidence/`.
+- una etapa auditable en `silver/evidence-translation-stage/`;
+- el siguiente `*.job.json` si quedan claims o reintentos transitorios;
+- al final, `silver/evidence/run_id=<parent>_translation_final/evidence.jsonl`
+  y su manifest estándar.
 
-No se crean jobs, staging ni archivos `part-*`.
-
-No usa NewsData, Body, Claims, PubMed ni OCI Embed 4. Reintenta solo errores
-temporales de Gemini hasta tres veces y conserva un claim como `ERROR` si no
-se recupera.
+No usa NewsData, Body, Claims, PubMed ni OCI Embed 4 durante la continuación.
+Reintenta solo errores transitorios de Gemini hasta tres veces y conserva un
+claim como `ERROR` si no se recupera. El Evidence final mantiene la misma
+identidad `record_id::claim_id`, por lo que el sincronizador de Label Studio lo
+puede consumir sin una ruta especial.
 
 ## Configuración de la Function OCI
 
@@ -39,27 +42,30 @@ Clona la configuración no secreta de `retrieve-pubmed-evidence`, conserva el
 acceso a los mismos secretos de traducción y aplica:
 
 ```text
-PIPELINE_MODE=translation
+PIPELINE_MODE=translation_continuation
 PIPELINE_SCHEMA=v1
-SILVER_TRANSLATE_PREFIX=silver/translate
 SILVER_EVIDENCE_PREFIX=silver/evidence
-SILVER_REJECTED_PREFIX=silver/rejected
-TRANSLATION_MAX_SECONDS=285
-TRANSLATION_TIME_BUFFER=10
-TRANSLATION_PARALLELISM=2
+SILVER_TRANSLATION_JOB_PREFIX=silver/evidence-translation-jobs
+SILVER_TRANSLATION_STAGE_PREFIX=silver/evidence-translation-stage
+TRANSLATION_CONTINUATION_MAX_CLAIMS=4
+TRANSLATION_CONTINUATION_MAX_ATTEMPTS=3
+TRANSLATION_CONTINUATION_MAX_SECONDS=285
+TRANSLATION_CONTINUATION_TIME_BUFFER=10
+TRANSLATION_CONTINUATION_PARALLELISM=1
 ```
 
-La regla Events debe filtrar por el prefijo `silver/translate/` y el patrón
-`translate_*.jsonl`. No debe escuchar `silver/evidence/` ni `silver/rejected/`
-para no crear un bucle de invocaciones. Los errores conservan el registro del
-claim, su `body` y los candidatos recibidos.
+La regla Events debe filtrar por el prefijo
+`silver/evidence-translation-jobs/` y el sufijo `.job.json`. No debe escuchar
+el prefijo de staging ni `silver/evidence/` para no crear un bucle de
+invocaciones. Los jobs y etapas conservan el registro del claim y sus
+candidatos recibidos.
 
 ## Fuente compartida y despliegue
 
 `func.py` carga el módulo hermano
 `../retrieve_pubmed_evidence/func.py` únicamente para exponer la misma entrada
 de Function dentro de este directorio. La variable `PIPELINE_MODE` se fuerza a
-`translation` durante cada invocación y se restaura al terminar.
+`translation_continuation` durante cada invocación y se restaura al terminar.
 
 Para actualizar OCI, primero se construye la imagen desde
 `oci/functions/retrieve_pubmed_evidence/` y después se actualiza la Function

@@ -32,11 +32,6 @@ from fdk import response
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-DEFAULT_BODY_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-)
-
 
 BRONZE_FIELDS = [
     "record_id",
@@ -177,16 +172,10 @@ def _stable_token(object_name: str) -> str:
     return f"{readable}_{digest}"
 
 
-def _body_output_name(prefix: str, run_id: str) -> str:
-    """Return one immutable Body CSV for this invocation."""
+def _body_output_name(prefix: str, source_object: str) -> str:
+    """Return the one canonical Body CSV for a Bronze source."""
 
-    return f"{prefix.strip('/')}/body_{run_id}.csv"
-
-
-def _body_rejected_output_name(prefix: str, run_id: str) -> str:
-    """Return the rejected Body artifact for this invocation."""
-
-    return f"{prefix.strip('/')}/body_{run_id}.csv"
+    return f"{prefix.strip('/')}/body_current_{_stable_token(source_object)}.csv"
 
 
 def _body_row_is_terminal(row: dict[str, str]) -> bool:
@@ -630,56 +619,13 @@ def _write_silver(
     bucket: str,
     prefix: str,
     rows: list[dict[str, str]],
-    run_id: str,
+    source_object: str,
 ) -> str:
     csv_buffer = io.StringIO(newline="")
     writer = csv.DictWriter(csv_buffer, fieldnames=SILVER_FIELDS, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(rows)
-    object_name = _body_output_name(prefix, run_id)
-    client.put_object(
-        namespace_name=namespace,
-        bucket_name=bucket,
-        object_name=object_name,
-        put_object_body=io.BytesIO(csv_buffer.getvalue().encode("utf-8-sig")),
-        content_type="text/csv; charset=utf-8",
-    )
-    return object_name
-
-
-def _write_rejected_body(
-    client: Any,
-    namespace: str,
-    bucket: str,
-    prefix: str,
-    rows: list[dict[str, str]],
-    run_id: str,
-) -> str:
-    """Persist non-OK Body rows separately without triggering Claims."""
-
-    rejected_rows = []
-    for row in rows:
-        if row.get("extraction_status", "").strip().upper() == "OK":
-            continue
-        rejected = dict(row)
-        rejected["rejection_reason"] = (
-            rejected.get("extraction_error", "").strip()
-            or rejected.get("extraction_status", "").strip()
-            or "BODY_NOT_USABLE"
-        )
-        rejected_rows.append(rejected)
-    if not rejected_rows:
-        return ""
-
-    csv_buffer = io.StringIO(newline="")
-    writer = csv.DictWriter(
-        csv_buffer,
-        fieldnames=SILVER_FIELDS + ["rejection_reason"],
-        extrasaction="ignore",
-    )
-    writer.writeheader()
-    writer.writerows(rejected_rows)
-    object_name = _body_rejected_output_name(prefix, run_id)
+    object_name = _body_output_name(prefix, source_object)
     client.put_object(
         namespace_name=namespace,
         bucket_name=bucket,
@@ -712,11 +658,6 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
     started = time.monotonic()
     now = datetime.now(timezone.utc)
     run_id = f"run_{now.strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
-    namespace = ""
-    bucket = ""
-    source_object = ""
-    client: Any | None = None
-    rejected_prefix = os.getenv("SILVER_REJECTED_BODY_PREFIX", "silver/rejected/body").strip("/")
     try:
         namespace = _required_env("OBJECT_STORAGE_NAMESPACE")
         bucket = _required_env("OBJECT_STORAGE_BUCKET")
@@ -734,7 +675,7 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         max_text_chars = _env_int("BODY_MAX_TEXT_CHARS", 200_000, minimum=1_000)
         user_agent = os.getenv(
             "BODY_USER_AGENT",
-            DEFAULT_BODY_USER_AGENT,
+            "Mozilla/5.0 (compatible; mednews-thesis/0.2; +research contact)",
         ).strip()
         if time_buffer >= max_seconds:
             raise RuntimeError("BODY_TIME_BUFFER must be smaller than BODY_MAX_SECONDS")
@@ -786,22 +727,26 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
 
         object_name = ""
         if output_rows:
+            canonical_name = _body_output_name(silver_prefix, source_object)
+            existing_rows = (
+                _read_csv_object(client, namespace, bucket, canonical_name)
+                if canonical_name in _list_csv_objects(client, namespace, bucket, silver_prefix)
+                else []
+            )
+            merged = {
+                row.get("record_id", ""): row
+                for row in existing_rows
+                if row.get("record_id", "")
+            }
+            merged.update({row["record_id"]: row for row in output_rows})
             object_name = _write_silver(
                 client,
                 namespace,
                 bucket,
                 silver_prefix,
-                sorted(output_rows, key=lambda row: row.get("record_id", "")),
-                run_id,
+                sorted(merged.values(), key=lambda row: row.get("record_id", "")),
+                source_object,
             )
-        rejected_object = _write_rejected_body(
-            client,
-            namespace,
-            bucket,
-            rejected_prefix,
-            output_rows,
-            run_id,
-        )
         statuses = Counter(row["extraction_status"] for row in output_rows)
         terminal_written = sum(1 for row in output_rows if _body_row_is_terminal(row))
         pending_total = int(scan_meta.get("pending_rows", 0))
@@ -811,7 +756,6 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
             "bucket": bucket,
             "mode": invocation_mode,
             "object_name": object_name,
-            "rejected_object": rejected_object,
             "source_object": source_object,
             "row_count": str(len(output_rows)),
             "selected_pending_rows": str(len(pending)),
@@ -832,17 +776,6 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         )
     except Exception as exc:  # noqa: BLE001 - return a useful invocation error
         LOGGER.exception("extract-news-body failed")
-        if client is not None and namespace and bucket:
-            try:
-                failure = _time_budget_row(
-                    {"source_bronze_object": source_object},
-                    run_id,
-                )
-                failure["extraction_status"] = "ERROR"
-                failure["extraction_error"] = f"{type(exc).__name__}: {exc}"[:500]
-                _write_rejected_body(client, namespace, bucket, rejected_prefix, [failure], run_id)
-            except Exception:  # noqa: BLE001 - preserve the original invocation failure
-                LOGGER.exception("Unable to persist Body rejected artifact")
         return response.Response(
             ctx,
             response_data=json.dumps({"status": "error", "run_id": run_id, "message": str(exc)}),
