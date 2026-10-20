@@ -45,9 +45,60 @@ EVIDENCE = _load_function(
     ROOT / "oci/functions/retrieve_pubmed_evidence/func.py", "retrieve_evidence_multiclaim"
 )
 IMPORTER = _load_script(ROOT / "labelstudio/import_evidence.py", "import_evidence_multiclaim")
-EXPORTER = _load_script(ROOT / "labelstudio/export_annotations.py", "export_annotations_multiclaim")
-AGGREGATOR = _load_script(ROOT / "labelstudio/aggregate_article_labels.py", "aggregate_article_labels")
-VALIDATOR = _load_script(ROOT / "labelstudio/validate_gold.py", "validate_gold_multiclaim")
+TRAINING_BUILDER = _load_script(
+    ROOT / "oci/functions/build_labelstudio_training/dataset_builder.py",
+    "build_labelstudio_training_dataset",
+)
+
+
+def _multi_claim_evidence_records() -> list[dict[str, object]]:
+    """Return two reviewable claims for one article without a fixture file."""
+
+    records: list[dict[str, object]] = []
+    for claim_id, claim_text, claim_type, pmid, similarity in (
+        ("news_001_c01_a1", "El tratamiento X cura la enfermedad Y.", "tratamiento", "12345678", "0.87"),
+        ("news_001_c02_b2", "La enfermedad Y afecta principalmente a adultos.", "riesgo", "87654321", "0.71"),
+    ):
+        records.append(
+            {
+                "schema_version": "evidence.v1",
+                "run_id": "run_evidence_001",
+                "evidence_run_id": "run_evidence_001",
+                "record_id": "news_001",
+                "claim_id": claim_id,
+                "article": {
+                    "country": "pe",
+                    "source_name": "Medio Salud",
+                    "topic": "health",
+                    "canonical_url": "https://example.test/news-001",
+                    "published_at": "2026-10-14",
+                    "title": "Noticia médica",
+                },
+                "source_body_object": "silver/body/body_run.csv",
+                "llm_status": "OK",
+                "claim_text": claim_text,
+                "claim_text_en": claim_text,
+                "pubmed_query_en": claim_text,
+                "claim_type": claim_type,
+                "evidence_status": "OK",
+                "best_pmid": pmid,
+                "best_embedding_similarity": similarity,
+                "best_tfidf_similarity": "0.42",
+                "ranking_method": "oci_cohere_embed_v4",
+                "embedding_model": "cohere.embed-v4.0",
+                "embedding_status": "OK",
+                "translation_status": "OK",
+                "candidates": [
+                    {
+                        "pmid": pmid,
+                        "title": "Clinical study",
+                        "abstract_es": "Resumen biomédico en español.",
+                        "embedding_similarity": float(similarity),
+                    }
+                ],
+            }
+        )
+    return records
 
 
 def test_claim_extraction_preserves_all_distinct_claims_without_default_cap() -> None:
@@ -705,8 +756,7 @@ def test_v1_claim_loader_explicitly_excludes_llm_failures() -> None:
 
 
 def test_labelstudio_jsonl_creates_one_task_per_claim_and_xml_has_no_article_label() -> None:
-    fixture = ROOT / "tests/fixtures/evidence_multiclaim.jsonl"
-    rows = IMPORTER._rows_from_path(fixture)
+    rows = [IMPORTER._flatten_jsonl_record(record) for record in _multi_claim_evidence_records()]
     tasks = [IMPORTER._task_from_row(row) for row in rows if IMPORTER._ready_for_review(row)]
 
     assert [task["data"]["claim_key"] for task in tasks] == [
@@ -754,11 +804,12 @@ def test_terminal_pubmed_miss_cannot_be_adjudicated_with_a_pmid() -> None:
         "annotated_at": "2026-10-17T12:00:00Z",
     }
 
-    assert "pmid_without_pubmed_evidence" in AGGREGATOR._claim_issues(claim)
+    assert "pmid_without_pubmed_evidence" in TRAINING_BUILDER._claim_issues(claim)
 
 
 def test_jsonl_import_filters_degraded_claim_and_aggregates_one_article() -> None:
-    rows = IMPORTER._rows_from_path(ROOT / "tests/fixtures/evidence_multiclaim.jsonl")
+    records = _multi_claim_evidence_records()
+    rows = [IMPORTER._flatten_jsonl_record(record) for record in records]
     ready = [row for row in rows if IMPORTER._ready_for_review(row)]
     assert [row["claim_id"] for row in ready] == ["news_001_c01_a1", "news_001_c02_b2"]
 
@@ -784,25 +835,30 @@ def test_jsonl_import_filters_degraded_claim_and_aggregates_one_article() -> Non
         ]
         payload.append(task)
 
-    claim_reviews = EXPORTER._claim_review_rows(payload)
-    articles = AGGREGATOR.aggregate_rows(
-        claim_reviews,
-        {
-            "news_001": {
-                "record_id": "news_001",
-                "title": "Noticia médica",
-                "body": "Cuerpo completo para entrenar.",
-            }
-        },
+    evidence_blob = ("\n".join(json.dumps(record) for record in records) + "\n").encode("utf-8")
+    body_blob = (
+        "record_id,title,body\n"
+        "news_001,Noticia médica,Cuerpo completo para entrenar.\n"
+    ).encode("utf-8")
+    result = TRAINING_BUILDER.build_training(
+        json.dumps(payload).encode("utf-8"),
+        "labelstudio_export.json",
+        [("silver/evidence/run_id=run_evidence_001/evidence.jsonl", evidence_blob)],
+        [("silver/body/body_run.csv", body_blob)],
     )
-    reviewed, training, rejected = VALIDATOR.validate_rows(articles)
 
-    assert len(claim_reviews) == 2
-    assert len(articles) == 1
-    assert articles[0]["label"] == "REFUTADA"
-    assert articles[0]["aggregation_status"] == "COMPLETADA"
-    assert len(reviewed) == len(training) == 1
-    assert not rejected
+    assert result["claim_reviews_completed"] == 2
+    assert result["articles_total"] == result["training_records"] == 1
+    assert result["training"] == [
+        {
+            "record_id": "news_001",
+            "title": "Noticia médica",
+            "body": "Cuerpo completo para entrenar.",
+            "label": "REFUTADA",
+            "dataset_split": "",
+        }
+    ]
+    assert not result["rejected"]
 
 
 def test_local_v1_handlers_run_end_to_end_with_all_claims(monkeypatch) -> None:

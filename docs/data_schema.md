@@ -91,36 +91,26 @@ noticia antes de `gold/training`.
 
 ## Gold
 
-Es una salida generada y no debe editarse manualmente. Solo incluye noticias de `Silver` que cumplen simultáneamente:
+Es una salida generada y no debe editarse manualmente. La Function
+`build-labelstudio-training` toma un export humano, el Evidence y el Body
+referenciados por ese export. Una noticia entra al CSV binario solo si todos
+sus claims revisables tienen una revisión humana completa, la agregación queda
+`COMPLETADA`, la etiqueta es `RESPALDADA` o `REFUTADA` y existen `title`,
+`body` y un PMID seleccionado cuando corresponde. Los demás casos no se
+silencian: se registran en `silver/rejected/training/` con su razón.
 
-- `validation_status=COMPLETADA`;
-- etiqueta binaria `RESPALDADA` o `REFUTADA`;
-- `body`, `claim_text` y `best_pmid` no vacíos;
-- relación de evidencia, nota y metadatos de anotación completos.
+`build-labelstudio-training` deja solo `RESPALDADA` y `REFUTADA` en
+`gold/training`. El CSV tiene únicamente cinco columnas: `record_id`, `title`,
+`body`, `label` y `dataset_split`. Para
+entrenar, el notebook local concatena `title + body` como una sola entrada y
+usa `label` como objetivo binario (`RESPALDADA=1`, `REFUTADA=0`). Las
+similitudes, claims, PMID, fuente y tema quedan en Silver y en el export humano
+para trazabilidad, no en el CSV que consume el modelo. `dataset_split`
+permanece vacío en Gold hasta que una corrida de entrenamiento genere su
+manifiesto estratificado 70/15/15.
 
-Una fila por `record_id` conserva la trazabilidad de la noticia y de sus
-claims revisados. El CSV `gold/reviewed` incluye como mínimo `record_id`, `country`,
-`source_name`, `topic`, `canonical_url`, `published_at`, `title`, `body`,
-`claim_text`, `best_pmid`, `best_embedding_similarity`,
-`best_tfidf_similarity`, `ranking_method`,
-`embedding_model`, `evidence_status`, `evidence_run_id`, `evidence_relation`,
-`label`, `verification_note`, `annotation_id`, `annotator`, `annotated_at`,
-`claims_total`, `decisive_claims_total`, `aggregation_status`,
-`aggregation_reason`, `final_training_eligible`, `validation_status` y
-`dataset_split`.
-
-`gold/reviewed` conserva también las filas válidas `NO_DETERMINABLE` y
-`EXCLUIDA` para auditoría; `gold/training` deja solamente `RESPALDADA` y
-`REFUTADA` y tiene únicamente cinco columnas: `record_id`, `title`, `body`,
-`label` y `dataset_split`. Para entrenar, el script local concatena `title +
-body` como una sola entrada y usa `label` como objetivo binario
-(`RESPALDADA=1`, `REFUTADA=0`). Las similitudes, claim, PMID, fuente y tema
-quedan en `gold/reviewed`/Silver para trazabilidad y análisis, no en el CSV
-que consume el modelo. `dataset_split` permanece vacío en Gold hasta que una
-corrida de entrenamiento genere su manifiesto estratificado 70/15/15.
-
-Con el formato multi-claim, el artefacto de revisión puede conservar una lista
-de claims y relaciones de evidencia por `record_id`; el CSV compacto de
+Con el formato multi-claim, el export humano conserva una tarea por claim y la
+Function registra los rechazos por noticia; el CSV compacto de
 `gold/training` no cambia. Si se entrena un verificador de claims en el futuro,
 deberá definirse como un dataset separado y no reinterpretar el CSV binario de
 noticias.

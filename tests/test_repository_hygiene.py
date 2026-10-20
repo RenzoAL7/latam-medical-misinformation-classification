@@ -7,16 +7,25 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_repository_does_not_track_csv_data() -> None:
-    result = subprocess.run(
-        ["git", "ls-files", "*.csv"],
-        cwd=REPOSITORY_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+def test_repository_tracks_only_the_training_snapshot() -> None:
+    expected = {
+        REPOSITORY_ROOT / "gold" / "training" / "training_20261019.csv",
+    }
+    tracked_csvs = {
+        REPOSITORY_ROOT / path
+        for path in subprocess.run(
+            ["git", "ls-files", "*.csv"],
+            cwd=REPOSITORY_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    }
+    present_csvs = set((REPOSITORY_ROOT / "gold").rglob("*.csv")) if (REPOSITORY_ROOT / "gold").is_dir() else set()
 
-    assert result.stdout.strip() == ""
+    assert tracked_csvs <= expected
+    assert present_csvs <= expected
+    assert expected <= present_csvs
 
 
 def test_legacy_local_collector_is_not_present() -> None:

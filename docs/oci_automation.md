@@ -150,7 +150,16 @@ La VM privada de Label Studio usa Instance Principal para listar/leer Objects,
 y un JWT refresh token local protegido para renovar su access token. El
 sincronizador v1 consume manifests `evidence.manifest.v1` `COMPLETE` o
 `PARTIAL`, pero el importador conserva la compuerta por claim: los cuatro
-estados deben estar en `OK`.
+estados deben estar en `OK`, o el claim debe ser un resultado terminal
+`NO_RESULTS`/`NO_ABSTRACT` con LLM en `OK` y embedding/traducción en
+`SKIPPED_NO_EVIDENCE`.
+
+La llegada de Evidence a Label Studio es automática; la salida humana es un
+export explícito en `silver/annotations/labelstudio/`. El Function
+`build-labelstudio-training` toma ese export y los objetos Evidence/Body que
+referencia para construir `gold/training/training_<YYYYMMDD>.csv`. Un error o
+una revisión incompleta se publica como rechazo y nunca se infiere una etiqueta
+binaria desde similitud o desde el JSONL técnico.
 
 ## Imágenes y activación segura
 
@@ -184,21 +193,9 @@ corrida controlada.
 Cuando se decida recuperar noticias históricas, no se vuelve a ejecutar
 NewsData ni `extract-news-body`. Primero se exporta el listado exacto de
 `record_id` del proyecto histórico de Label Studio y se cruza con los Body CSV
-ya almacenados. El comando local prepara lotes planos, auditables y pequeños:
-
-```bash
-python3 scripts/05_prepare_claims_backfill.py \
-  --body-input /ruta/descargada/silver/body \
-  --record-ids /ruta/labelstudio_export.json \
-  --output-dir labelstudio/artifacts/backfill_historic_20261015 \
-  --campaign-id historic-20261015 \
-  --batch-size 20
-```
-
-El `campaign.json` resultante lista los `record_id` solicitados, los que sí
-tienen Body válido, los que faltan y los que no son reutilizables. Se sube un
-solo `body_backfill_<campaign>_<n>.csv` por vez directamente a `silver/body/`.
-El evento normal ejecuta **solo** Claims, después Evidence y finalmente el
+ya almacenados. La campaña debe registrar los IDs solicitados, Bodies válidos,
+faltantes y excepciones antes de crear un único objeto Body de entrada. El
+evento normal ejecuta **solo** Claims, después Evidence y finalmente el
 sincronizador de Multi-Claim. Se revisan ambos manifests antes del lote
 siguiente; una fila sin Body válido queda como excepción, nunca se vuelve a
-rastrear automáticamente.
+rastrear automáticamente. Los drains con payload global siguen inactivos.

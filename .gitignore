@@ -16,6 +16,11 @@ checkpoints/
 # Los resultados temporales de cada corrida se conservan fuera de Git.
 # Los datos de revisión humana y las credenciales nunca se versionan.
 *.csv
+
+# Snapshot Gold solicitado para reproducir el notebook de esta corrida.
+!gold/
+!gold/training/
+!gold/training/training_20261019.csv
 labelstudio/artifacts/
 artifacts/training_runs/
 
