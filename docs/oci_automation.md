@@ -25,10 +25,10 @@ fetch-newsdata
   -> retrieve-pubmed-evidence (evidence.v1)
   -> silver/evidence/run_id=<run_id>/evidence.jsonl + manifest.json (inventario completo)
   -> [claims pendientes] silver/evidence-retrieval-jobs/*.job.json
-  -> continue-evidence-retrieval (mismo image, otro modo)
+  -> retrieve-pubmed-evidence (misma Function, modo de continuación)
   -> silver/evidence/run_id=<parent>_retrieval_final/evidence.jsonl + manifest.json
   -> [solo traducción pendiente] silver/evidence-translation-jobs/*.job.json
-  -> continue-evidence-translation (mismo image, otro modo)
+  -> retrieve-pubmed-evidence (misma Function, modo de continuación)
   -> silver/evidence/run_id=<parent>_translation_final/evidence.jsonl + manifest.json
   -> revisión humana por claim en Label Studio
   -> una fila de Gold por noticia
@@ -44,8 +44,8 @@ porque una noticia puede tener muchos claims y cada claim muchos candidatos.
 | `CreateObject` | `bronze/*.csv` | `extract-news-body` |
 | `CreateObject` | `silver/body/*.csv` | `extract-claims` |
 | `CreateObject` | `silver/claims/run_id=*/claims.jsonl` | `retrieve-pubmed-evidence` |
-| `CreateObject` | `silver/evidence-retrieval-jobs/*.job.json` | `continue-evidence-retrieval` |
-| `CreateObject` | `silver/evidence-translation-jobs/*.job.json` | `continue-evidence-translation` |
+| `CreateObject` | `silver/evidence-retrieval-jobs/*.job.json` | `retrieve-pubmed-evidence` |
+| `CreateObject` | `silver/evidence-translation-jobs/*.job.json` | `retrieve-pubmed-evidence` |
 
 La tercera regla no debe seguir coincidiendo con `silver/claims/*.csv` después
 de activar v1. La Function de Evidence rechaza un evento que no identifica
@@ -53,16 +53,17 @@ exactamente un `claims.jsonl`; por ello un selector amplio de prefijo causaría
 errores al crear también `manifest.json`.
 
 La cuarta regla debe limitarse al prefijo
-`silver/evidence-retrieval-jobs/` y al sufijo `.job.json`. La continuación
-lee el Claims JSONL inmutable, procesa un tramo serial y escribe el siguiente
-job solo cuando el actual ya quedó auditado. No debe escuchar el prefijo de
-staging ni `silver/evidence/`.
+`silver/evidence-retrieval-jobs/` y al sufijo `.job.json`. Invoca la Function
+`retrieve-pubmed-evidence` existente, que reconoce la ruta y entra en modo de
+continuación. Lee el Claims JSONL inmutable, procesa un tramo serial y escribe
+el siguiente job solo cuando el actual ya quedó auditado. No debe escuchar el
+prefijo de staging ni `silver/evidence/`.
 
 La quinta regla debe limitarse al prefijo
-`silver/evidence-translation-jobs/` y al sufijo `.job.json`. No debe apuntar al
-prefijo de staging ni a `silver/evidence/`, porque esos objetos no son entrada
-de recuperación. El destino usa la misma imagen x86 que Evidence pero tiene
-`PIPELINE_MODE=translation_continuation`.
+`silver/evidence-translation-jobs/` y al sufijo `.job.json`. Invoca la misma
+Function `retrieve-pubmed-evidence`, que reconoce la ruta y entra en modo de
+continuación de traducción. No debe apuntar al prefijo de staging ni a
+`silver/evidence/`, porque esos objetos no son entrada de recuperación.
 
 Cada Function recibe el objeto que disparó el evento. `extract-claims` y
 `retrieve-pubmed-evidence` v1 no aceptan `{}` como drenaje global: procesan
@@ -123,8 +124,8 @@ de abstracts traducidos ni el límite de cinco PMIDs por claim.
 OCI Functions tiene un timeout de 300 segundos. Claims se detiene a 270 s con
 20 s de margen y cada tramo de Evidence a 285 s con 10 s de margen. Ante un
 objeto grande, el Evidence padre conserva todos los claims y deja un job para
-los no iniciados; `continue-evidence-retrieval` los procesa serialmente hasta
-publicar la consolidación. Un timeout o error transitorio dentro de un tramo se
+los no iniciados; la continuación de `retrieve-pubmed-evidence` los procesa
+serialmente hasta publicar la consolidación. Un timeout o error transitorio dentro de un tramo se
 reintenta hasta tres veces; una falla permanente queda como `ERROR` y el
 manifest como `PARTIAL` o `FAILED`. Para `RECITATION`, Evidence puede usar en
 la misma invocación un fallback acotado de resumen fiel. Si tras ello solo queda
@@ -173,9 +174,8 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 fn deploy --no-bump
 El orden de activación es:
 
 1. Ejecutar las pruebas locales y construir la imagen x86.
-2. Subir/desplegar Evidence y crear `continue-evidence-retrieval` y
-   `continue-evidence-translation` con esa misma imagen, usando
-   `PIPELINE_MODE=retrieval_continuation` y `translation_continuation`.
+2. Actualizar las Functions existentes y crear solo las reglas Events de jobs,
+   ambas apuntando a `retrieve-pubmed-evidence`; no se crean Functions nuevas.
 3. Mantener el selector Claims → Evidence al sufijo `claims.jsonl` y añadir
    una regla Jobs → continuación por cada prefijo de jobs y sufijo `.job.json`.
 4. Crear un proyecto nuevo de Label Studio con `config_multiclaim.xml` y

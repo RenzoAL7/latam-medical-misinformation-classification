@@ -2802,6 +2802,44 @@ def _event_object_name_under_prefix(
     raise RuntimeError(f"Event does not identify a {suffix} object under {expected_prefix}")
 
 
+def _event_object_name_for_dispatch(data: io.BytesIO | None) -> str:
+    """Peek at an event object name without consuming the handler payload."""
+
+    if data is None:
+        return ""
+    position = data.tell()
+    try:
+        raw = data.read()
+    finally:
+        data.seek(position)
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if not raw.strip():
+        return ""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    event_data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    details = event_data.get("additionalDetails", {})
+    if not isinstance(details, dict):
+        details = {}
+    for candidate in (
+        event_data.get("resourceName"),
+        details.get("objectName"),
+        details.get("resourceName"),
+        event_data.get("objectName"),
+        payload.get("source_object"),
+        payload.get("object_name"),
+    ):
+        object_name = unquote(str(candidate or "")).lstrip("/")
+        if object_name:
+            return object_name
+    return ""
+
+
 def _as_text(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -4284,6 +4322,21 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
         raise RuntimeError(
             "PIPELINE_MODE must be retrieve, retrieval_continuation, or translation_continuation"
         )
+
+    # The deployed application has one Evidence Function. Object Storage job
+    # rules target that same Function, so the event path selects the durable
+    # continuation while Claims JSONL keeps the normal retrieval path.
+    event_object = _event_object_name_for_dispatch(data)
+    retrieval_job_prefix = os.getenv(
+        "SILVER_RETRIEVAL_JOB_PREFIX", "silver/evidence-retrieval-jobs"
+    ).strip("/")
+    translation_job_prefix = os.getenv(
+        "SILVER_TRANSLATION_JOB_PREFIX", "silver/evidence-translation-jobs"
+    ).strip("/")
+    if event_object.startswith(f"{retrieval_job_prefix}/") and event_object.endswith(".job.json"):
+        return _handler_retrieval_continuation(ctx, data)
+    if event_object.startswith(f"{translation_job_prefix}/") and event_object.endswith(".job.json"):
+        return _handler_translation_continuation(ctx, data)
 
     schema = os.getenv("PIPELINE_SCHEMA", "v1").strip().lower()
     if schema in {"v1", "evidence.v1", "jsonl"}:

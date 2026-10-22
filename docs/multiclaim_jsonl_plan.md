@@ -152,7 +152,7 @@ Label Studio como si tuviera evidencia lista. Una respuesta Gemini bloqueada
 por `RECITATION` puede usar, dentro de la misma invocación y con presupuesto de
 tiempo acotado, un resumen fiel marcado `PARAPHRASED`. Si al finalizar quedan
 solo errores de traducción temporales, se crea un job con esos `candidates`
-para `continue-evidence-translation`; al acabar publica un Evidence final con
+para la continuación de `retrieve-pubmed-evidence`; al acabar publica un Evidence final con
 un nuevo `run_id` derivado del padre. Los errores de LLM, PubMed o Embed 4 no
 entran en esa cola.
 

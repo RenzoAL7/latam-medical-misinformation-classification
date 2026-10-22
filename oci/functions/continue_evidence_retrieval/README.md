@@ -1,14 +1,13 @@
 # `continue-evidence-retrieval`
 
-Esta segunda Function reutiliza la misma imagen x86 de
-`retrieve-pubmed-evidence`, pero se configura con
-`PIPELINE_MODE=retrieval_continuation`. Atiende únicamente los objetos de cola
-inmutables que deja Evidence cuando un `claims.jsonl` contiene más claims de
-los que es seguro recuperar dentro de los 300 segundos de OCI Functions.
+Este directorio conserva un mapa histórico del modo de continuación de
+`retrieve-pubmed-evidence`. La producción usa la Function existente y las
+reglas Events la invocan directamente para los jobs de recuperación; no se crea
+ni se despliega una segunda OCI Function.
 
 ## Entrada y salida
 
-La regla Events debe entregar solo objetos de este patrón:
+La regla Events entrega a `retrieve-pubmed-evidence` solo objetos de este patrón:
 
 ```text
 silver/evidence-retrieval-jobs/run_id=<parent>/job-0001.job.json
@@ -24,15 +23,16 @@ del Evidence padre y publica un Evidence final estándar.
 
 Los reintentos se limitan a tres para errores transitorios de PubMed, red,
 Embed 4 o presupuesto. Los errores de traducción no vuelven a ejecutar PubMed:
-al finalizar la recuperación se dejan para `continue-evidence-translation`.
+al finalizar la recuperación se dejan para la continuación de traducción de
+`retrieve-pubmed-evidence`.
 
 ## Configuración OCI
 
-Clona la configuración no secreta y los permisos de
-`retrieve-pubmed-evidence`, conserva los secretos de Gemini y aplica:
+La Function desplegada conserva su configuración no secreta, sus permisos y los
+secretos de Gemini. El modo se decide por la ruta del objeto; no se debe fijar
+`PIPELINE_MODE=retrieval_continuation` para la producción actual.
 
 ```text
-PIPELINE_MODE=retrieval_continuation
 PIPELINE_SCHEMA=v1
 SILVER_EVIDENCE_PREFIX=silver/evidence
 SILVER_RETRIEVAL_JOB_PREFIX=silver/evidence-retrieval-jobs
@@ -44,6 +44,7 @@ RETRIEVAL_CONTINUATION_TIME_BUFFER=10
 ```
 
 La regla Events debe filtrar simultáneamente por el prefijo
-`silver/evidence-retrieval-jobs/` y el sufijo `.job.json`. No debe escuchar el
-prefijo de staging ni `silver/evidence/`; así cada tramo se encadena una sola
-vez y no se crean bucles.
+`silver/evidence-retrieval-jobs/` y el sufijo `.job.json`, y apuntar a
+`retrieve-pubmed-evidence`. No debe escuchar el prefijo de staging ni
+`silver/evidence/`; así cada tramo se encadena una sola vez y no se crean
+bucles.

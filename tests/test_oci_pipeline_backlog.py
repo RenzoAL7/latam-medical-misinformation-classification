@@ -317,3 +317,58 @@ def test_fetch_queries_all_country_groups_and_selects_round_robin(monkeypatch) -
     assert metadata["selected_country_counts"] == {"ar": 1, "bo": 1, "pe": 1, "pr": 1}
     assert metadata["countries_attempted"] == ["ar", "bo", "pe", "pr"]
     assert all(item["selected_rows"] == 2 for item in metadata["country_stats"])
+
+
+def test_fetch_keeps_successful_groups_when_one_newsdata_group_fails(monkeypatch) -> None:
+    module = _load("fetch_newsdata")
+    monkeypatch.setenv("NEWSDATA_COUNTRY_SEQUENCE", "ar,bo,pe,pr")
+    monkeypatch.setenv("NEWSDATA_COUNTRY_GROUP_SIZE", "2")
+    monkeypatch.setenv("NEWSDATA_TARGET_ROWS", "2")
+    monkeypatch.setenv("NEWSDATA_MAX_SECONDS", "30")
+    monkeypatch.setenv("NEWSDATA_TIME_BUFFER", "0")
+    monkeypatch.setenv("NEWSDATA_COUNTRY_DELAY", "0")
+    calls: list[str] = []
+
+    def fake_request(
+        _api_keys: list[str],
+        requested_country: str,
+        key_start_index: int,
+        deadline: float | None = None,
+    ) -> tuple[dict[str, object], dict[str, str]]:
+        del key_start_index
+        del deadline
+        calls.append(requested_country)
+        if requested_country == "ar,bo":
+            raise RuntimeError("temporary NewsData provider failure")
+        return {
+            "results": [
+                {
+                    "language": "es",
+                    "category": ["health"],
+                    "country": country,
+                    "link": f"https://example.test/{country}",
+                    "title": f"Noticia {country}",
+                    "source_name": "Fuente de prueba",
+                }
+                for country in requested_country.split(",")
+            ]
+        }, {"pages_fetched": "1", "key_slot": "1"}
+
+    monkeypatch.setattr(module, "_request_newsdata_with_failover", fake_request)
+
+    rows, metadata = module._collect_country_batch(
+        ["secret"], _Storage({}), "ns", "bucket", "bronze"
+    )
+
+    assert calls == ["ar,bo", "pe,pr"]
+    assert [row["country"] for row in rows] == ["pe", "pr"]
+    assert metadata["partial_batch"] is True
+    assert metadata["failed_groups"] == [
+        {
+            "countries": ["ar", "bo"],
+            "group_index": 0,
+            "error_type": "RuntimeError",
+            "error": "temporary NewsData provider failure",
+        }
+    ]
+    assert metadata["country_stats"][0]["request"]["status"] == "ERROR"
