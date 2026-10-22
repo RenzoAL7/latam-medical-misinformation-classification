@@ -129,8 +129,8 @@ tamaño de lote.
 
 ## Continuación de recuperación y traducciones
 
-`continue-evidence-retrieval` evita que un lote grande se agote antes de
-consultar todos sus claims. El Evidence padre contiene una fila por claim: los
+La continuación de recuperación en `retrieve-pubmed-evidence` evita que un
+lote grande se agote antes de consultar todos sus claims. El Evidence padre contiene una fila por claim: los
 no iniciados quedan marcados como en cola y un job inmutable conserva solo sus
 identidades. Cada invocación recupera, embebe y traduce como máximo ocho claims
 y crea el siguiente job únicamente después de escribir su etapa. Al final
@@ -146,8 +146,8 @@ límite de cinco minutos. Evidence escribe un job solo para claims con
 con `llm_status=OK` y `embedding_status=OK`. Cada job conserva los candidatos
 con sus PMIDs, abstracts originales, scores y vectores ya calculados.
 
-`continue-evidence-translation` procesa un máximo de cuatro claims por
-invocación, con una sola ola de Gemini (`TRANSLATION_CONTINUATION_PARALLELISM=1`)
+La continuación de traducción en `retrieve-pubmed-evidence` procesa un máximo
+de cuatro claims por invocación, con una sola ola de Gemini (`TRANSLATION_CONTINUATION_PARALLELISM=1`)
 para reducir errores 429/503. Si todavía hay trabajo, escribe un único job
 siguiente; si termina, fusiona sus resultados con el Evidence padre y publica
 un nuevo `evidence.jsonl` estándar bajo

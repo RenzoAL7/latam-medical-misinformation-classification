@@ -7,11 +7,11 @@ translates returned abstracts with a separate Gemini secret, and writes one
 JSONL record per claim under `silver/evidence/`. An Object Storage event
 processes only its triggering Claims object; v1 has no global drain.
 
-The same x86 image is also deployed as `continue-evidence-retrieval`, with
-`PIPELINE_MODE=retrieval_continuation`, and as
-`continue-evidence-translation`, with `PIPELINE_MODE=translation_continuation`.
-The first serializes a large Claims fanout; the second consumes only durable
-translation jobs after PubMed and Embed 4 have completed.
+The same deployed Function also consumes durable retrieval and translation jobs.
+It selects the continuation mode from the Object Storage job path, so both job
+rules target `retrieve-pubmed-evidence`; no additional OCI Function is needed.
+The retrieval path serializes a large Claims fanout, while the translation path
+consumes only durable jobs after PubMed and Embed 4 have completed.
 
 This Function does not assign a truth label. `evidence_status=OK` means that
 PubMed returned candidate records, not that the news claim is supported. The
@@ -141,8 +141,8 @@ Cuando el fanout supera el tramo seguro, Evidence escribe un job bajo:
 silver/evidence-retrieval-jobs/run_id=<evidence_run>/job-0001.job.json
 ```
 
-`continue-evidence-retrieval` procesa como máximo ocho claims por invocación y
-escribe su etapa bajo `silver/evidence-retrieval-stage/`. Los jobs solo guardan
+La continuación de recuperación de `retrieve-pubmed-evidence` procesa como máximo
+ocho claims por invocación y escribe su etapa bajo `silver/evidence-retrieval-stage/`. Los jobs solo guardan
 identidades de claim y referencias a los objetos inmutables; no copian cuerpos
 ni permiten un drenaje global. Los fallos transitorios de red, PubMed, Embed 4
 o presupuesto se reintentan hasta tres veces. La consolidación final mantiene
@@ -162,7 +162,8 @@ silver/evidence-translation-jobs/run_id=<evidence_run>/job-0001.job.json
 ```
 
 La regla Object Storage correspondiente invoca
-`continue-evidence-translation`. Cada invocación procesa como máximo
+`retrieve-pubmed-evidence`, que identifica la ruta y entra en continuación de
+traducción. Cada invocación procesa como máximo
 `TRANSLATION_CONTINUATION_MAX_CLAIMS=4` claims, conserva los PMIDs,
 `candidates`, scores y embeddings presentes en el job y llama solo a Gemini
 para los abstracts que aún no tienen `abstract_es`. La siguiente invocación se

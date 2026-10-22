@@ -20,15 +20,15 @@ Las Functions desplegadas en OCI separan las etapas de datos:
    `claims.jsonl` disparador y recupera el primer tramo seguro de claims.
    Recupera como máximo cinco candidatos PubMed por claim, ordena el resultado
    y hace Embed 4 sobre todos los abstracts utilizables.
-5. Si quedan claims, `continue-evidence-retrieval` toma un job JSON inmutable,
-   procesa un tramo serial de hasta ocho claims y encadena el siguiente hasta
-   publicar un Evidence final consolidado. No se descarta ningún claim ni se
-   disparan búsquedas PubMed en paralelo.
+5. Si quedan claims, la misma Function `retrieve-pubmed-evidence` reconoce el
+   job JSON inmutable por su ruta, procesa un tramo serial de hasta ocho claims
+   y encadena el siguiente hasta publicar un Evidence final consolidado. No se
+   descarta ningún claim ni se disparan búsquedas PubMed en paralelo.
 6. Si solo falla o se agota el tiempo de **traducción**,
-   `continue-evidence-translation` reutiliza exactamente los candidatos/PMIDs
-   y embeddings ya guardados, traduce como máximo cuatro claims por invocación
-   y encadena el siguiente job. No vuelve a consultar NewsData, Body, Claims,
-   PubMed ni Embed 4.
+   la misma Function reconoce los jobs de traducción, reutiliza exactamente los
+   candidatos/PMIDs y embeddings ya guardados, traduce como máximo cuatro claims
+   por invocación y encadena el siguiente job. No vuelve a consultar NewsData,
+   Body, Claims, PubMed ni Embed 4.
 7. El timer de la VM de Label Studio importa o actualiza una tarea por
    `record_id + claim_id` cuando Evidence la deja revisable. La persona revisora
    decide materialidad, relación y veredicto de cada claim; luego exporta esas
@@ -93,11 +93,11 @@ fetch-newsdata -> bronze/*.csv
                                                    |
                               (claims pendientes, serial)
                                                    v
-                              continue-evidence-retrieval -> Evidence final consolidado
+                              retrieve-pubmed-evidence (continuación) -> Evidence final consolidado
                                                    |
                               (solo traducción pendiente)
                                                    v
-                              continue-evidence-translation -> evidencia final de traducción
+                              retrieve-pubmed-evidence (continuación) -> evidencia final de traducción
 ```
 
 Events procesa únicamente el objeto que lo disparó. Claims y Evidence v1 no
@@ -155,6 +155,12 @@ La cobertura geográfica no implica que todos los países tengan una noticia en
 cada corrida: NewsData puede no devolver resultados, repetir fuentes o entregar
 una noticia cuya URL ya existe. `request_meta` conserva países consultados,
 filas candidatas, páginas y slots de API utilizados para auditar cada ejecución.
+
+Si un grupo de países falla, el recolector conserva los resultados nuevos de
+los demás grupos y deja el detalle en `request_meta.failed_groups`; la respuesta
+queda como `partial`. Solo devuelve `503` sin crear un objeto Bronze cuando
+ningún grupo produjo filas nuevas. Así, una falla aislada del proveedor no
+descarta una corrida útil ni queda oculta en el manifiesto.
 
 ## Revisión humana y Gold
 

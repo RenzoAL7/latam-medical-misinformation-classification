@@ -1,16 +1,14 @@
 # `continue-evidence-translation`
 
-Esta es una segunda OCI Function que usa **la misma imagen x86** de
-`retrieve-pubmed-evidence`. El repositorio tiene ahora una entrada explícita en
-`func.py`, pero esa entrada delega al único código fuente compartido de
-`retrieve-pubmed-evidence` y fija `PIPELINE_MODE=translation_continuation`. Así las seis
-Functions desplegadas quedan representadas en el repo sin mantener dos copias
-de la lógica de PubMed y traducción que puedan desalinearse.
+Este directorio conserva un mapa histórico del modo de continuación de
+`retrieve-pubmed-evidence`. La producción usa la Function existente y las
+reglas Events la invocan directamente para los jobs de traducción; no se crea
+ni se despliega una segunda OCI Function.
 
-`func.yaml` y `requirements.txt` documentan la identidad y las dependencias de
-esta Function. El despliegue productivo sigue reutilizando la imagen construida
-desde `retrieve_pubmed_evidence`, tal como está configurado en OCI; no se debe
-crear una segunda imagen con una copia de `retrieve_pubmed_evidence/func.py`.
+`func.yaml` y `requirements.txt` se conservan como referencia de compatibilidad.
+El despliegue productivo reutiliza la imagen construida desde
+`retrieve_pubmed_evidence`, sin crear una segunda imagen ni una Function
+separada.
 
 ## Entrada y salida
 
@@ -62,13 +60,11 @@ candidatos recibidos.
 
 ## Fuente compartida y despliegue
 
-`func.py` carga el módulo hermano
-`../retrieve_pubmed_evidence/func.py` únicamente para exponer la misma entrada
-de Function dentro de este directorio. La variable `PIPELINE_MODE` se fuerza a
-`translation_continuation` durante cada invocación y se restaura al terminar.
+La entrada desplegada está en
+`../retrieve_pubmed_evidence/func.py`, donde la ruta del job selecciona
+`translation_continuation` sin modificar `PIPELINE_MODE`.
 
-Para actualizar OCI, primero se construye la imagen desde
-`oci/functions/retrieve_pubmed_evidence/` y después se actualiza la Function
-`continue-evidence-translation` para que use esa misma imagen y sus variables
-de entorno de traducción. Este directorio sirve como mapa de código y contrato
-de la sexta Function; no se duplica el código de retrieval.
+Para actualizar OCI, se construye la imagen desde
+`oci/functions/retrieve_pubmed_evidence/` y se actualiza únicamente la Function
+`retrieve-pubmed-evidence`; la regla de jobs de traducción apunta a esa misma
+Function.
