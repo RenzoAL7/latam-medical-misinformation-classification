@@ -7,41 +7,76 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_repository_tracks_only_the_training_snapshot() -> None:
-    expected = {
-        REPOSITORY_ROOT / "gold" / "training" / "training_20261019.csv",
-    }
-    tracked_csvs = {
-        REPOSITORY_ROOT / path
-        for path in subprocess.run(
-            ["git", "ls-files", "*.csv"],
-            cwd=REPOSITORY_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.splitlines()
-    }
-    present_csvs = set((REPOSITORY_ROOT / "gold").rglob("*.csv")) if (REPOSITORY_ROOT / "gold").is_dir() else set()
-
-    assert tracked_csvs <= expected
-    assert present_csvs <= expected
-    assert expected <= present_csvs
+def test_input_and_generated_artifacts_are_not_tracked() -> None:
+    tracked = subprocess.run(
+        ["git", "ls-files"],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert not any(
+        path.endswith(".csv") and (REPOSITORY_ROOT / path).exists()
+        for path in tracked
+    )
+    assert not any(path.startswith("artifacts/") for path in tracked)
+    assert not any(path.startswith("data/raw/") for path in tracked)
 
 
-def test_legacy_local_collector_is_not_present() -> None:
-    obsolete_paths = [
-        ".env.example",
-        "configs/batch.yaml",
-        "scripts/01_collect_newsdata_urls.py",
-        "src/peruvian_medical_misinformation",
-        "tests/test_batch_contract.py",
-        "tests/test_newsdata_batch.py",
-        "data/00_control",
-        "data/01_candidates",
-        "reports/runs",
-        "labelstudio/config.xml",
-        "labelstudio/LOCAL_WORKFLOW.md",
-        "tests/fixtures/labelstudio_multiclaim.fixture",
+def test_obsolete_binary_baseline_is_removed() -> None:
+    obsolete = [
+        "experiments/models/01_tfidf_naive_bayes/baseline.ipynb",
+        "experiments/models/README.md",
+        "docs/training_baseline.md",
+        "gold/training/training_20261019.csv",
+        "tests/test_continue_evidence_translation_function.py",
     ]
+    assert all(
+        not (REPOSITORY_ROOT / path).exists()
+        or not any((REPOSITORY_ROOT / path).iterdir())
+        for path in obsolete
+    )
 
-    assert all(not (REPOSITORY_ROOT / path).exists() for path in obsolete_paths)
+
+def test_removed_claim_and_labelstudio_paths_are_absent() -> None:
+    obsolete = [
+        "labelstudio",
+        "oci/functions/build_labelstudio_training",
+        "oci/functions/extract_claims",
+        "oci/functions/continue_evidence_retrieval",
+        "oci/functions/continue_evidence_translation",
+    ]
+    assert all(
+        not (REPOSITORY_ROOT / path).exists()
+        or not any((REPOSITORY_ROOT / path).iterdir())
+        for path in obsolete
+    )
+
+
+def test_future_pubmed_evidence_component_remains_without_external_translation() -> None:
+    retained = [
+        "oci/functions/fetch_newsdata/func.py",
+        "oci/functions/extract_news_body/func.py",
+        "oci/functions/retrieve_pubmed_evidence/func.py",
+    ]
+    assert all((REPOSITORY_ROOT / path).is_file() for path in retained)
+
+
+def test_removed_external_claim_api_names_are_absent() -> None:
+    result = subprocess.run(
+        [
+            "rg",
+            "-n",
+            "-i",
+            "gemini|google-generative|generativelanguage|label.?studio",
+            "oci",
+            "src",
+            "scripts",
+            "configs",
+        ],
+        cwd=REPOSITORY_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1, result.stdout
