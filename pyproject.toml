@@ -3,25 +3,35 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "peruvian-medical-misinformation-classification"
-version = "0.2.0"
-description = "Corpus trazable de noticias médicas peruanas para clasificación binaria posterior."
+name = "latam-medical-claim-extraction"
+version = "0.1.0"
+description = "Experimentos reproducibles de extracción y normalización de claims médicos en español."
 readme = "README.md"
-requires-python = ">=3.10"
-dependencies = []
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2",
+]
 
 [project.optional-dependencies]
 dev = [
-    "beautifulsoup4>=4.12",
     "pytest>=8.0",
 ]
-training = [
-    "jupyter>=1.0",
-    "scikit-learn>=1.5",
+models = [
+    "accelerate>=1.5",
+    "datasets>=3.4",
+    "huggingface-hub>=0.30,<1.0",
+    "jupyterlab>=4.4",
+    "nltk>=3.9",
+    "protobuf>=4.25",
+    "rouge-score>=0.1.2",
+    "safetensors>=0.5",
+    "sentencepiece>=0.2",
+    "torch>=2.7",
+    "transformers>=4.51,<5.0",
 ]
 
-[tool.setuptools]
-py-modules = []
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
