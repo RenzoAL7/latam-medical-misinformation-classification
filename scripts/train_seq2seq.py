@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from claim_extraction.data import read_table, validate_reference_table
-from claim_extraction.models import load_seq2seq_model, load_tokenizer
+from claim_extraction.models import configure_model, load_seq2seq_model, load_tokenizer
 from claim_extraction.registry import get_model
 from claim_extraction.text import input_for_model
 
@@ -27,6 +27,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation", required=True, help="CSV/JSONL de validación.")
     parser.add_argument("--output-dir", required=True, help="Directorio del checkpoint local.")
     parser.add_argument("--cache-dir", default=None, help="Cache opcional de Hugging Face.")
+    parser.add_argument(
+        "--base-checkpoint",
+        default=None,
+        help="Ruta local opcional al checkpoint base descargado.",
+    )
     parser.add_argument("--seed", type=int, default=20261029)
     parser.add_argument("--epochs", type=float, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
@@ -109,21 +114,30 @@ def main() -> None:
 
     set_seed(args.seed)
     cache_kwargs = {"cache_dir": args.cache_dir} if args.cache_dir else {}
-    tokenizer = load_tokenizer(spec.base_checkpoint, **cache_kwargs)
-    model = load_seq2seq_model(
-        spec.base_checkpoint, model_id=spec.id, **cache_kwargs
+    base_checkpoint = args.base_checkpoint or spec.base_checkpoint
+    tokenizer = load_tokenizer(
+        base_checkpoint, model_id=spec.id, **cache_kwargs
     )
+    model = load_seq2seq_model(
+        base_checkpoint, model_id=spec.id, **cache_kwargs
+    )
+    configure_model(model, tokenizer, model_id=spec.id)
     max_source = int(spec.training["max_source_length"])
     max_target = int(spec.training["max_target_length"])
 
     def tokenize(batch):
-        return tokenizer(
+        model_inputs = tokenizer(
             batch["input_text"],
-            text_target=batch["target_text"],
             max_length=max_source,
-            max_target_length=max_target,
             truncation=True,
         )
+        labels = tokenizer(
+            text_target=batch["target_text"],
+            max_length=max_target,
+            truncation=True,
+        )
+        model_inputs["labels"] = labels["input_ids"]
+        return model_inputs
 
     train_dataset = Dataset.from_pandas(train_data, preserve_index=False).map(
         tokenize, batched=True, remove_columns=["input_text", "target_text"]
@@ -164,7 +178,7 @@ def main() -> None:
     manifest = {
         "model_id": spec.id,
         "display_name": spec.display_name,
-        "base_checkpoint": spec.base_checkpoint,
+        "base_checkpoint": base_checkpoint,
         "paper": spec.paper,
         "paper_url": spec.paper_url,
         "train_rows": int(len(train_data)),
@@ -184,3 +198,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

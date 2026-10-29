@@ -1,8 +1,78 @@
 {
   "models": [
     {
+      "id": "t5s_spanish",
+      "display_name": "T5S",
+      "base_checkpoint": "vgaraujov/t5-base-spanish",
+      "input_adapter": "plain",
+      "paper": "Spanish Pre-trained Language Models",
+      "paper_url": "https://aclanthology.org/2024.lrec-main.1283/",
+      "training": {
+        "epochs": 5,
+        "learning_rate": 0.00003,
+        "weight_decay": 0.0,
+        "warmup_steps": 0,
+        "effective_batch_size": 8,
+        "max_source_length": 512,
+        "max_target_length": 96
+      },
+      "generation": {
+        "num_beams": 4,
+        "max_new_tokens": 96
+      },
+      "notes": "Modelo encoder-decoder preentrenado exclusivamente en corpus español; candidato principal para noticias médicas en español."
+    },
+    {
+      "id": "barto_spanish",
+      "display_name": "BARTO",
+      "base_checkpoint": "vgaraujov/bart-base-spanish",
+      "input_adapter": "plain",
+      "paper": "Spanish Pre-trained Language Models",
+      "paper_url": "https://aclanthology.org/2024.lrec-main.1283/",
+      "training": {
+        "epochs": 5,
+        "learning_rate": 0.00003,
+        "weight_decay": 0.0,
+        "warmup_steps": 0,
+        "effective_batch_size": 8,
+        "max_source_length": 512,
+        "max_target_length": 96
+      },
+      "generation": {
+        "num_beams": 4,
+        "max_new_tokens": 96
+      },
+      "notes": "Modelo BART preentrenado exclusivamente en español y ajustable para extracción y normalización de claims."
+    },
+    {
+      "id": "mbart50_es",
+      "display_name": "mBART-50",
+      "base_checkpoint": "facebook/mbart-large-50",
+      "input_adapter": "plain",
+      "paper": "AKCIT-FN at CheckThat! 2025",
+      "paper_url": "https://arxiv.org/abs/2509.11496",
+      "training": {
+        "epochs": 5,
+        "learning_rate": 0.00003,
+        "weight_decay": 0.0,
+        "warmup_steps": 0,
+        "effective_batch_size": 8,
+        "max_source_length": 512,
+        "max_target_length": 96
+      },
+      "generation": {
+        "num_beams": 4,
+        "max_new_tokens": 96
+      },
+      "language": {
+        "source": "es_XX",
+        "target": "es_XX"
+      },
+      "notes": "Modelo multilingüe usado en normalización multilingüe; se fuerza español en entrada y salida mediante es_XX."
+    },
+    {
       "id": "umt5_base_es",
-      "display_name": "uMT5-Base fine-tuned (es)",
+      "display_name": "uMT5-Base",
       "base_checkpoint": "google/umt5-base",
       "input_adapter": "plain",
       "paper": "MMA at CheckThat! 2025",
@@ -22,73 +92,8 @@
         "top_k": 40,
         "max_new_tokens": 96
       },
-      "notes": "Configuración monolingüe española del método post-a-claim."
-    },
-    {
-      "id": "t5_small",
-      "display_name": "T5-Small fine-tuned",
-      "base_checkpoint": "google-t5/t5-small",
-      "input_adapter": "plain",
-      "paper": "JU_NLP@M&S at CheckThat! 2025",
-      "paper_url": "https://ceur-ws.org/Vol-4038/paper_83.pdf",
-      "training": {
-        "epochs": 5,
-        "learning_rate": 0.00003,
-        "weight_decay": 0.0,
-        "warmup_steps": 0,
-        "effective_batch_size": 8,
-        "max_source_length": 512,
-        "max_target_length": 96
-      },
-      "generation": {
-        "num_beams": 4,
-        "max_new_tokens": 96
-      },
-      "notes": "Baseline de la comparación BART/T5/Pegasus; usa el mismo contrato source-to-claim."
-    },
-    {
-      "id": "pegasus_large",
-      "display_name": "Pegasus-Large fine-tuned",
-      "base_checkpoint": "google/pegasus-large",
-      "input_adapter": "plain",
-      "paper": "JU_NLP@M&S at CheckThat! 2025",
-      "paper_url": "https://ceur-ws.org/Vol-4038/paper_83.pdf",
-      "training": {
-        "epochs": 5,
-        "learning_rate": 0.00003,
-        "weight_decay": 0.0,
-        "warmup_steps": 0,
-        "effective_batch_size": 8,
-        "max_source_length": 512,
-        "max_target_length": 96
-      },
-      "generation": {
-        "num_beams": 4,
-        "max_new_tokens": 96
-      },
-      "notes": "Baseline seq2seq; se mantiene aunque fue el de menor METEOR en ese paper."
-    },
-    {
-      "id": "claimgen_bart_transfer",
-      "display_name": "CLAIMGEN-BART transfer",
-      "base_checkpoint": "facebook/bart-large",
-      "input_adapter": "claimgen_transfer",
-      "paper": "Generating Scientific Claims for Zero-Shot Scientific Fact Checking",
-      "paper_url": "https://aclanthology.org/2022.acl-long.175.pdf",
-      "training": {
-        "epochs": 5,
-        "learning_rate": 0.00003,
-        "weight_decay": 0.0,
-        "warmup_steps": 0,
-        "effective_batch_size": 8,
-        "max_source_length": 512,
-        "max_target_length": 96
-      },
-      "generation": {
-        "num_beams": 4,
-        "max_new_tokens": 96
-      },
-      "notes": "Transferencia adaptada: título y contexto de la noticia sustituyen contexto y citancia de SciFact."
+      "notes": "Modelo multilingüe con configuración española de MMA at CheckThat!; se conserva como referencia multilingüe."
     }
   ]
 }
+

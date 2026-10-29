@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from claim_extraction.data import read_table
-from claim_extraction.models import load_seq2seq_model, load_tokenizer
+from claim_extraction.models import configure_model, load_seq2seq_model, load_tokenizer
 from claim_extraction.registry import get_model
 from claim_extraction.text import input_for_model
 
@@ -60,8 +60,9 @@ def main() -> None:
 
     cache_kwargs = {"cache_dir": args.cache_dir} if args.cache_dir else {}
     checkpoint = str(Path(args.checkpoint).expanduser())
-    tokenizer = load_tokenizer(checkpoint, **cache_kwargs)
+    tokenizer = load_tokenizer(checkpoint, model_id=spec.id, **cache_kwargs)
     model = load_seq2seq_model(checkpoint, model_id=spec.id, **cache_kwargs)
+    configure_model(model, tokenizer, model_id=spec.id)
     device = _device()
     model.to(device)
     model.eval()
@@ -138,3 +139,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

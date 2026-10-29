@@ -16,8 +16,9 @@ help:
 	@echo "  make prepare-corpus INPUT=/ruta.csv OUT=artifacts/candidates.jsonl"
 	@echo "  make reference-template INPUT=artifacts/candidates.jsonl OUT=artifacts/references.csv SAMPLE_SIZE=100"
 	@echo "  make split-reference INPUT=artifacts/references.csv TRAIN=artifacts/train.csv VALIDATION=artifacts/validation.csv"
-	@echo "  make train MODEL=umt5_base_es TRAIN=/ruta.csv VALIDATION=/ruta.csv OUT=artifacts/checkpoints/umt5"
-	@echo "  make infer MODEL=umt5_base_es CHECKPOINT=/ruta INPUT=/ruta.jsonl OUT=artifacts/predictions.jsonl"
+	@echo "  Modelos: t5s_spanish, barto_spanish, mbart50_es, umt5_base_es"
+	@echo "  make train MODEL=t5s_spanish TRAIN=/ruta.csv VALIDATION=/ruta.csv OUT=artifacts/checkpoints/t5s_spanish"
+	@echo "  make infer MODEL=t5s_spanish CHECKPOINT=/ruta INPUT=/ruta.jsonl OUT=artifacts/predictions.jsonl"
 	@echo "  make evaluate PREDICTIONS=/ruta.jsonl REFERENCES=/ruta.csv OUT=artifacts/evaluation"
 	@echo "  make review-sheet INPUT=/ruta.jsonl PREDICTIONS=/ruta.jsonl OUT=artifacts/review SAMPLE_SIZE=100"
 
@@ -71,3 +72,4 @@ review-sheet:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/candidates.jsonl" && exit 2)
 	@test -n "$(PREDICTIONS)" || (echo "Falta PREDICTIONS=/ruta/predictions.jsonl" && exit 2)
 	$(PYTHON) scripts/build_blind_review_sheet.py --input "$(INPUT)" --predictions "$(PREDICTIONS)" --output-dir "$(OUT)" --sample-size "$(SAMPLE_SIZE)"
+

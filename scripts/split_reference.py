@@ -6,7 +6,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from claim_extraction.data import read_table, validate_reference_table
 
@@ -63,3 +67,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

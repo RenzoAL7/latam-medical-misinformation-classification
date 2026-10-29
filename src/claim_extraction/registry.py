@@ -19,6 +19,7 @@ class ModelSpec:
     training: dict[str, Any]
     generation: dict[str, Any]
     notes: str
+    language: dict[str, str] | None = None
 
 
 def repository_root() -> Path:
@@ -46,3 +47,4 @@ def get_model(model_id: str) -> ModelSpec:
 
 def model_ids() -> list[str]:
     return sorted(load_registry())
+

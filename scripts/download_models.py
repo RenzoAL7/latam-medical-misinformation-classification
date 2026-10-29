@@ -24,6 +24,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Directorio de caché opcional. Por defecto se usa la caché de Hugging Face.",
     )
+    parser.add_argument(
+        "--local-dir",
+        default=None,
+        help=(
+            "Directorio raíz para copias locales sin enlaces simbólicos; "
+            "recomendado en Windows."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -37,11 +45,22 @@ def main() -> None:
     selected = model_ids() if args.all else [args.model]
     downloaded = []
     cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else None
+    local_dir = Path(args.local_dir).expanduser() if args.local_dir else None
     for model_id in selected:
         spec = get_model(model_id)
+        download_kwargs = {
+            "cache_dir": str(cache_dir) if cache_dir else None,
+        }
+        if local_dir:
+            download_kwargs.update(
+                {
+                    "local_dir": str(local_dir / model_id),
+                    "local_dir_use_symlinks": False,
+                }
+            )
         location = snapshot_download(
             repo_id=spec.base_checkpoint,
-            cache_dir=str(cache_dir) if cache_dir else None,
+            **download_kwargs,
         )
         downloaded.append(
             {
@@ -57,3 +76,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

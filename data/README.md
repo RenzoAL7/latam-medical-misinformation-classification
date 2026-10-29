@@ -8,6 +8,8 @@ El formato mínimo para entrenamiento y evaluación supervisados es:
 
     record_id,source_text,reference_claim
 
-Para CLAIMGEN-BART adaptado también se aceptan title y body; el script forma
-una entrada controlada de contexto y entradilla. Esa adaptación se documenta
-como transferencia y no como reproducción literal de citancias científicas.
+Para los cuatro modelos se aceptan también `title` y `body`; el flujo forma
+`source_text` cuando sea necesario y mantiene el mismo contrato noticia a
+claim. mBART-50 añade internamente los códigos de idioma españoles
+`es_XX`.
+

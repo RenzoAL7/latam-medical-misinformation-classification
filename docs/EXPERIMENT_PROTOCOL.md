@@ -34,19 +34,18 @@ evaluadas por CLAIMGEN-BART.
 
 ## 3. Modelos y adaptación
 
-1. uMT5-Base: se toma la configuración española de MMA at CheckThat! 2025:
+1. T5S: `vgaraujov/t5-base-spanish`, modelo encoder-decoder preentrenado en
+   español. Se ajusta con entrada `source_text`, cinco épocas, learning rate
+   3e-5 y cuatro beams.
+2. BARTO: `vgaraujov/bart-base-spanish`, modelo BART preentrenado en español.
+   Se ajusta con el mismo contrato source-to-claim y cuatro beams.
+3. mBART-50: `facebook/mbart-large-50`, modelo multilingüe usado en trabajos
+   de normalización multilingüe. Se establece `src_lang=es_XX`,
+   `tgt_lang=es_XX` y `forced_bos_token_id` para que la salida sea española.
+4. uMT5-Base: se conserva la configuración española de MMA at CheckThat! 2025:
    ajuste post-a-claim, 20 épocas, learning rate 5e-4, weight decay 0.01,
    warmup de 90 pasos y cinco beams. La acumulación de gradientes conserva el
    batch efectivo mientras se adapta a la memoria local.
-2. T5-Small: baseline seq2seq de JU_NLP@M&S at CheckThat! 2025, con entrada
-   source_text y cuatro beams.
-3. Pegasus-Large: segundo baseline seq2seq del mismo paper, con el mismo
-   contrato source-to-claim y cuatro beams.
-4. CLAIMGEN-BART transfer: el paper de Wright et al. usa contexto y citancia
-   de artículos científicos. Aquí se construye explícitamente contexto como
-   título más las dos oraciones siguientes, y citancia como la primera oración
-   del cuerpo. Se usa facebook/bart-large como peso base y se etiqueta como
-   transferencia adaptada, no como réplica literal.
 
 La configuración ejecutable está en configs/models.json. Todos se ejecutan
 localmente con Transformers y PyTorch; no se llama a una API generativa.
@@ -98,6 +97,10 @@ descargan a la caché local y no se versionan sus pesos.
 
 ## 7. Fuentes primarias
 
+- https://aclanthology.org/2024.lrec-main.1283/
+- https://huggingface.co/vgaraujov/t5-base-spanish
+- https://huggingface.co/vgaraujov/bart-base-spanish
+- https://huggingface.co/facebook/mbart-large-50
+- https://arxiv.org/abs/2509.11496
 - https://ceur-ws.org/Vol-4038/paper_88.pdf
-- https://ceur-ws.org/Vol-4038/paper_83.pdf
-- https://aclanthology.org/2022.acl-long.175.pdf
+

@@ -7,6 +7,7 @@ import pandas as pd
 
 from claim_extraction.data import prepare_news_candidates, validate_reference_table
 from claim_extraction.metrics import operational_diagnostics, reference_metrics
+from claim_extraction.models import configure_model, configure_tokenizer
 from claim_extraction.registry import load_registry
 
 
@@ -16,16 +17,37 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_registry_contains_the_four_local_claim_extractors() -> None:
     registry = load_registry()
     assert set(registry) == {
+        "t5s_spanish",
+        "barto_spanish",
+        "mbart50_es",
         "umt5_base_es",
-        "t5_small",
-        "pegasus_large",
-        "claimgen_bart_transfer",
     }
+    assert registry["t5s_spanish"].base_checkpoint == "vgaraujov/t5-base-spanish"
+    assert registry["barto_spanish"].base_checkpoint == "vgaraujov/bart-base-spanish"
+    assert registry["mbart50_es"].base_checkpoint == "facebook/mbart-large-50"
     assert registry["umt5_base_es"].base_checkpoint == "google/umt5-base"
-    assert registry["t5_small"].base_checkpoint == "google-t5/t5-small"
-    assert registry["pegasus_large"].base_checkpoint == "google/pegasus-large"
-    assert registry["claimgen_bart_transfer"].base_checkpoint == "facebook/bart-large"
-    assert registry["claimgen_bart_transfer"].input_adapter == "claimgen_transfer"
+
+
+def test_mbart_is_configured_for_spanish_generation() -> None:
+    class FakeTokenizer:
+        lang_code_to_id = {"es_XX": 7}
+
+    class FakeConfig:
+        forced_bos_token_id = None
+
+    class FakeGenerationConfig:
+        forced_bos_token_id = None
+
+    class FakeModel:
+        config = FakeConfig()
+        generation_config = FakeGenerationConfig()
+
+    tokenizer = configure_tokenizer(FakeTokenizer(), model_id="mbart50_es")
+    configure_model(FakeModel(), tokenizer, model_id="mbart50_es")
+    assert tokenizer.src_lang == "es_XX"
+    assert tokenizer.tgt_lang == "es_XX"
+    assert FakeModel.config.forced_bos_token_id == 7
+    assert FakeModel.generation_config.forced_bos_token_id == 7
 
 
 def test_scripts_cover_phase_one_flow() -> None:
@@ -80,3 +102,4 @@ def test_metrics_require_reference_claims_and_keep_operational_diagnostics_separ
 
 def test_configs_are_valid_json() -> None:
     json.loads((ROOT / "configs" / "models.json").read_text(encoding="utf-8"))
+
