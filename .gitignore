@@ -30,3 +30,8 @@ model_cache/
 *.pth
 *.ckpt
 *.safetensors
+
+# Fixture sintético pequeño para desarrollar la fase de traducción.
+!data/synthetic/
+!data/synthetic/*.jsonl
+!data/synthetic/*.md
