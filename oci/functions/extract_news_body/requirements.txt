@@ -1,3 +1,0 @@
-fdk>=0.1.78
-oci>=2.0.0
-beautifulsoup4>=4.12

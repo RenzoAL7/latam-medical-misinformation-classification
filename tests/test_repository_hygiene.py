@@ -29,7 +29,6 @@ def test_obsolete_binary_baseline_is_removed() -> None:
         "experiments/models/README.md",
         "docs/training_baseline.md",
         "gold/training/training_20261019.csv",
-        "tests/test_continue_evidence_translation_function.py",
     ]
     assert all(
         not (REPOSITORY_ROOT / path).exists()
@@ -38,13 +37,10 @@ def test_obsolete_binary_baseline_is_removed() -> None:
     )
 
 
-def test_removed_claim_and_labelstudio_paths_are_absent() -> None:
+def test_removed_cloud_and_legacy_paths_are_absent() -> None:
     obsolete = [
         "labelstudio",
-        "oci/functions/build_labelstudio_training",
-        "oci/functions/extract_claims",
-        "oci/functions/continue_evidence_retrieval",
-        "oci/functions/continue_evidence_translation",
+        "oci",
     ]
     assert all(
         not (REPOSITORY_ROOT / path).exists()
@@ -53,11 +49,13 @@ def test_removed_claim_and_labelstudio_paths_are_absent() -> None:
     )
 
 
-def test_future_pubmed_evidence_component_remains_without_external_translation() -> None:
+def test_local_model_pipeline_components_remain() -> None:
     retained = [
-        "oci/functions/fetch_newsdata/func.py",
-        "oci/functions/extract_news_body/func.py",
-        "oci/functions/retrieve_pubmed_evidence/func.py",
+        "configs/models.json",
+        "scripts/train_seq2seq.py",
+        "scripts/run_inference.py",
+        "scripts/evaluate_claims.py",
+        "src/claim_extraction/registry.py",
     ]
     assert all((REPOSITORY_ROOT / path).is_file() for path in retained)
 
@@ -69,7 +67,6 @@ def test_removed_external_claim_api_names_are_absent() -> None:
             "-n",
             "-i",
             "gemini|google-generative|generativelanguage|label.?studio",
-            "oci",
             "src",
             "scripts",
             "configs",
