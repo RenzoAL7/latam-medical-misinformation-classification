@@ -41,6 +41,33 @@ def test_no_new_claims_stays_in_event_mode() -> None:
     assert metadata["selected"] == 0
 
 
+def test_default_mode_dispatches_retrieval_job_events_to_the_same_function(monkeypatch) -> None:
+    module = _load_module()
+    monkeypatch.delenv("PIPELINE_MODE", raising=False)
+    monkeypatch.setenv("SILVER_RETRIEVAL_JOB_PREFIX", "silver/evidence-retrieval-jobs")
+    calls: list[str] = []
+
+    def fake_retrieval(ctx, data):
+        calls.append("retrieval")
+        assert ctx == "ctx"
+        assert data.tell() == 0
+        return "retrieval-response"
+
+    monkeypatch.setattr(module, "_handler_retrieval_continuation", fake_retrieval)
+    retrieval_event = {
+        "data": {
+            "resourceName": "silver/evidence-retrieval-jobs/run_id=parent/job-0001.job.json"
+        }
+    }
+
+    assert (
+        module.handler("ctx", io.BytesIO(json.dumps(retrieval_event).encode("utf-8")))
+        == "retrieval-response"
+    )
+    assert calls == ["retrieval"]
+
+
+
 def test_evidence_rejection_reason_is_explicit() -> None:
     module = _load_module()
 

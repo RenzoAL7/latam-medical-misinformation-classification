@@ -611,6 +611,7 @@ def _collect_country_batch(
     available_rows: list[dict[str, str]] = []
     row_group_indexes: dict[str, int] = {}
     country_stats: list[dict[str, Any]] = []
+    failed_groups: list[dict[str, Any]] = []
     countries = _country_sequence()
     country_groups = [
         countries[index : index + country_group_size]
@@ -631,9 +632,65 @@ def _collect_country_batch(
                 key_start_index=group_index % len(api_keys),
                 deadline=deadline,
             )
-        except TimeoutError:
-            LOGGER.warning("NewsData collection stopped at the internal time budget")
+        except TimeoutError as exc:
+            failure = {
+                "countries": country_group,
+                "group_index": group_index,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:500],
+            }
+            failed_groups.append(failure)
+            country_stats.append(
+                {
+                    "countries": country_group,
+                    "group_index": group_index,
+                    "candidate_rows": 0,
+                    "new_candidates": 0,
+                    "new_rows": 0,
+                    "selected_rows": 0,
+                    "duplicates_skipped": 0,
+                    "request": {
+                        "status": "TIMEOUT",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:500],
+                    },
+                }
+            )
+            LOGGER.warning(
+                "NewsData collection stopped at the internal time budget for country group %s",
+                requested_country,
+            )
             break
+        except Exception as exc:  # noqa: BLE001 - preserve successful country groups
+            failure = {
+                "countries": country_group,
+                "group_index": group_index,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:500],
+            }
+            failed_groups.append(failure)
+            country_stats.append(
+                {
+                    "countries": country_group,
+                    "group_index": group_index,
+                    "candidate_rows": 0,
+                    "new_candidates": 0,
+                    "new_rows": 0,
+                    "selected_rows": 0,
+                    "duplicates_skipped": 0,
+                    "request": {
+                        "status": "ERROR",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:500],
+                    },
+                }
+            )
+            LOGGER.warning(
+                "NewsData country group %s failed; continuing with the remaining groups: %s",
+                requested_country,
+                str(exc)[:500],
+            )
+            continue
         candidates = _bronze_rows(payload, retrieved_at, set(country_group))
         country_candidates = len(candidates)
         country_duplicates = 0
@@ -752,6 +809,8 @@ def _collect_country_batch(
         "selection_mode": "round_robin_country",
         "selected_country_counts": selected_country_counts,
         "country_stats": country_stats,
+        "failed_groups": failed_groups,
+        "partial_batch": bool(failed_groups),
     }
     return rows, request_meta
 
@@ -847,12 +906,35 @@ def handler(ctx: Any, data: io.BytesIO | None = None) -> response.Response:
                 f"{json.dumps(summary, ensure_ascii=False)}"
             )
         result = _write_bronze(rows, request_meta, client)
-        result_status = "ok" if result["object_name"] else "no_new_rows"
+        failed_groups = request_meta.get("failed_groups", [])
+        result_status = (
+            "partial"
+            if result["object_name"] and failed_groups
+            else "ok"
+            if result["object_name"]
+            else "partial_error"
+            if failed_groups
+            else "no_new_rows"
+        )
         LOGGER.info(
             "Bronze batch completed: %s (%s rows)",
             result["object_name"] or "no object written",
             result["row_count"],
         )
+        if not result["object_name"] and failed_groups:
+            return response.Response(
+                ctx,
+                response_data=json.dumps(
+                    {
+                        "status": result_status,
+                        **result,
+                        "message": "NewsData failed for every country group; no Bronze object was written.",
+                    },
+                    ensure_ascii=False,
+                ),
+                status_code=503,
+                headers={"Content-Type": "application/json"},
+            )
         return response.Response(
             ctx,
             response_data=json.dumps({"status": result_status, **result}),
