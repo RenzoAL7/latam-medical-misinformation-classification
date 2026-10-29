@@ -60,9 +60,10 @@ partida y ajusta batch/gradient accumulation al límite de memoria local.
 Los pesos se guardan en la caché local de Hugging Face, no dentro del
 repositorio. La descarga incluye pesos base, no checkpoints finetuneados
 inexistentes o no publicados. Se eliminaron del checkout los claims antiguos
-generados por una API, Label Studio y la función OCI que los producía. El
-componente PubMed que queda es opcional y no llama a ninguna API de traducción;
-su ranking se reservará para una fase posterior.
+generados por una API, Label Studio y todo el código OCI. La rama queda
+deliberadamente limitada al entrenamiento, inferencia y evaluación local de
+los cuatro modelos; traducción, generación de consultas, PubMed y ranking son
+fases posteriores fuera de este checkout.
 
 ## Flujo mínimo
 
