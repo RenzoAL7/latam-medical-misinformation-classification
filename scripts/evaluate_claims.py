@@ -28,7 +28,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     predictions = read_table(Path(args.predictions).expanduser())
-    references = validate_reference_table(read_table(Path(args.references).expanduser()))
+    references = validate_reference_table(
+        read_table(Path(args.references).expanduser()),
+        allow_missing_reference_claims=True,
+    )
     required = {"record_id", "model_id", "claim"}
     missing = sorted(required.difference(predictions.columns))
     if missing:

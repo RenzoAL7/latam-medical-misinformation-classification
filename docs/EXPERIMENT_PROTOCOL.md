@@ -21,18 +21,33 @@ El CSV de MedNews se filtra a filas con body_available=SI,
 extraction_status=OK, título no vacío y cuerpo de al menos 400 caracteres. Se
 deduplica por record_id. La salida es un JSONL local de candidatos.
 
-El export no contiene reference_claim. Por tanto, antes de entrenar o reportar
-METEOR/ROUGE se debe anotar un subconjunto y dividirlo en train y validation.
-La anotación debe producir un claim central fiel a la fuente, no una opinión del
-anotador ni un veredicto. El script de entrenamiento rechaza claims vacíos y
-record_id duplicados.
+El export de Label Studio se descarga en JSON. Un script selecciona con semilla
+fija 300 tareas aptas con claim completo y texto fuente no duplicado, y escribe
+un manifiesto final de `record_id`. El manifiesto asigna los splits fijos: 240
+para train, 30 para validation y 30 para test. Las tareas no seleccionadas no
+entran al Gold ni a las métricas. El manifiesto no se sobrescribe: se congela
+antes de entrenar para impedir que el test se elija por sus resultados.
 
-No se exige revisión humana adicional para la comparación automática si ya
-existe un conjunto de referencia anotado con el contrato anterior. La revisión
-ciega es opcional y solo se añade si se desean medir las propiedades humanas
-evaluadas por CLAIMGEN-BART.
+La anotación produce un claim central fiel a la fuente, no una opinión del
+anotador, un veredicto, una consulta PubMed ni varios claims. Una noticia sin
+claim médico se clasifica como no apta y se reemplaza antes de cerrar el Gold.
+El script de entrenamiento rechaza claims vacíos y record_id duplicados.
+Los cuatro modelos reciben el mismo `source_text`, construido con título y
+cuerpo; la bajada se conserva como contexto de anotación, no como entrada del
+modelo. Por ello el claim anotado debe quedar respaldado por ese texto de
+entrada.
+
+Sem1 no incluye revisión humana adicional, baselines extractivos ni ablations
+de entrada. Su comparación se limita a los cuatro modelos bajo el mismo
+conjunto de referencia y los mismos splits.
 
 ## 3. Modelos y adaptación
+
+Los cuatro modelos se ajustan mediante fine-tuning supervisado sobre el mismo
+contrato noticia→claim. Esta decisión sigue el enfoque supervisado de los
+papers de Drive #49, #80 y #81 para pares de texto y claim anotados. No se
+reporta una comparación zero-shot con checkpoints base: los enfoques zero-shot
+de #49 usan LLMs instruccionales con prompting, no estos cuatro modelos base.
 
 1. T5S: `vgaraujov/t5-base-spanish`, modelo encoder-decoder preentrenado en
    español. Se ajusta con entrada `source_text`, cinco épocas, learning rate
@@ -50,16 +65,19 @@ evaluadas por CLAIMGEN-BART.
 La configuración ejecutable está en configs/models.json. Todos se ejecutan
 localmente con Transformers y PyTorch; no se llama a una API generativa.
 Los claims antiguos producidos por una API no forman parte del corpus ni de la
-evaluación. Label Studio tampoco forma parte del flujo de esta rama.
+evaluación. La plataforma de anotación solo aporta un export JSON manual al
+conversor local; no hay sincronización ni servicios externos durante el
+entrenamiento o la inferencia.
 
 ## 4. Métricas
 
-Con reference_claim:
+Con reference_claim del test se reportan exactamente tres métricas:
 
-- METEOR: métrica primaria compatible con la comparación de los trabajos de
-  CheckThat!.
+- METEOR: métrica primaria usada por los papers de Drive #49 y #80 en
+  CheckThat! 2025.
 - ROUGE-L F1: coincidencia de subsecuencia más larga.
-- Exact match normalizado: diagnóstico complementario.
+- Exact match normalizado: coincidencia estricta después de normalizar espacios,
+  mayúsculas y puntuación.
 
 Sin reference_claim:
 
@@ -72,21 +90,12 @@ Los diagnósticos sin referencia describen la ejecución, no calidad, fidelidad
 ni exactitud factual. No se calcularán métricas de referencia contra claims
 generados por otro modelo.
 
-## 5. Revisión humana opcional
+## 5. Fuera del alcance de Sem1
 
-Si se activa, se congela una muestra común con predicciones de los cuatro
-modelos. La hoja ciega asigna códigos M01, M02, etc., mezcla las filas y
-separa model_key.json. Se puede puntuar en escala 1 a 5:
-
-- atomicidad;
-- fluidez;
-- descontextualización;
-- fidelidad a la noticia.
-
-El script no convierte estas puntuaciones en métricas automáticas ni las
-presenta como independientes si el mismo investigador realizó toda la revisión.
-Si solo se necesita la evaluación automática de la fase del sábado, esta hoja
-no es necesaria.
+La revisión humana ciega, los baselines de título/primera oración, las
+ablations de entrada, la extracción multi-claim, la traducción, generación de
+consultas, recuperación PubMed y ranking se reservan para una fase posterior.
+No se reportan como resultados de esta entrega.
 
 ## 6. Regla de reproducibilidad
 

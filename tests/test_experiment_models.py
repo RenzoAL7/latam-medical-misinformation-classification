@@ -99,6 +99,16 @@ def test_metrics_require_reference_claims_and_keep_operational_diagnostics_separ
     )
     assert validate_reference_table(with_reference).shape[0] == 1
 
+    pending = pd.DataFrame(
+        [{"record_id": "1", "source_text": "fuente", "reference_claim": ""}]
+    )
+    assert (
+        validate_reference_table(
+            pending, allow_missing_reference_claims=True
+        ).shape[0]
+        == 1
+    )
+
 
 def test_configs_are_valid_json() -> None:
     json.loads((ROOT / "configs" / "models.json").read_text(encoding="utf-8"))

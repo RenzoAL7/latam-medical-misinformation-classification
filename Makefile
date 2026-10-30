@@ -4,9 +4,15 @@ INPUT ?=
 OUT ?= artifacts
 SAMPLE_SIZE ?= 100
 VALIDATION_FRACTION ?= 0.2
+LABEL_STUDIO_EXPORT ?=
+MANIFEST ?=
+GOLD ?= artifacts/gold/reference_claims.csv
+GOLD_TRAIN ?= artifacts/gold/train.csv
+GOLD_VALIDATION ?= artifacts/gold/validation.csv
+GOLD_TEST ?= artifacts/gold/test.csv
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install test download-models prepare-corpus reference-template split-reference train infer evaluate review-sheet
+.PHONY: help setup install test download-models prepare-corpus reference-template build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate review-sheet
 
 help:
 	@echo "Comandos disponibles:"
@@ -15,12 +21,15 @@ help:
 	@echo "  make download-models               Descarga solamente los pesos base en la cache local de Hugging Face"
 	@echo "  make prepare-corpus INPUT=/ruta.csv OUT=artifacts/candidates.jsonl"
 	@echo "  make reference-template INPUT=artifacts/candidates.jsonl OUT=artifacts/references.csv SAMPLE_SIZE=100"
+	@echo "  make build-gold-manifest LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
+	@echo "  make import-labelstudio-gold LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
+	@echo "  make split-gold GOLD=artifacts/gold/reference_claims.csv"
 	@echo "  make split-reference INPUT=artifacts/references.csv TRAIN=artifacts/train.csv VALIDATION=artifacts/validation.csv"
 	@echo "  Modelos: t5s_spanish, barto_spanish, mbart50_es, umt5_base_es"
 	@echo "  make train MODEL=t5s_spanish TRAIN=/ruta.csv VALIDATION=/ruta.csv OUT=artifacts/checkpoints/t5s_spanish"
 	@echo "  make infer MODEL=t5s_spanish CHECKPOINT=/ruta INPUT=/ruta.jsonl OUT=artifacts/predictions.jsonl"
 	@echo "  make evaluate PREDICTIONS=/ruta.jsonl REFERENCES=/ruta.csv OUT=artifacts/evaluation"
-	@echo "  make review-sheet INPUT=/ruta.jsonl PREDICTIONS=/ruta.jsonl OUT=artifacts/review SAMPLE_SIZE=100"
+	@echo "  make review-sheet ...              Utilidad futura; fuera del alcance de Sem1"
 
 setup:
 	$(VENV_PYTHON) -m venv .venv
@@ -44,6 +53,19 @@ prepare-corpus:
 reference-template:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/candidates.jsonl" && exit 2)
 	$(PYTHON) scripts/create_reference_template.py --input "$(INPUT)" --output "$(OUT)" --sample-size "$(SAMPLE_SIZE)"
+
+build-gold-manifest:
+	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
+	@test -n "$(MANIFEST)" || (echo "Falta MANIFEST=/ruta/al/manifest_final.csv" && exit 2)
+	$(PYTHON) scripts/build_sem1_manifest.py --input "$(LABEL_STUDIO_EXPORT)" --output "$(MANIFEST)"
+
+import-labelstudio-gold:
+	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
+	@test -n "$(MANIFEST)" || (echo "Falta MANIFEST=/ruta/al/manifest_final.csv" && exit 2)
+	$(PYTHON) scripts/import_annotation_gold.py --input "$(LABEL_STUDIO_EXPORT)" --manifest "$(MANIFEST)" --output "$(GOLD)" --require-complete
+
+split-gold:
+	$(PYTHON) scripts/build_sem1_splits.py --input "$(GOLD)" --train-output "$(GOLD_TRAIN)" --validation-output "$(GOLD_VALIDATION)" --test-output "$(GOLD_TEST)"
 
 split-reference:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/references.csv" && exit 2)
