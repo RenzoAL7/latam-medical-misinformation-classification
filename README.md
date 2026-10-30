@@ -52,8 +52,8 @@ El CSV recibido contiene noticias y cuerpos, pero no claims de referencia. Por
 eso la primera fase tiene un requisito explícito: anotar un subconjunto con un
 claim central antes de entrenar o calcular métricas de referencia. Las 700
 tareas de Label Studio son un pool de candidatos: el manifiesto final define
-las 300 que forman el Gold y mantiene 400 como reserva. No se inventan
-etiquetas ni se usan borradores generados por modelos como Gold.
+las 300 que forman el Gold y deja las no seleccionadas fuera del experimento.
+No se inventan etiquetas ni se usan borradores generados por modelos como Gold.
 
 Con reference_claim anotado, se reportan exactamente tres métricas: METEOR,
 ROUGE-L F1 y exact match normalizado. Sin referencia solo se reportan
