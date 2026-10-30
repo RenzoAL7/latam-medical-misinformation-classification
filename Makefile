@@ -1,4 +1,4 @@
-VENV_PYTHON ?= $(shell if command -v python3.12 >/dev/null 2>&1; then echo python3.12; elif test -x /Users/renzo/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12; then echo /Users/renzo/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3.12; else echo python3; fi)
+VENV_PYTHON ?= $(shell if command -v python3.12 >/dev/null 2>&1; then echo python3.12; elif command -v python3.11 >/dev/null 2>&1; then echo python3.11; else echo python3; fi)
 PYTHON ?= .venv/bin/python
 INPUT ?=
 OUT ?= artifacts
