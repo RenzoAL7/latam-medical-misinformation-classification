@@ -324,3 +324,43 @@ def test_audit_export_keeps_all_tasks_and_flags_duplicates(tmp_path: Path) -> No
     summary_data = json.loads(summary.read_text(encoding="utf-8"))
     assert summary_data["tasks"] == 3
     assert summary_data["eligible_after_exact_source_and_claim_deduplication"] == 1
+
+
+def test_manifest_applies_reviewed_record_exclusions(tmp_path: Path) -> None:
+    tasks = [
+        _task("keep", "", "Claim que se conserva."),
+        _task("drop", "", "Claim que se excluye tras revisión."),
+        _task("other", "", "Otro claim disponible."),
+        _task("third", "", "Tercer claim disponible."),
+        _task("too-long", "", " ".join(["palabra"] * 81)),
+    ]
+    export = tmp_path / "labelstudio.json"
+    export.write_text(json.dumps(tasks), encoding="utf-8")
+    exclusions = tmp_path / "exclusions.csv"
+    exclusions.write_text("record_id,reason\ndrop,noticia_republicada\n", encoding="utf-8")
+    manifest = tmp_path / "manifest.csv"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "build_sem1_manifest.py"),
+            "--input",
+            str(export),
+            "--output",
+            str(manifest),
+            "--exclude-record-ids",
+            str(exclusions),
+            "--train",
+            "1",
+            "--validation",
+            "1",
+            "--test",
+            "1",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert '"manual_exclusions": 1' in result.stdout
+    selected = pd.read_csv(manifest)["record_id"].tolist()
+    assert "drop" not in selected
+    assert "too-long" not in selected

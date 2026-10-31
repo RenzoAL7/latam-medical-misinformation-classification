@@ -6,6 +6,7 @@ SAMPLE_SIZE ?= 100
 VALIDATION_FRACTION ?= 0.2
 LABEL_STUDIO_EXPORT ?=
 MANIFEST ?=
+EXCLUDE_RECORD_IDS ?=
 AUDIT ?= artifacts/audit/labelstudio_claims_audit.csv
 DUPLICATES ?= artifacts/audit/labelstudio_duplicate_review.csv
 AUDIT_SUMMARY ?= artifacts/audit/labelstudio_audit_summary.json
@@ -65,7 +66,7 @@ audit-labelstudio:
 build-gold-manifest:
 	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
 	@test -n "$(MANIFEST)" || (echo "Falta MANIFEST=/ruta/al/manifest_final.csv" && exit 2)
-	$(PYTHON) scripts/build_sem1_manifest.py --input "$(LABEL_STUDIO_EXPORT)" --output "$(MANIFEST)"
+	$(PYTHON) scripts/build_sem1_manifest.py --input "$(LABEL_STUDIO_EXPORT)" --output "$(MANIFEST)" $(if $(EXCLUDE_RECORD_IDS),--exclude-record-ids "$(EXCLUDE_RECORD_IDS)")
 
 import-labelstudio-gold:
 	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)

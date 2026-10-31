@@ -97,6 +97,19 @@ def _canonical_eligibility(eligibility: str, claim: str) -> str:
     return eligibility
 
 
+def _read_excluded_record_ids(path_value: str) -> set[str]:
+    if not path_value:
+        return set()
+    path = Path(path_value).expanduser()
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows or "record_id" not in rows[0]:
+        raise ValueError("El archivo de exclusiones debe contener la columna record_id.")
+    record_ids = {_clean(row.get("record_id")) for row in rows}
+    record_ids.discard("")
+    return record_ids
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True, help="Export JSON de las tareas anotadas.")
@@ -105,6 +118,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train", type=int, default=240)
     parser.add_argument("--validation", type=int, default=30)
     parser.add_argument("--test", type=int, default=30)
+    parser.add_argument(
+        "--max-claim-words",
+        type=int,
+        default=80,
+        help="Máximo de palabras para un claim central; evita pegar el artículo entero.",
+    )
+    parser.add_argument(
+        "--exclude-record-ids",
+        default="",
+        help="CSV opcional con record_id revisados manualmente que no deben entrar al Gold.",
+    )
     return parser.parse_args()
 
 
@@ -113,6 +137,8 @@ def main() -> None:
     expected_total = args.train + args.validation + args.test
     if min(args.train, args.validation, args.test) <= 0:
         raise ValueError("Los tamaños train, validation y test deben ser positivos.")
+    if args.max_claim_words <= 0:
+        raise ValueError("max-claim-words debe ser positivo.")
 
     output = Path(args.output).expanduser()
     if output.exists():
@@ -122,6 +148,7 @@ def main() -> None:
 
     payload = json.loads(Path(args.input).expanduser().read_text(encoding="utf-8"))
     tasks = _tasks_from_export(payload)
+    excluded_record_ids = _read_excluded_record_ids(args.exclude_record_ids)
     seen_record_ids: set[str] = set()
     candidates_by_source: dict[str, dict[str, str]] = {}
     excluded = Counter()
@@ -134,6 +161,9 @@ def main() -> None:
         if record_id in seen_record_ids:
             raise ValueError(f"record_id duplicado en el export: {record_id}")
         seen_record_ids.add(record_id)
+        if record_id in excluded_record_ids:
+            excluded["excluido_por_revision_manual"] += 1
+            continue
 
         annotation = _latest_completed_annotation(task)
         if annotation is None:
@@ -148,6 +178,9 @@ def main() -> None:
             continue
         if not claim:
             excluded["claim_vacio"] += 1
+            continue
+        if len(claim.split()) > args.max_claim_words:
+            excluded["claim_excede_maximo_palabras"] += 1
             continue
 
         source_hash = _source_hash(data)
@@ -224,6 +257,8 @@ def main() -> None:
                     "validation": args.validation,
                     "test": args.test,
                 },
+                "manual_exclusions": len(excluded_record_ids),
+                "max_claim_words": args.max_claim_words,
                 "excluded": dict(sorted(excluded.items())),
                 "output": str(output),
             },

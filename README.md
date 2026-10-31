@@ -48,6 +48,8 @@ de anotar, solo pueden entrar al Gold las tareas que cumplan simultáneamente:
 3. Tengan título o cuerpo disponible.
 4. No dupliquen el `source_text` ni el `reference_claim` normalizado de otra
    noticia seleccionada.
+5. Contengan un claim central de hasta 80 palabras; los más largos se marcan
+   como probable pegado accidental del artículo completo.
 
 Antes de congelar esa selección, `audit_labelstudio_export.py` escribe una
 tabla de las 700 tareas y otra con pares exactos o similares para revisión. Los
@@ -188,9 +190,11 @@ Este comando deja tres archivos locales e ignorados por Git:
 `artifacts/audit/labelstudio_claims_audit.csv`,
 `artifacts/audit/labelstudio_duplicate_review.csv` y
 `artifacts/audit/labelstudio_audit_summary.json`. Revisa los pares marcados
-como `near_claim` y `near_source`; son banderas, no descartes automáticos.
-Después construye un manifiesto final con exactamente 300 `record_id` y la
-columna `split`:
+como `near_claim` y `near_source`; son banderas, no descartes automáticos. Si
+decides excluir alguno, guarda sus `record_id` en un CSV local con columna
+`record_id` y pásalo como `EXCLUDE_RECORD_IDS` al siguiente comando. Después
+construye un manifiesto final con exactamente 300 `record_id` y la columna
+`split`:
 
 ```text
 240 train | 30 validation | 30 test
@@ -204,7 +208,8 @@ ejecuta:
 
     make build-gold-manifest \
       LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json \
-      MANIFEST=/ruta/manifest_final_300.csv
+      MANIFEST=/ruta/manifest_final_300.csv \
+      EXCLUDE_RECORD_IDS=/ruta/exclusiones_revisadas.csv
     make import-labelstudio-gold \
       LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json \
       MANIFEST=/ruta/manifest_final_300.csv

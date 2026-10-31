@@ -234,11 +234,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-output", required=True, help="Resumen JSON de la auditoría.")
     parser.add_argument("--claim-similarity-threshold", type=float, default=0.90)
     parser.add_argument("--source-similarity-threshold", type=float, default=0.92)
+    parser.add_argument("--max-claim-words", type=int, default=80)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.max_claim_words <= 0:
+        raise ValueError("max-claim-words debe ser positivo.")
     payload = json.loads(Path(args.input).expanduser().read_text(encoding="utf-8"))
     tasks = _tasks_from_export(payload)
     seen_record_ids: set[str] = set()
@@ -261,17 +264,20 @@ def main() -> None:
         title = _clean(data.get("title"))
         body = _clean(data.get("body"))
         source_text = "\n\n".join(part for part in (title, body) if part)
-        issue = ""
+        issues: list[str] = []
         if annotation is None:
-            issue = "sin_anotacion_completa"
+            issues.append("sin_anotacion_completa")
         elif not raw_eligibility and claim:
-            issue = "elegibilidad_legacy_inferida_desde_reference_claim"
+            issues.append("elegibilidad_legacy_inferida_desde_reference_claim")
         elif eligibility in APTA and not claim:
-            issue = "apta_sin_reference_claim"
+            issues.append("apta_sin_reference_claim")
         elif eligibility not in APTA and claim:
-            issue = "reference_claim_sin_elegibilidad_apta"
+            issues.append("reference_claim_sin_elegibilidad_apta")
         elif eligibility in APTA and not source_text:
-            issue = "apta_sin_title_ni_body"
+            issues.append("apta_sin_title_ni_body")
+        claim_word_count = len(claim.split())
+        if claim_word_count > args.max_claim_words:
+            issues.append("reference_claim_excede_maximo_palabras")
 
         rows.append(
             {
@@ -296,13 +302,16 @@ def main() -> None:
                 "news_eligibility_raw": raw_eligibility,
                 "news_eligibility": eligibility,
                 "reference_claim": claim,
+                "reference_claim_word_count": str(claim_word_count),
                 "support_span": _support_span(results),
                 "source_hash": _short_hash(source_text),
                 "normalized_title": _normalize_words(title),
                 "normalized_claim": _normalize_words(claim),
                 "claim_hash": _short_hash(_normalize_words(claim)),
-                "eligible_for_gold": "yes" if eligibility in APTA and claim and source_text else "no",
-                "quality_issue": issue,
+                "eligible_for_gold": "yes"
+                if eligibility in APTA and claim and source_text and claim_word_count <= args.max_claim_words
+                else "no",
+                "quality_issue": ";".join(issues),
                 "exact_source_duplicate_group": "",
                 "exact_title_duplicate_group": "",
                 "exact_claim_duplicate_group": "",
@@ -368,6 +377,7 @@ def main() -> None:
         "thresholds": {
             "claim_similarity": args.claim_similarity_threshold,
             "source_similarity": args.source_similarity_threshold,
+            "max_claim_words": args.max_claim_words,
         },
     }
     summary_path = Path(args.summary_output).expanduser()
