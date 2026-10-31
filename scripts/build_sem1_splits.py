@@ -61,6 +61,14 @@ def main() -> None:
                 "Hay textos fuente repetidos en más de un split: "
                 + ", ".join(leaked_sources.index.astype(str).tolist()[:10])
             )
+    if "claim_hash" in frame:
+        split_per_claim = frame.groupby("claim_hash")["split"].nunique()
+        leaked_claims = split_per_claim[split_per_claim.gt(1)]
+        if not leaked_claims.empty:
+            raise ValueError(
+                "Hay reference_claims repetidos en más de un split: "
+                + ", ".join(leaked_claims.index.astype(str).tolist()[:10])
+            )
 
     output_paths = {
         "train": Path(args.train_output).expanduser(),

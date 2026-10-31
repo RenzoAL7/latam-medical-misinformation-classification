@@ -257,3 +257,70 @@ def test_full_sem1_dry_run_with_700_tasks_and_300_gold_rows(tmp_path: Path) -> N
     assert float(summary["meteor"]) > 0.99
     assert float(summary["rouge_l_f1"]) == 1.0
     assert float(summary["exact_match"]) == 1.0
+
+
+def test_audit_export_keeps_all_tasks_and_flags_duplicates(tmp_path: Path) -> None:
+    first = _task("apt-legacy", "", "Un mismo claim médico verificable.")
+    first["annotations"][0]["result"] = [
+        {"from_name": "news_utility", "value": {"choices": ["APTA"]}},
+        {
+            "from_name": "news_eligibility",
+            "value": {"choices": ["APTA_CON_CLAIM"]},
+        },
+        {
+            "from_name": "reference_claim",
+            "value": {"text": ["Un mismo claim médico verificable."]},
+        },
+    ]
+    second = _task("apt-duplicate", "", "Un mismo claim médico verificable.")
+    second["data"]["body"] = "Otro cuerpo fuente para el mismo claim."
+    non_apt = _task("sin-claim", "", "Claim escrito por error.")
+    non_apt["annotations"][0]["result"][0]["value"]["choices"] = [
+        "SIN_CLAIM_MEDICO"
+    ]
+
+    export = tmp_path / "labelstudio.json"
+    export.write_text(json.dumps([first, second, non_apt]), encoding="utf-8")
+    audit = tmp_path / "audit.csv"
+    duplicates = tmp_path / "duplicates.csv"
+    summary = tmp_path / "summary.json"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "audit_labelstudio_export.py"),
+            "--input",
+            str(export),
+            "--audit-output",
+            str(audit),
+            "--duplicates-output",
+            str(duplicates),
+            "--summary-output",
+            str(summary),
+        ],
+        check=True,
+    )
+
+    audit_frame = pd.read_csv(audit)
+    assert len(audit_frame) == 3
+    assert set(audit_frame) >= {
+        "reference_claim",
+        "source_hash",
+        "claim_hash",
+        "eligible_for_gold",
+        "exact_claim_duplicate_group",
+    }
+    assert (
+        audit_frame.loc[audit_frame["record_id"] == "apt-legacy", "news_eligibility"].iloc[0]
+        == "APTA_CON_CLAIM"
+    )
+    assert audit_frame["exact_claim_duplicate_group"].notna().sum() == 2
+    assert (
+        audit_frame.loc[audit_frame["record_id"] == "sin-claim", "quality_issue"].iloc[0]
+        == "reference_claim_sin_elegibilidad_apta"
+    )
+
+    duplicate_frame = pd.read_csv(duplicates)
+    assert "exact_claim" in duplicate_frame["duplicate_type"].tolist()
+    summary_data = json.loads(summary.read_text(encoding="utf-8"))
+    assert summary_data["tasks"] == 3
+    assert summary_data["eligible_after_exact_source_and_claim_deduplication"] == 1

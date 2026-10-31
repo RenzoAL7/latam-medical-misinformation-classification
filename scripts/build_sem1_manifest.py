@@ -13,6 +13,7 @@ import csv
 import hashlib
 import json
 import random
+import unicodedata
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -39,16 +40,21 @@ def _latest_completed_annotation(task: dict[str, Any]) -> dict[str, Any] | None:
         for annotation in task.get("annotations", [])
         if not annotation.get("was_cancelled") and annotation.get("result")
     ]
-    return completed[-1] if completed else None
+    return max(completed, key=lambda annotation: str(annotation.get("created_at") or "")) if completed else None
 
 
 def _result_choice(results: list[dict[str, Any]], names: tuple[str, ...]) -> str:
-    for result in results:
-        if result.get("from_name") not in names:
-            continue
-        choices = (result.get("value") or {}).get("choices")
-        if isinstance(choices, list) and choices:
-            return _clean(choices[0])
+    # The current field takes precedence over the retired field even when an
+    # older result remains in the same annotation after a configuration edit.
+    for name in names:
+        choices = [
+            (result.get("value") or {}).get("choices")
+            for result in results
+            if result.get("from_name") == name
+        ]
+        for choice in reversed(choices):
+            if isinstance(choice, list) and choice:
+                return _clean(choice[0])
     return ""
 
 
@@ -70,6 +76,25 @@ def _source_hash(data: dict[str, Any]) -> str:
     if not source_text:
         return ""
     return hashlib.sha256(source_text.encode("utf-8")).hexdigest()[:16]
+
+
+def _claim_hash(claim: str) -> str:
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", _clean(claim).lower())
+        if not unicodedata.combining(character)
+    )
+    normalized = "".join(character if character.isalnum() else " " for character in normalized)
+    normalized = " ".join(normalized.split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16] if normalized else ""
+
+
+def _canonical_eligibility(eligibility: str, claim: str) -> str:
+    if eligibility == "APTA":
+        return "APTA_CON_CLAIM_LEGACY"
+    if not eligibility and claim:
+        return "APTA_CON_CLAIM_LEGACY"
+    return eligibility
 
 
 def parse_args() -> argparse.Namespace:
@@ -98,7 +123,7 @@ def main() -> None:
     payload = json.loads(Path(args.input).expanduser().read_text(encoding="utf-8"))
     tasks = _tasks_from_export(payload)
     seen_record_ids: set[str] = set()
-    unique_by_source: dict[str, dict[str, str]] = {}
+    candidates_by_source: dict[str, dict[str, str]] = {}
     excluded = Counter()
 
     for task in tasks:
@@ -117,8 +142,7 @@ def main() -> None:
         results = annotation.get("result", [])
         eligibility = _result_choice(results, ("news_eligibility", "news_utility"))
         claim = _result_text(results, "reference_claim")
-        if not eligibility and claim:
-            eligibility = "APTA_CON_CLAIM_LEGACY"
+        eligibility = _canonical_eligibility(eligibility, claim)
         if eligibility not in APTA:
             excluded[eligibility or "sin_elegibilidad"] += 1
             continue
@@ -133,18 +157,28 @@ def main() -> None:
         candidate = {
             "record_id": record_id,
             "source_hash": source_hash,
+            "claim_hash": _claim_hash(claim),
             "country": _clean(data.get("country")),
             "published_at": _clean(data.get("published_at")),
         }
-        existing = unique_by_source.get(source_hash)
+        existing = candidates_by_source.get(source_hash)
         if existing is None or record_id < existing["record_id"]:
             if existing is not None:
                 excluded["texto_fuente_duplicado"] += 1
-            unique_by_source[source_hash] = candidate
+            candidates_by_source[source_hash] = candidate
         else:
             excluded["texto_fuente_duplicado"] += 1
 
-    candidates = sorted(unique_by_source.values(), key=lambda row: row["record_id"])
+    unique_by_claim: dict[str, dict[str, str]] = {}
+    for candidate in sorted(candidates_by_source.values(), key=lambda row: row["record_id"]):
+        claim_hash = candidate["claim_hash"]
+        existing = unique_by_claim.get(claim_hash)
+        if existing is None:
+            unique_by_claim[claim_hash] = candidate
+        else:
+            excluded["reference_claim_duplicado"] += 1
+
+    candidates = sorted(unique_by_claim.values(), key=lambda row: row["record_id"])
     if len(candidates) < expected_total:
         raise ValueError(
             f"Solo hay {len(candidates)} tareas aptas y sin texto duplicado; "
@@ -164,7 +198,15 @@ def main() -> None:
         row["sample_role"] = "primary"
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["record_id", "split", "sample_role", "source_hash", "country", "published_at"]
+    fieldnames = [
+        "record_id",
+        "split",
+        "sample_role",
+        "source_hash",
+        "claim_hash",
+        "country",
+        "published_at",
+    ]
     with output.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()

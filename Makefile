@@ -6,13 +6,16 @@ SAMPLE_SIZE ?= 100
 VALIDATION_FRACTION ?= 0.2
 LABEL_STUDIO_EXPORT ?=
 MANIFEST ?=
+AUDIT ?= artifacts/audit/labelstudio_claims_audit.csv
+DUPLICATES ?= artifacts/audit/labelstudio_duplicate_review.csv
+AUDIT_SUMMARY ?= artifacts/audit/labelstudio_audit_summary.json
 GOLD ?= artifacts/gold/reference_claims.csv
 GOLD_TRAIN ?= artifacts/gold/train.csv
 GOLD_VALIDATION ?= artifacts/gold/validation.csv
 GOLD_TEST ?= artifacts/gold/test.csv
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install test download-models prepare-corpus reference-template build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate review-sheet
+.PHONY: help setup install test download-models prepare-corpus reference-template audit-labelstudio build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate review-sheet
 
 help:
 	@echo "Comandos disponibles:"
@@ -21,6 +24,7 @@ help:
 	@echo "  make download-models               Descarga solamente los pesos base en la cache local de Hugging Face"
 	@echo "  make prepare-corpus INPUT=/ruta.csv OUT=artifacts/candidates.jsonl"
 	@echo "  make reference-template INPUT=artifacts/candidates.jsonl OUT=artifacts/references.csv SAMPLE_SIZE=100"
+	@echo "  make audit-labelstudio LABEL_STUDIO_EXPORT=/ruta/export.json"
 	@echo "  make build-gold-manifest LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
 	@echo "  make import-labelstudio-gold LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
 	@echo "  make split-gold GOLD=artifacts/gold/reference_claims.csv"
@@ -53,6 +57,10 @@ prepare-corpus:
 reference-template:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/candidates.jsonl" && exit 2)
 	$(PYTHON) scripts/create_reference_template.py --input "$(INPUT)" --output "$(OUT)" --sample-size "$(SAMPLE_SIZE)"
+
+audit-labelstudio:
+	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
+	$(PYTHON) scripts/audit_labelstudio_export.py --input "$(LABEL_STUDIO_EXPORT)" --audit-output "$(AUDIT)" --duplicates-output "$(DUPLICATES)" --summary-output "$(AUDIT_SUMMARY)"
 
 build-gold-manifest:
 	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)

@@ -12,6 +12,7 @@ import argparse
 import csv
 import hashlib
 import json
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -40,16 +41,19 @@ def _latest_completed_annotation(task: dict[str, Any]) -> dict[str, Any] | None:
         for annotation in task.get("annotations", [])
         if not annotation.get("was_cancelled") and annotation.get("result")
     ]
-    return completed[-1] if completed else None
+    return max(completed, key=lambda annotation: str(annotation.get("created_at") or "")) if completed else None
 
 
 def _result_choice(results: list[dict[str, Any]], names: tuple[str, ...]) -> str:
-    for result in results:
-        if result.get("from_name") not in names:
-            continue
-        choices = (result.get("value") or {}).get("choices")
-        if isinstance(choices, list) and choices:
-            return _clean(choices[0])
+    for name in names:
+        choices = [
+            (result.get("value") or {}).get("choices")
+            for result in results
+            if result.get("from_name") == name
+        ]
+        for choice in reversed(choices):
+            if isinstance(choice, list) and choice:
+                return _clean(choice[0])
     return ""
 
 
@@ -65,6 +69,25 @@ def _result_text(results: list[dict[str, Any]], name: str) -> str:
         elif _clean(value):
             return _clean(value)
     return ""
+
+
+def _claim_hash(claim: str) -> str:
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", _clean(claim).lower())
+        if not unicodedata.combining(character)
+    )
+    normalized = "".join(character if character.isalnum() else " " for character in normalized)
+    normalized = " ".join(normalized.split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16] if normalized else ""
+
+
+def _canonical_eligibility(eligibility: str, claim: str) -> str:
+    if eligibility == "APTA":
+        return "APTA_CON_CLAIM_LEGACY"
+    if not eligibility and claim:
+        return "APTA_CON_CLAIM_LEGACY"
+    return eligibility
 
 
 def _read_manifest(path: Path) -> dict[str, dict[str, str]]:
@@ -138,8 +161,7 @@ def main() -> None:
         results = annotation.get("result", []) if annotation else []
         eligibility = _result_choice(results, ("news_eligibility", "news_utility"))
         claim = _result_text(results, "reference_claim")
-        if not eligibility and claim:
-            eligibility = "APTA_CON_CLAIM_LEGACY"
+        eligibility = _canonical_eligibility(eligibility, claim)
         if eligibility not in APTA:
             pending.append(f"{record_id}: elegibilidad={eligibility or 'pendiente'}")
             continue
@@ -164,6 +186,7 @@ def main() -> None:
                 "title": title,
                 "body": body,
                 "source_hash": hashlib.sha256(source_text.encode("utf-8")).hexdigest()[:16],
+                "claim_hash": _claim_hash(claim),
                 "source_text": source_text,
                 "reference_claim": claim,
                 "news_eligibility": eligibility,

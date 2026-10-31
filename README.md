@@ -46,13 +46,19 @@ de anotar, solo pueden entrar al Gold las tareas que cumplan simultáneamente:
 1. Estén marcadas como aptas con claim (`APTA_CON_CLAIM`).
 2. Tengan un `reference_claim` no vacío.
 3. Tengan título o cuerpo disponible.
-4. No dupliquen el `source_text` de otra noticia seleccionada.
+4. No dupliquen el `source_text` ni el `reference_claim` normalizado de otra
+   noticia seleccionada.
 
-`build_sem1_manifest.py` selecciona 300 tareas aptas y únicas con una semilla
-fija, asigna `train`, `validation` y `test`, y escribe el manifiesto. El
-archivo no se sobrescribe: cuando existe, queda congelado para evitar elegir el
-test en función de los resultados. Si el export no contiene al menos 300 tareas
-aptas y no duplicadas, el comando falla; no rellena casos ni inventa claims.
+Antes de congelar esa selección, `audit_labelstudio_export.py` escribe una
+tabla de las 700 tareas y otra con pares exactos o similares para revisión. Los
+pares similares no se excluyen automáticamente porque pueden ser noticias
+distintas; los duplicados exactos de fuente o claim sí se excluyen al construir
+el manifiesto. `build_sem1_manifest.py` selecciona 300 tareas aptas y únicas
+con una semilla fija, asigna `train`, `validation` y `test`, y escribe el
+manifiesto. El archivo no se sobrescribe: cuando existe, queda congelado para
+evitar elegir el test en función de los resultados. Si el export no contiene al
+menos 300 tareas aptas y no duplicadas, el comando falla; no rellena casos ni
+inventa claims.
 
 ### Pipeline de datos de Sem1
 
@@ -62,13 +68,14 @@ flowchart LR
     B["Filtrar cuerpos disponibles<br/>y ≥ 400 caracteres"]
     C["700 tareas candidatas<br/>en Label Studio"]
     D["Anotar una noticia<br/>claim central + span + elegibilidad"]
-    E["Exportar JSON<br/>y construir reference_claims.csv<br/>300 pares noticia → claim"]
-    F["Congelar split<br/>240 train · 30 validation · 30 test"]
-    G["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
-    H["Predecir sobre los 30 casos test"]
-    I["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · Exact match"]
+    E["Exportar JSON y auditar<br/>700 tareas + duplicados a revisar"]
+    F["Construir reference_claims.csv<br/>300 pares noticia → claim"]
+    G["Congelar split<br/>240 train · 30 validation · 30 test"]
+    H["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
+    I["Predecir sobre los 30 casos test"]
+    J["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · Exact match"]
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
 ```
 
 Los datos que debe producir cada etapa son:
@@ -76,7 +83,9 @@ Los datos que debe producir cada etapa son:
 | Artefacto | Contenido esencial | Uso |
 | --- | --- | --- |
 | Export JSON de Label Studio | Tarea, selección de elegibilidad, span y `reference_claim` | Fuente local de la anotación; no se versiona en Git. |
-| `manifest_final_300.csv` | `record_id`, `split`, `sample_role`, `source_hash`, país y fecha | Lista cerrada de las 300 noticias y de sus splits. |
+| `labelstudio_claims_audit.csv` | Las 700 tareas, estado, `reference_claim`, hashes y banderas de calidad | Revisión del cribado y de duplicados; no entra al entrenamiento. |
+| `labelstudio_duplicate_review.csv` | Pares de fuentes o claims exactos/similares y acción sugerida | Revisión manual de similitudes antes de congelar el manifiesto. |
+| `manifest_final_300.csv` | `record_id`, `split`, `sample_role`, `source_hash`, `claim_hash`, país y fecha | Lista cerrada de las 300 noticias y de sus splits. |
 | `reference_claims.csv` | Identidad, metadatos, `title`, `body`, `source_text`, `reference_claim`, elegibilidad y split | Gold completo usado por entrenamiento, inferencia y evaluación. |
 | `train.csv`, `validation.csv`, `test.csv` | Filas Gold separadas según el manifiesto | Entrenamiento, selección de checkpoint y evaluación final. |
 | `predictions/<modelo>.jsonl` | Un claim generado por cada caso test | Entrada de la evaluación. |
@@ -170,17 +179,28 @@ checkout.
 ## Flujo de Seminario 1
 
 Cuando termine la anotación en Label Studio, descarga **Export → JSON**. No
-uses el CSV crudo de Label Studio para entrenar. Construye un manifiesto final
-con exactamente 300 `record_id` y la columna `split`:
+uses el CSV crudo de Label Studio para entrenar. Primero audita las 700 tareas:
+
+    make audit-labelstudio \
+      LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json
+
+Este comando deja tres archivos locales e ignorados por Git:
+`artifacts/audit/labelstudio_claims_audit.csv`,
+`artifacts/audit/labelstudio_duplicate_review.csv` y
+`artifacts/audit/labelstudio_audit_summary.json`. Revisa los pares marcados
+como `near_claim` y `near_source`; son banderas, no descartes automáticos.
+Después construye un manifiesto final con exactamente 300 `record_id` y la
+columna `split`:
 
 ```text
 240 train | 30 validation | 30 test
 ```
 
 El primer comando selecciona con semilla fija 300 tareas aptas, con claim
-completo y texto fuente no duplicado. Las tareas restantes quedan como reserva.
-No ejecutes el comando de nuevo: el manifiesto se congela para que no se pueda
-escoger el test después de observar resultados. Luego ejecuta:
+completo y sin duplicados exactos de fuente o claim. Las tareas restantes
+quedan como reserva. No ejecutes el comando de nuevo: el manifiesto se congela
+para que no se pueda escoger el test después de observar resultados. Luego
+ejecuta:
 
     make build-gold-manifest \
       LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json \
