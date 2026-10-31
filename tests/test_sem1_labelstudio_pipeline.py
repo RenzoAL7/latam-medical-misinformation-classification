@@ -40,9 +40,9 @@ def _task(record_id: str, split: str, claim: str) -> dict:
 
 def test_labelstudio_export_respects_manifest_and_builds_fixed_splits(tmp_path: Path) -> None:
     tasks = [
-        _task("train-1", "train", "Claim de entrenamiento."),
-        _task("validation-1", "validation", "Claim de validación."),
-        _task("test-1", "test", "Claim de prueba."),
+        _task("train-1", "train", "Claim central de entrenamiento verificable."),
+        _task("validation-1", "validation", "Claim central de validación verificable."),
+        _task("test-1", "test", "Claim central de prueba verificable."),
         _task("reserve-1", "train", "No debe entrar al Gold."),
     ]
     tasks[-1]["annotations"][0]["result"][0]["value"]["choices"] = [
@@ -122,7 +122,7 @@ def test_labelstudio_export_respects_manifest_and_builds_fixed_splits(tmp_path: 
     assert split_record_ids == {"train-1", "validation-1", "test-1"}
 
 
-def test_full_sem1_dry_run_with_700_tasks_and_300_gold_rows(tmp_path: Path) -> None:
+def test_full_sem1_dry_run_with_700_tasks_and_400_gold_rows(tmp_path: Path) -> None:
     """Prueba el tamaño real del flujo sin cargar pesos ni tocar datos reales."""
     apt_tasks = [
         _task(
@@ -130,16 +130,16 @@ def test_full_sem1_dry_run_with_700_tasks_and_300_gold_rows(tmp_path: Path) -> N
             "",
             f"La afirmación médica número {index} es verificable.",
         )
-        for index in range(300)
+        for index in range(400)
     ]
     for index, task in enumerate(apt_tasks):
         task["data"]["body"] = f"Cuerpo médico único {index} con información verificable."
 
     non_claim_tasks = [
-        _task(f"sin-claim-{index:03d}", "", "") for index in range(240)
+        _task(f"sin-claim-{index:03d}", "", "") for index in range(200)
     ]
     noisy_tasks = [
-        _task(f"ruido-{index:03d}", "", "") for index in range(160)
+        _task(f"ruido-{index:03d}", "", "") for index in range(100)
     ]
     for task in non_claim_tasks:
         task["annotations"][0]["result"] = [
@@ -157,7 +157,7 @@ def test_full_sem1_dry_run_with_700_tasks_and_300_gold_rows(tmp_path: Path) -> N
     export.write_text(
         json.dumps(apt_tasks + non_claim_tasks + noisy_tasks), encoding="utf-8"
     )
-    manifest = tmp_path / "manifest_final_300.csv"
+    manifest = tmp_path / "manifest_final_400.csv"
     build_manifest = [
         sys.executable,
         str(ROOT / "scripts" / "build_sem1_manifest.py"),
@@ -170,8 +170,8 @@ def test_full_sem1_dry_run_with_700_tasks_and_300_gold_rows(tmp_path: Path) -> N
         build_manifest, check=True, capture_output=True, text=True
     )
     assert '"exported_tasks": 700' in manifest_result.stdout
-    assert '"selected": 300' in manifest_result.stdout
-    assert len(pd.read_csv(manifest)) == 300
+    assert '"selected": 400' in manifest_result.stdout
+    assert len(pd.read_csv(manifest)) == 400
     assert subprocess.run(build_manifest, check=False).returncode != 0
 
     gold = tmp_path / "reference_claims.csv"
@@ -190,11 +190,11 @@ def test_full_sem1_dry_run_with_700_tasks_and_300_gold_rows(tmp_path: Path) -> N
         check=True,
     )
     gold_frame = pd.read_csv(gold)
-    assert len(gold_frame) == 300
+    assert len(gold_frame) == 400
     assert gold_frame["split"].value_counts().to_dict() == {
-        "train": 240,
-        "validation": 30,
-        "test": 30,
+        "train": 320,
+        "validation": 40,
+        "test": 40,
     }
 
     outputs = {split: tmp_path / f"{split}.csv" for split in ("train", "validation", "test")}
@@ -214,9 +214,9 @@ def test_full_sem1_dry_run_with_700_tasks_and_300_gold_rows(tmp_path: Path) -> N
         check=True,
     )
     assert {split: len(pd.read_csv(path)) for split, path in outputs.items()} == {
-        "train": 240,
-        "validation": 30,
-        "test": 30,
+        "train": 320,
+        "validation": 40,
+        "test": 40,
     }
 
     predictions = tmp_path / "predictions.jsonl"
@@ -252,8 +252,8 @@ def test_full_sem1_dry_run_with_700_tasks_and_300_gold_rows(tmp_path: Path) -> N
         check=True,
     )
     summary = pd.read_csv(evaluation / "summary.csv").iloc[0]
-    assert int(summary["prediction_n"]) == 30
-    assert int(summary["reference_n"]) == 30
+    assert int(summary["prediction_n"]) == 40
+    assert int(summary["reference_n"]) == 40
     assert float(summary["meteor"]) > 0.99
     assert float(summary["rouge_l_f1"]) == 1.0
     assert float(summary["exact_match"]) == 1.0
@@ -314,9 +314,8 @@ def test_audit_export_keeps_all_tasks_and_flags_duplicates(tmp_path: Path) -> No
         == "APTA_CON_CLAIM"
     )
     assert audit_frame["exact_claim_duplicate_group"].notna().sum() == 2
-    assert (
+    assert "reference_claim_sin_elegibilidad_apta" in (
         audit_frame.loc[audit_frame["record_id"] == "sin-claim", "quality_issue"].iloc[0]
-        == "reference_claim_sin_elegibilidad_apta"
     )
 
     duplicate_frame = pd.read_csv(duplicates)
@@ -328,10 +327,11 @@ def test_audit_export_keeps_all_tasks_and_flags_duplicates(tmp_path: Path) -> No
 
 def test_manifest_applies_reviewed_record_exclusions(tmp_path: Path) -> None:
     tasks = [
-        _task("keep", "", "Claim que se conserva."),
-        _task("drop", "", "Claim que se excluye tras revisión."),
-        _task("other", "", "Otro claim disponible."),
-        _task("third", "", "Tercer claim disponible."),
+        _task("keep", "", "Claim central que se conserva aquí."),
+        _task("drop", "", "Claim central que se excluye tras revisión."),
+        _task("other", "", "Otro claim médico válido disponible hoy."),
+        _task("third", "", "Tercer claim médico válido disponible hoy."),
+        _task("too-short", "", "Corto."),
         _task("too-long", "", " ".join(["palabra"] * 81)),
     ]
     export = tmp_path / "labelstudio.json"
@@ -363,4 +363,5 @@ def test_manifest_applies_reviewed_record_exclusions(tmp_path: Path) -> None:
     assert '"manual_exclusions": 1' in result.stdout
     selected = pd.read_csv(manifest)["record_id"].tolist()
     assert "drop" not in selected
+    assert "too-short" not in selected
     assert "too-long" not in selected

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Construye y congela el manifiesto 240/30/30 desde un export de anotaciones.
+"""Construye y congela el manifiesto 320/40/40 desde un export de anotaciones.
 
 Las 700 tareas son un pool de cribado. Este script toma únicamente las tareas
-con un claim central apto, excluye textos duplicados y selecciona 300 con una
+con un claim central apto, excluye textos duplicados y selecciona 400 con una
 semilla reproducible. El CSV resultante es la lista cerrada que entra al Gold.
 """
 
@@ -115,14 +115,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="Export JSON de las tareas anotadas.")
     parser.add_argument("--output", required=True, help="Manifiesto CSV que quedará congelado.")
     parser.add_argument("--seed", type=int, default=20261030)
-    parser.add_argument("--train", type=int, default=240)
-    parser.add_argument("--validation", type=int, default=30)
-    parser.add_argument("--test", type=int, default=30)
+    parser.add_argument("--train", type=int, default=320)
+    parser.add_argument("--validation", type=int, default=40)
+    parser.add_argument("--test", type=int, default=40)
     parser.add_argument(
         "--max-claim-words",
         type=int,
         default=80,
         help="Máximo de palabras para un claim central; evita pegar el artículo entero.",
+    )
+    parser.add_argument(
+        "--min-claim-words",
+        type=int,
+        default=5,
+        help="Mínimo de palabras para evitar URLs o fragmentos incompletos.",
     )
     parser.add_argument(
         "--exclude-record-ids",
@@ -137,8 +143,8 @@ def main() -> None:
     expected_total = args.train + args.validation + args.test
     if min(args.train, args.validation, args.test) <= 0:
         raise ValueError("Los tamaños train, validation y test deben ser positivos.")
-    if args.max_claim_words <= 0:
-        raise ValueError("max-claim-words debe ser positivo.")
+    if args.min_claim_words <= 0 or args.max_claim_words < args.min_claim_words:
+        raise ValueError("Los límites de palabras para el claim no son válidos.")
 
     output = Path(args.output).expanduser()
     if output.exists():
@@ -179,7 +185,11 @@ def main() -> None:
         if not claim:
             excluded["claim_vacio"] += 1
             continue
-        if len(claim.split()) > args.max_claim_words:
+        claim_words = len(claim.split())
+        if claim_words < args.min_claim_words:
+            excluded["claim_menos_de_minimo_palabras"] += 1
+            continue
+        if claim_words > args.max_claim_words:
             excluded["claim_excede_maximo_palabras"] += 1
             continue
 
@@ -258,6 +268,7 @@ def main() -> None:
                     "test": args.test,
                 },
                 "manual_exclusions": len(excluded_record_ids),
+                "min_claim_words": args.min_claim_words,
                 "max_claim_words": args.max_claim_words,
                 "excluded": dict(sorted(excluded.items())),
                 "output": str(output),

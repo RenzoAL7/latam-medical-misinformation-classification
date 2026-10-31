@@ -234,14 +234,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary-output", required=True, help="Resumen JSON de la auditoría.")
     parser.add_argument("--claim-similarity-threshold", type=float, default=0.90)
     parser.add_argument("--source-similarity-threshold", type=float, default=0.92)
+    parser.add_argument("--min-claim-words", type=int, default=5)
     parser.add_argument("--max-claim-words", type=int, default=80)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.max_claim_words <= 0:
-        raise ValueError("max-claim-words debe ser positivo.")
+    if args.min_claim_words <= 0 or args.max_claim_words < args.min_claim_words:
+        raise ValueError("Los límites de palabras para el claim no son válidos.")
     payload = json.loads(Path(args.input).expanduser().read_text(encoding="utf-8"))
     tasks = _tasks_from_export(payload)
     seen_record_ids: set[str] = set()
@@ -276,6 +277,8 @@ def main() -> None:
         elif eligibility in APTA and not source_text:
             issues.append("apta_sin_title_ni_body")
         claim_word_count = len(claim.split())
+        if claim and claim_word_count < args.min_claim_words:
+            issues.append("reference_claim_menos_de_minimo_palabras")
         if claim_word_count > args.max_claim_words:
             issues.append("reference_claim_excede_maximo_palabras")
 
@@ -309,7 +312,10 @@ def main() -> None:
                 "normalized_claim": _normalize_words(claim),
                 "claim_hash": _short_hash(_normalize_words(claim)),
                 "eligible_for_gold": "yes"
-                if eligibility in APTA and claim and source_text and claim_word_count <= args.max_claim_words
+                if eligibility in APTA
+                and claim
+                and source_text
+                and args.min_claim_words <= claim_word_count <= args.max_claim_words
                 else "no",
                 "quality_issue": ";".join(issues),
                 "exact_source_duplicate_group": "",
@@ -377,6 +383,7 @@ def main() -> None:
         "thresholds": {
             "claim_similarity": args.claim_similarity_threshold,
             "source_similarity": args.source_similarity_threshold,
+            "min_claim_words": args.min_claim_words,
             "max_claim_words": args.max_claim_words,
         },
     }

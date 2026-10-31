@@ -2,8 +2,8 @@
 """Convierte un export JSON de anotaciones al Gold de Seminario 1.
 
 La fase solo usa un claim central por noticia. El manifiesto final define las
-300 noticias que entran al Gold; por eso una exportación de las 700 tareas no
-incorpora las 400 de reserva por accidente.
+400 noticias que entran al Gold; por eso una exportación de las 700 tareas no
+incorpora las tareas de reserva por accidente.
 """
 
 from __future__ import annotations

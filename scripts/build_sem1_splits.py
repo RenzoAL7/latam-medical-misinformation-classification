@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Escribe los splits fijos 240/30/30 del Gold de Seminario 1."""
+"""Escribe los splits fijos 320/40/40 del Gold de Seminario 1."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from claim_extraction.data import read_table, validate_reference_table
 
 
-EXPECTED = {"train": 240, "validation": 30, "test": 30}
+EXPECTED = {"train": 320, "validation": 40, "test": 40}
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,7 +50,7 @@ def main() -> None:
     }
     if mismatched:
         raise ValueError(
-            "Los tamaños del Gold no coinciden con el diseño 240/30/30: "
+            "Los tamaños del Gold no coinciden con el diseño 320/40/40: "
             + json.dumps(mismatched, ensure_ascii=False)
         )
     if "source_hash" in frame:

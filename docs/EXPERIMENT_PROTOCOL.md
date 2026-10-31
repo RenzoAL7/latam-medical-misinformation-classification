@@ -22,16 +22,17 @@ extraction_status=OK, título no vacío y cuerpo de al menos 400 caracteres. Se
 deduplica por record_id. La salida es un JSONL local de candidatos.
 
 El export de Label Studio se descarga en JSON. Un script selecciona con semilla
-fija 300 tareas aptas con claim completo y texto fuente no duplicado, y escribe
-un manifiesto final de `record_id`. El manifiesto asigna los splits fijos: 240
-para train, 30 para validation y 30 para test. Las tareas no seleccionadas no
+fija 400 tareas aptas con claim completo y texto fuente no duplicado, y escribe
+un manifiesto final de `record_id`. El manifiesto asigna los splits fijos: 320
+para train, 40 para validation y 40 para test. Las tareas no seleccionadas no
 entran al Gold ni a las métricas. El manifiesto no se sobrescribe: se congela
 antes de entrenar para impedir que el test se elija por sus resultados.
 
 La anotación produce un claim central fiel a la fuente, no una opinión del
 anotador, un veredicto, una consulta PubMed ni varios claims. Una noticia sin
 claim médico se clasifica como no apta y se reemplaza antes de cerrar el Gold.
-El script de entrenamiento rechaza claims vacíos y record_id duplicados.
+El manifiesto excluye claims de menos de cinco o más de 80 palabras y evita
+record_id, fuentes o targets duplicados entre los splits.
 Los cuatro modelos reciben el mismo `source_text`, construido con título y
 cuerpo; la bajada se conserva como contexto de anotación, no como entrada del
 modelo. Por ello el claim anotado debe quedar respaldado por ese texto de
