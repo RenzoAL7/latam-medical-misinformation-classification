@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Audita un export JSON de anotaciones antes de congelar el Gold de Sem1.
+"""Audita un export JSON de anotaciones antes de congelar las referencias de Sem1.
 
 El script no selecciona ni descarta noticias "parecidas". Separa los
-duplicados exactos (que no deben entrar dos veces al Gold) de las parejas
+duplicados exactos (que no deben entrar dos veces al conjunto de referencia) de las parejas
 similares, que se exportan para revisión humana antes de cerrar el manifiesto.
 """
 
@@ -72,19 +72,6 @@ def _result_text(results: list[dict[str, Any]], name: str) -> str:
     return " ".join(values)
 
 
-def _support_span(results: list[dict[str, Any]]) -> str:
-    spans: list[str] = []
-    for result in results:
-        value = result.get("value") or {}
-        labels = value.get("labels")
-        if not isinstance(labels, list) or "SPAN_CLAIM_CENTRAL" not in labels:
-            continue
-        text = _clean(value.get("text"))
-        if text:
-            spans.append(text)
-    return " | ".join(spans)
-
-
 def _normalized(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", _clean(value).lower())
     without_accents = "".join(
@@ -152,7 +139,7 @@ def _group_duplicates(
                     "title_b": right["title"],
                     "claim_a": left["reference_claim"],
                     "claim_b": right["reference_claim"],
-                    "recommended_action": "No incluir ambas filas en el Gold.",
+                    "recommended_action": "No incluir ambas filas en el conjunto de referencia.",
                 }
             )
     return assignments, reviews
@@ -161,7 +148,7 @@ def _group_duplicates(
 def _near_duplicate_reviews(
     rows: list[dict[str, str]], claim_threshold: float, source_threshold: float
 ) -> list[dict[str, str]]:
-    candidates = [row for row in rows if row["eligible_for_gold"] == "yes"]
+    candidates = [row for row in rows if row["eligible_for_reference_set"] == "yes"]
     for row in candidates:
         row["_claim_tokens"] = _token_set(row["reference_claim"])
         source_for_review = f"{row['title']} {row['body']}"
@@ -306,12 +293,11 @@ def main() -> None:
                 "news_eligibility": eligibility,
                 "reference_claim": claim,
                 "reference_claim_word_count": str(claim_word_count),
-                "support_span": _support_span(results),
                 "source_hash": _short_hash(source_text),
                 "normalized_title": _normalize_words(title),
                 "normalized_claim": _normalize_words(claim),
                 "claim_hash": _short_hash(_normalize_words(claim)),
-                "eligible_for_gold": "yes"
+                "eligible_for_reference_set": "yes"
                 if eligibility in APTA
                 and claim
                 and source_text
@@ -354,7 +340,7 @@ def main() -> None:
     _write_csv(Path(args.audit_output).expanduser(), rows, audit_fields)
     _write_csv(Path(args.duplicates_output).expanduser(), reviews, review_fields)
 
-    eligible_rows = [row for row in rows if row["eligible_for_gold"] == "yes"]
+    eligible_rows = [row for row in rows if row["eligible_for_reference_set"] == "yes"]
     unique_by_source: dict[str, dict[str, str]] = {}
     for row in sorted(eligible_rows, key=lambda candidate: candidate["record_id"]):
         unique_by_source.setdefault(row["source_hash"], row)
@@ -367,7 +353,7 @@ def main() -> None:
         "annotation_records": sum(int(row["annotation_count"]) for row in rows),
         "eligibility_counts": dict(sorted(Counter(row["news_eligibility"] for row in rows).items())),
         "with_reference_claim": sum(bool(row["reference_claim"]) for row in rows),
-        "eligible_for_gold_before_exact_deduplication": len(eligible_rows),
+        "eligible_for_reference_set_before_exact_deduplication": len(eligible_rows),
         "eligible_after_exact_source_and_claim_deduplication": len(unique_by_claim),
         "quality_issue_counts": dict(
             sorted(Counter(row["quality_issue"] for row in rows if row["quality_issue"]).items())

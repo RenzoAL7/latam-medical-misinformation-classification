@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Descarga URLs Bronze y extrae bodies localmente con BeautifulSoup."""
+"""Descarga URLs del inventario y extrae cuerpos localmente con BeautifulSoup."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from claim_extraction.data import read_table
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="CSV/JSONL Bronze con canonical_url.")
+    parser.add_argument("--input", required=True, help="CSV/JSONL del inventario con canonical_url.")
     parser.add_argument("--output", required=True, help="CSV local con body y estado de extracción.")
     parser.add_argument("--min-body-chars", type=int, default=400)
     parser.add_argument("--timeout", type=float, default=30.0)
@@ -107,9 +107,9 @@ def main() -> None:
         raise ValueError("Los límites de extracción deben ser positivos; delay puede ser cero.")
     frame = read_table(Path(args.input).expanduser())
     if "record_id" not in frame or frame["record_id"].duplicated().any():
-        raise ValueError("El inventario Bronze debe tener record_id único.")
+        raise ValueError("El inventario debe tener record_id único.")
     if not any(column in frame for column in ("canonical_url", "url", "link")):
-        raise ValueError("El inventario Bronze debe contener canonical_url, url o link.")
+        raise ValueError("El inventario debe contener canonical_url, url o link.")
     rows = []
     for index, row in enumerate(frame.to_dict(orient="records")):
         if index and args.delay:

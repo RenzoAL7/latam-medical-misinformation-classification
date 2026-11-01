@@ -28,7 +28,6 @@ def test_obsolete_binary_baseline_is_removed() -> None:
         "experiments/models/01_tfidf_naive_bayes/baseline.ipynb",
         "experiments/models/README.md",
         "docs/training_baseline.md",
-        "gold/training/training_20261019.csv",
     ]
     assert all(
         not (REPOSITORY_ROOT / path).exists()

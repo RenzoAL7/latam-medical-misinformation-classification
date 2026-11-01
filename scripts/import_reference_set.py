@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Convierte un export JSON de anotaciones al Gold de Seminario 1.
+"""Convierte un export JSON de anotaciones al conjunto de referencia de Sem1.
 
 La fase solo usa un claim central por noticia. El manifiesto final define las
-400 noticias que entran al Gold; por eso una exportación de las 700 tareas no
+400 noticias que entran al conjunto de referencia; por eso una exportación de las 700 tareas no
 incorpora las tareas de reserva por accidente.
 """
 
@@ -124,9 +124,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--manifest",
         required=True,
-        help="CSV final de las noticias que forman el Gold, con record_id y split.",
+        help="CSV final de las noticias que forman el conjunto de referencia, con record_id y split.",
     )
-    parser.add_argument("--output", required=True, help="CSV Gold de salida.")
+    parser.add_argument("--output", required=True, help="CSV de salida del conjunto de referencia.")
     parser.add_argument(
         "--require-complete",
         action="store_true",
@@ -199,7 +199,7 @@ def main() -> None:
         preview = "; ".join(pending[:10])
         suffix = "" if len(pending) <= 10 else f"; y {len(pending) - 10} más"
         raise ValueError(
-            "El Gold no está completo para el manifiesto final: " + preview + suffix
+            "El conjunto de referencia no está completo para el manifiesto final: " + preview + suffix
         )
     if not rows:
         raise ValueError("No se encontró ningún claim apto y completo para exportar.")
@@ -217,7 +217,7 @@ def main() -> None:
             {
                 "exported_tasks": len(tasks),
                 "manifest_rows": len(manifest),
-                "gold_rows": len(rows),
+                "reference_rows": len(rows),
                 "pending_or_excluded_manifest_rows": len(pending),
                 "split_counts": split_counts,
                 "output": str(output),

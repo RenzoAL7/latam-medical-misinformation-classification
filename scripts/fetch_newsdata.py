@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Descarga localmente un inventario Bronze desde NewsData API.
+"""Descarga localmente un inventario de noticias desde NewsData API.
 
 La clave se toma de --api-key o NEWSDATA_API_KEY y nunca se escribe en los
 artefactos ni en la salida estándar.
@@ -28,7 +28,7 @@ from claim_extraction.collection import normalize_newsdata_articles
 
 
 DEFAULT_QUERY = "(salud OR medicina OR médico OR enfermedad OR vacuna OR tratamiento)"
-BRONZE_COLUMNS = [
+INVENTORY_COLUMNS = [
     "record_id", "source_name", "canonical_url", "published_at", "title",
     "subtitle_or_bajada", "topic", "selection_status", "retrieved_at", "country",
 ]
@@ -36,7 +36,7 @@ BRONZE_COLUMNS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", required=True, help="CSV local Bronze de salida.")
+    parser.add_argument("--output", required=True, help="CSV local del inventario de noticias.")
     parser.add_argument("--api-key", default=os.getenv("NEWSDATA_API_KEY", ""))
     parser.add_argument("--countries", required=True, help="ISO-2 separados por coma, p. ej. pe,ec,co.")
     parser.add_argument("--endpoint", default="https://newsdata.io/api/1/latest")
@@ -119,8 +119,8 @@ def main() -> None:
     deduplicated = {row["record_id"]: row for row in rows}
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(deduplicated.values(), columns=BRONZE_COLUMNS).to_csv(output, index=False, encoding="utf-8")
-    print(json.dumps({"countries": countries, "bronze_rows": len(deduplicated), "output": str(output)}, ensure_ascii=False, indent=2))
+    pd.DataFrame(deduplicated.values(), columns=INVENTORY_COLUMNS).to_csv(output, index=False, encoding="utf-8")
+    print(json.dumps({"countries": countries, "inventory_rows": len(deduplicated), "output": str(output)}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

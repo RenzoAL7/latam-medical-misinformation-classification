@@ -91,7 +91,7 @@ def _list_text(value: object) -> str:
 def normalize_newsdata_articles(
     articles: Iterable[object], *, retrieved_at: str, requested_country: str
 ) -> list[dict[str, str]]:
-    """Convierte respuestas NewsData en filas Bronze deduplicadas por URL."""
+    """Convierte respuestas NewsData en filas de inventario deduplicadas por URL."""
     rows: list[dict[str, str]] = []
     seen_ids: set[str] = set()
     for article in articles:

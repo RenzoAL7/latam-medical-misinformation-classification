@@ -3,7 +3,7 @@
 
 Las 700 tareas son un pool de cribado. Este script toma únicamente las tareas
 con un claim central apto, excluye textos duplicados y selecciona 400 con una
-semilla reproducible. El CSV resultante es la lista cerrada que entra al Gold.
+semilla reproducible. El CSV resultante es la lista cerrada que entra al conjunto de referencia.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--exclude-record-ids",
         default="",
-        help="CSV opcional con record_id revisados manualmente que no deben entrar al Gold.",
+        help="CSV opcional con record_id revisados manualmente que no deben entrar al conjunto de referencia.",
     )
     return parser.parse_args()
 

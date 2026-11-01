@@ -44,7 +44,7 @@ def test_labelstudio_export_respects_manifest_and_builds_fixed_splits(tmp_path: 
         _task("train-1", "train", "Claim central de entrenamiento verificable."),
         _task("validation-1", "validation", "Claim central de validación verificable."),
         _task("test-1", "test", "Claim central de prueba verificable."),
-        _task("reserve-1", "train", "No debe entrar al Gold."),
+        _task("reserve-1", "train", "No debe entrar al conjunto de referencia."),
     ]
     tasks[-1]["annotations"][0]["result"][0]["value"]["choices"] = [
         "SIN_CLAIM_MEDICO"
@@ -71,27 +71,27 @@ def test_labelstudio_export_respects_manifest_and_builds_fixed_splits(tmp_path: 
         check=True,
     )
 
-    gold = tmp_path / "reference_claims.csv"
+    reference_set = tmp_path / "reference_claims.csv"
     result = subprocess.run(
         [
             sys.executable,
-            str(ROOT / "scripts" / "import_annotation_gold.py"),
+            str(ROOT / "scripts" / "import_reference_set.py"),
             "--input",
             str(export),
             "--manifest",
             str(manifest),
             "--output",
-            str(gold),
+            str(reference_set),
             "--require-complete",
         ],
         check=True,
         capture_output=True,
         text=True,
     )
-    assert '"gold_rows": 3' in result.stdout
-    gold_frame = pd.read_csv(gold)
-    assert set(gold_frame["record_id"]) == {"train-1", "validation-1", "test-1"}
-    assert "reserve-1" not in gold_frame["record_id"].tolist()
+    assert '"reference_rows": 3' in result.stdout
+    reference_frame = pd.read_csv(reference_set)
+    assert set(reference_frame["record_id"]) == {"train-1", "validation-1", "test-1"}
+    assert "reserve-1" not in reference_frame["record_id"].tolist()
 
     outputs = {split: tmp_path / f"{split}.csv" for split in ("train", "validation", "test")}
     subprocess.run(
@@ -99,7 +99,7 @@ def test_labelstudio_export_respects_manifest_and_builds_fixed_splits(tmp_path: 
             sys.executable,
             str(ROOT / "scripts" / "build_sem1_splits.py"),
             "--input",
-            str(gold),
+            str(reference_set),
             "--train-output",
             str(outputs["train"]),
             "--validation-output",
@@ -123,7 +123,7 @@ def test_labelstudio_export_respects_manifest_and_builds_fixed_splits(tmp_path: 
     assert split_record_ids == {"train-1", "validation-1", "test-1"}
 
 
-def test_full_sem1_dry_run_with_700_tasks_and_400_gold_rows(tmp_path: Path) -> None:
+def test_full_sem1_dry_run_with_700_tasks_and_400_reference_rows(tmp_path: Path) -> None:
     """Prueba el tamaño real del flujo sin cargar pesos ni tocar datos reales."""
     apt_tasks = [
         _task(
@@ -175,24 +175,24 @@ def test_full_sem1_dry_run_with_700_tasks_and_400_gold_rows(tmp_path: Path) -> N
     assert len(pd.read_csv(manifest)) == 400
     assert subprocess.run(build_manifest, check=False).returncode != 0
 
-    gold = tmp_path / "reference_claims.csv"
+    reference_set = tmp_path / "reference_claims.csv"
     subprocess.run(
         [
             sys.executable,
-            str(ROOT / "scripts" / "import_annotation_gold.py"),
+            str(ROOT / "scripts" / "import_reference_set.py"),
             "--input",
             str(export),
             "--manifest",
             str(manifest),
             "--output",
-            str(gold),
+            str(reference_set),
             "--require-complete",
         ],
         check=True,
     )
-    gold_frame = pd.read_csv(gold)
-    assert len(gold_frame) == 400
-    assert gold_frame["split"].value_counts().to_dict() == {
+    reference_frame = pd.read_csv(reference_set)
+    assert len(reference_frame) == 400
+    assert reference_frame["split"].value_counts().to_dict() == {
         "train": 320,
         "validation": 40,
         "test": 40,
@@ -204,7 +204,7 @@ def test_full_sem1_dry_run_with_700_tasks_and_400_gold_rows(tmp_path: Path) -> N
             sys.executable,
             str(ROOT / "scripts" / "build_sem1_splits.py"),
             "--input",
-            str(gold),
+            str(reference_set),
             "--train-output",
             str(outputs["train"]),
             "--validation-output",
@@ -327,7 +327,7 @@ def test_audit_export_keeps_all_tasks_and_flags_duplicates(tmp_path: Path) -> No
         "reference_claim",
         "source_hash",
         "claim_hash",
-        "eligible_for_gold",
+        "eligible_for_reference_set",
         "exact_claim_duplicate_group",
     }
     assert (
