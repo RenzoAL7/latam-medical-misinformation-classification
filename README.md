@@ -31,7 +31,7 @@ aprendizaje es su claim de referencia humano.
 | Unidad de salida | Un claim central por noticia | Mantiene un objetivo seq2seq manejable y comparable entre los cuatro modelos. |
 | Entrada de modelo | `source_text = title + body` | Los cuatro modelos reciben exactamente el mismo texto. La bajada solo ayuda a anotar. |
 | Gold | `reference_claim` escrito en Label Studio | Es el target de entrenamiento y la referencia para las métricas. No se usa texto generado por modelos como Gold. |
-| Span | Fragmento literal que respalda el claim | Sirve para trazabilidad de la anotación; no entra al modelo ni es el target. |
+| Anotación en Label Studio | Elegibilidad + `reference_claim` | La elegibilidad decide si la noticia entra al Gold; `reference_claim` es el target. No se anotan spans en Sem1. |
 | Modelos | T5S, BARTO, mBART-50 y uMT5-Base | Única comparación de modelos de esta entrega. |
 | Métricas | METEOR, ROUGE-L F1 y BERTScore F1 | METEOR es la métrica principal; ROUGE-L aporta solapamiento y BERTScore similitud semántica. |
 | Separación | 320 train / 40 validation / 40 test | Se fija antes de entrenar y no se modifica después de observar resultados. |
@@ -70,7 +70,7 @@ flowchart LR
     A["Noticias médicas en español<br/>Inventario: title, subtitle y body"]
     B["Filtrar cuerpos disponibles<br/>y ≥ 400 caracteres"]
     C["700 tareas candidatas<br/>en Label Studio"]
-    D["Anotar una noticia<br/>claim central + span + elegibilidad"]
+    D["Anotar una noticia<br/>claim central + elegibilidad"]
     E["Exportar JSON y auditar<br/>700 tareas + duplicados a revisar"]
     F["Construir reference_claims.csv<br/>400 pares noticia → claim"]
     G["Congelar split<br/>320 train · 40 validation · 40 test"]
@@ -85,7 +85,7 @@ Los datos que debe producir cada etapa son:
 
 | Artefacto | Contenido esencial | Uso |
 | --- | --- | --- |
-| Export JSON de Label Studio | Tarea, selección de elegibilidad, span y `reference_claim` | Fuente local de la anotación; no se versiona en Git. |
+| Export JSON de Label Studio | Tarea, selección de elegibilidad y `reference_claim` | Fuente local de la anotación; no se versiona en Git. |
 | `labelstudio_claims_audit.csv` | Las 700 tareas, estado, `reference_claim`, hashes y banderas de calidad | Revisión del cribado y de duplicados; no entra al entrenamiento. |
 | `labelstudio_duplicate_review.csv` | Pares de fuentes o claims exactos/similares y acción sugerida | Revisión manual de similitudes antes de congelar el manifiesto. |
 | `manifest_final_400.csv` | `record_id`, `split`, `sample_role`, `source_hash`, `claim_hash`, país y fecha | Lista cerrada de las 400 noticias y de sus splits. |
@@ -94,11 +94,10 @@ Los datos que debe producir cada etapa son:
 | `predictions/<modelo>.jsonl` | Un claim generado por cada caso test | Entrada de la evaluación. |
 | `evaluation/<modelo>/summary.csv` | METEOR, ROUGE-L P/R/F1, BERTScore P/R/F1 y diagnósticos | Tabla comparativa y desglose complementario del notebook. |
 
-La anotación no es un ejercicio de copiar el span. Primero se selecciona el
-fragmento que sustenta la afirmación; después se escribe `reference_claim` como
-una oración autónoma y fiel a ese fragmento. El modelo verá `title + body` y
-aprenderá a producir el claim; el span permite comprobar de dónde salió ese
-target cuando haya dudas.
+La anotación consiste en decidir la elegibilidad de la noticia y escribir
+`reference_claim` como una única oración autónoma, fiel al contenido y
+verificable. El modelo verá `title + body` y aprenderá a producir ese claim.
+Sem1 no registra spans ni usa fragmentos seleccionados como entrada o target.
 
 ### Límites explícitos de la primera entrega
 
