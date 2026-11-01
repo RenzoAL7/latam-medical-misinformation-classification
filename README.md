@@ -24,6 +24,14 @@ evalúa si el claim es verdadero o falso; tampoco se evalúa recuperación de
 evidencia científica. La unidad de análisis es una noticia y el objetivo de
 aprendizaje es su claim de referencia humano.
 
+Antes de construir el Gold, el corpus se recolecta desde **NewsData API** con
+noticias médicas en español. `fetch-newsdata` conserva el inventario inicial
+en Bronze (URL, título y fecha); después `extract-news-body` descarga el HTML
+de cada URL y extrae el cuerpo con **BeautifulSoup**. Solo las noticias con
+`body` disponible y al menos 400 caracteres pasan al pool candidato de
+Label Studio. Esta fase prepara el corpus; no es una etapa de recuperación ni
+verificación científica.
+
 ### Decisiones que no se deben cambiar durante Sem1
 
 | Decisión | Regla de Sem1 | Motivo |
@@ -67,24 +75,28 @@ inventa claims.
 
 ```mermaid
 flowchart LR
-    A["Noticias médicas en español<br/>Inventario: title, subtitle y body"]
-    B["Filtrar cuerpos disponibles<br/>y ≥ 400 caracteres"]
-    C["700 tareas candidatas<br/>en Label Studio"]
-    D["Anotar una noticia<br/>claim central + elegibilidad"]
-    E["Exportar JSON y auditar<br/>700 tareas + duplicados a revisar"]
-    F["Construir reference_claims.csv<br/>400 pares noticia → claim"]
-    G["Congelar split<br/>320 train · 40 validation · 40 test"]
-    H["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
-    I["Predecir sobre los 40 casos test"]
-    J["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · BERTScore F1"]
+    A["NewsData API<br/>noticias médicas en español"]
+    B["Inventario Bronze<br/>URL · título · fecha"]
+    C["Extraer body HTML<br/>BeautifulSoup"]
+    D["Filtrar cuerpos disponibles<br/>body ≥ 400 caracteres"]
+    E["700 tareas candidatas<br/>en Label Studio"]
+    F["Anotar una noticia<br/>claim central + elegibilidad"]
+    G["Exportar JSON y auditar<br/>700 tareas + duplicados a revisar"]
+    H["Construir reference_claims.csv<br/>400 pares noticia → claim"]
+    I["Congelar split<br/>320 train · 40 validation · 40 test"]
+    J["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
+    K["Predecir sobre los 40 casos test"]
+    L["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · BERTScore F1"]
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L
 ```
 
 Los datos que debe producir cada etapa son:
 
 | Artefacto | Contenido esencial | Uso |
 | --- | --- | --- |
+| Inventario Bronze | URL, título, fuente y fecha de NewsData API | Punto de partida trazable para recuperar los cuerpos de noticia. |
+| Cuerpos extraídos | HTML procesado con BeautifulSoup, `body` y estado de extracción | Filtrar noticias con cuerpo utilizable antes de Label Studio. |
 | Export JSON de Label Studio | Tarea, selección de elegibilidad y `reference_claim` | Fuente local de la anotación; no se versiona en Git. |
 | `labelstudio_claims_audit.csv` | Las 700 tareas, estado, `reference_claim`, hashes y banderas de calidad | Revisión del cribado y de duplicados; no entra al entrenamiento. |
 | `labelstudio_duplicate_review.csv` | Pares de fuentes o claims exactos/similares y acción sugerida | Revisión manual de similitudes antes de congelar el manifiesto. |
