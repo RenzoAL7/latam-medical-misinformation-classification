@@ -14,7 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from claim_extraction.data import read_table, validate_reference_table
-from claim_extraction.metrics import operational_diagnostics, reference_metrics
+from claim_extraction.metrics import (
+    BERTSCORE_MODEL_TYPE,
+    operational_diagnostics,
+    reference_metrics,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,9 +71,14 @@ def main() -> None:
             "shorter_than_5_tokens_rate": operational["shorter_than_5_tokens_rate"],
             "mean_prediction_tokens_operational": operational["mean_prediction_tokens"],
             "duplicate_output_rate": operational["duplicate_output_rate"],
-            "exact_match": None,
             "meteor": None,
+            "rouge_l_precision": None,
+            "rouge_l_recall": None,
             "rouge_l_f1": None,
+            "bertscore_precision": None,
+            "bertscore_recall": None,
+            "bertscore_f1": None,
+            "bertscore_model": BERTSCORE_MODEL_TYPE,
             "mean_prediction_tokens_reference": None,
         }
         if ref_rows:
@@ -77,9 +86,13 @@ def main() -> None:
             detail_rows.extend(metrics_rows)
             summary.update(
                 {
-                    "exact_match": reference_summary["exact_match"],
                     "meteor": reference_summary["meteor"],
+                    "rouge_l_precision": reference_summary["rouge_l_precision"],
+                    "rouge_l_recall": reference_summary["rouge_l_recall"],
                     "rouge_l_f1": reference_summary["rouge_l_f1"],
+                    "bertscore_precision": reference_summary["bertscore_precision"],
+                    "bertscore_recall": reference_summary["bertscore_recall"],
+                    "bertscore_f1": reference_summary["bertscore_f1"],
                     "mean_prediction_tokens_reference": reference_summary[
                         "mean_prediction_tokens"
                     ],

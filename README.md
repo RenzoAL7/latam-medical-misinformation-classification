@@ -13,9 +13,9 @@ de entrada y revisión humana son fases posteriores y quedan fuera de esta rama.
 ## Contexto rápido para colaboradores
 
 > **Estado del experimento:** este README describe el protocolo ejecutable de
-> Seminario 1. No afirma que ya existan 300 claims Gold, modelos entrenados ni
-> métricas finales: esos resultados solo existirán cuando se complete la
-> anotación, se congele el manifiesto y se ejecute el experimento.
+> Seminario 1. Los datos Gold y los checkpoints se mantienen locales e
+> ignorados por Git. No se deben inferir métricas finales desde este documento:
+> solo existen después de una corrida registrada de los cuatro modelos.
 
 El aporte metodológico de esta fase es una comparación controlada de cuatro
 modelos encoder-decoder locales para transformar una noticia médica en español
@@ -33,10 +33,10 @@ aprendizaje es su claim de referencia humano.
 | Gold | `reference_claim` escrito en Label Studio | Es el target de entrenamiento y la referencia para las métricas. No se usa texto generado por modelos como Gold. |
 | Span | Fragmento literal que respalda el claim | Sirve para trazabilidad de la anotación; no entra al modelo ni es el target. |
 | Modelos | T5S, BARTO, mBART-50 y uMT5-Base | Única comparación de modelos de esta entrega. |
-| Métricas | METEOR, ROUGE-L F1 y exact match normalizado | METEOR es la métrica principal; las otras dos son complementarias. |
-| Separación | 240 train / 30 validation / 30 test | Se fija antes de entrenar y no se modifica después de observar resultados. |
+| Métricas | METEOR, ROUGE-L F1 y BERTScore F1 | METEOR es la métrica principal; ROUGE-L aporta solapamiento y BERTScore similitud semántica. |
+| Separación | 320 train / 40 validation / 40 test | Se fija antes de entrenar y no se modifica después de observar resultados. |
 
-### Por qué hay 700 tareas, pero el Gold tiene 300 noticias
+### Por qué hay 700 tareas, pero el Gold tiene 400 noticias
 
 Las 700 tareas de Label Studio son un **pool de cribado**, no 700 ejemplos de
 entrenamiento. Algunas noticias no tendrán un claim médico central adecuado,
@@ -46,13 +46,22 @@ de anotar, solo pueden entrar al Gold las tareas que cumplan simultáneamente:
 1. Estén marcadas como aptas con claim (`APTA_CON_CLAIM`).
 2. Tengan un `reference_claim` no vacío.
 3. Tengan título o cuerpo disponible.
-4. No dupliquen el `source_text` de otra noticia seleccionada.
+4. No dupliquen el `source_text` ni el `reference_claim` normalizado de otra
+   noticia seleccionada.
+5. Contengan un claim central de 5 a 80 palabras; los fragmentos más cortos o
+   más largos se marcan como URL, respuesta incompleta o pegado accidental del
+   artículo completo.
 
-`build_sem1_manifest.py` selecciona 300 tareas aptas y únicas con una semilla
-fija, asigna `train`, `validation` y `test`, y escribe el manifiesto. El
-archivo no se sobrescribe: cuando existe, queda congelado para evitar elegir el
-test en función de los resultados. Si el export no contiene al menos 300 tareas
-aptas y no duplicadas, el comando falla; no rellena casos ni inventa claims.
+Antes de congelar esa selección, `audit_labelstudio_export.py` escribe una
+tabla de las 700 tareas y otra con pares exactos o similares para revisión. Los
+pares similares no se excluyen automáticamente porque pueden ser noticias
+distintas; los duplicados exactos de fuente o claim sí se excluyen al construir
+el manifiesto. `build_sem1_manifest.py` selecciona 400 tareas aptas y únicas
+con una semilla fija, asigna `train`, `validation` y `test`, y escribe el
+manifiesto. El archivo no se sobrescribe: cuando existe, queda congelado para
+evitar elegir el test en función de los resultados. Si el export no contiene al
+menos 400 tareas aptas y no duplicadas, el comando falla; no rellena casos ni
+inventa claims.
 
 ### Pipeline de datos de Sem1
 
@@ -62,13 +71,14 @@ flowchart LR
     B["Filtrar cuerpos disponibles<br/>y ≥ 400 caracteres"]
     C["700 tareas candidatas<br/>en Label Studio"]
     D["Anotar una noticia<br/>claim central + span + elegibilidad"]
-    E["Exportar JSON<br/>y construir reference_claims.csv<br/>300 pares noticia → claim"]
-    F["Congelar split<br/>240 train · 30 validation · 30 test"]
-    G["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
-    H["Predecir sobre los 30 casos test"]
-    I["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · Exact match"]
+    E["Exportar JSON y auditar<br/>700 tareas + duplicados a revisar"]
+    F["Construir reference_claims.csv<br/>400 pares noticia → claim"]
+    G["Congelar split<br/>320 train · 40 validation · 40 test"]
+    H["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
+    I["Predecir sobre los 40 casos test"]
+    J["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · BERTScore F1"]
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
 ```
 
 Los datos que debe producir cada etapa son:
@@ -76,11 +86,13 @@ Los datos que debe producir cada etapa son:
 | Artefacto | Contenido esencial | Uso |
 | --- | --- | --- |
 | Export JSON de Label Studio | Tarea, selección de elegibilidad, span y `reference_claim` | Fuente local de la anotación; no se versiona en Git. |
-| `manifest_final_300.csv` | `record_id`, `split`, `sample_role`, `source_hash`, país y fecha | Lista cerrada de las 300 noticias y de sus splits. |
+| `labelstudio_claims_audit.csv` | Las 700 tareas, estado, `reference_claim`, hashes y banderas de calidad | Revisión del cribado y de duplicados; no entra al entrenamiento. |
+| `labelstudio_duplicate_review.csv` | Pares de fuentes o claims exactos/similares y acción sugerida | Revisión manual de similitudes antes de congelar el manifiesto. |
+| `manifest_final_400.csv` | `record_id`, `split`, `sample_role`, `source_hash`, `claim_hash`, país y fecha | Lista cerrada de las 400 noticias y de sus splits. |
 | `reference_claims.csv` | Identidad, metadatos, `title`, `body`, `source_text`, `reference_claim`, elegibilidad y split | Gold completo usado por entrenamiento, inferencia y evaluación. |
 | `train.csv`, `validation.csv`, `test.csv` | Filas Gold separadas según el manifiesto | Entrenamiento, selección de checkpoint y evaluación final. |
 | `predictions/<modelo>.jsonl` | Un claim generado por cada caso test | Entrada de la evaluación. |
-| `evaluation/<modelo>/summary.csv` | METEOR, ROUGE-L F1, exact match y diagnósticos | Tabla comparativa del notebook. |
+| `evaluation/<modelo>/summary.csv` | METEOR, ROUGE-L P/R/F1, BERTScore P/R/F1 y diagnósticos | Tabla comparativa y desglose complementario del notebook. |
 
 La anotación no es un ejercicio de copiar el span. Primero se selecciona el
 fragmento que sustenta la afirmación; después se escribe `reference_claim` como
@@ -138,15 +150,18 @@ El CSV recibido contiene noticias y cuerpos, pero no claims de referencia. Por
 eso la primera fase tiene un requisito explícito: anotar un subconjunto con un
 claim central antes de entrenar o calcular métricas de referencia. Las 700
 tareas de Label Studio son un pool de candidatos: el manifiesto final define
-las 300 que forman el Gold y deja las no seleccionadas fuera del experimento.
+las 400 que forman el Gold y deja las no seleccionadas fuera del experimento.
 No se inventan etiquetas ni se usan borradores generados por modelos como Gold.
 
-Con reference_claim anotado, se reportan exactamente tres métricas: METEOR,
-ROUGE-L F1 y exact match normalizado. Sin referencia solo se reportan
+Con `reference_claim` anotado, la tabla principal reporta exactamente tres métricas:
+METEOR, ROUGE-L F1 y BERTScore F1. Además, el resultado exporta el desglose
+complementario de precision, recall y F1 para ROUGE-L y BERTScore; estas son
+métricas de coincidencia de texto, no precision/recall de clasificación. Sin referencia solo se reportan
 diagnósticos operativos (salidas vacías, claims muy cortos, longitud y
 duplicados); no se presentan como calidad del modelo. Esta separación reproduce
 la lógica evaluable de los trabajos de CheckThat! y evita calcular métricas sin
-ground truth.
+ground truth. BERTScore F1 usa `xlm-roberta-base` multilingüe, con español y
+sin reescalado de baseline, para medir similitud semántica ante paráfrasis.
 
 ## Preparación local
 
@@ -170,45 +185,77 @@ checkout.
 ## Flujo de Seminario 1
 
 Cuando termine la anotación en Label Studio, descarga **Export → JSON**. No
-uses el CSV crudo de Label Studio para entrenar. Construye un manifiesto final
-con exactamente 300 `record_id` y la columna `split`:
+uses el CSV crudo de Label Studio para entrenar. Primero audita las 700 tareas:
+
+Si prefieres ejecutar el flujo guiado, abre
+`notebooks/01_construir_gold_sem1.ipynb`. El notebook ejecuta exactamente los
+scripts descritos aquí y valida que termine en 400 filas con splits 320/40/40.
+
+    make audit-labelstudio \
+      LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json
+
+Este comando deja tres archivos locales e ignorados por Git:
+`artifacts/audit/labelstudio_claims_audit.csv`,
+`artifacts/audit/labelstudio_duplicate_review.csv` y
+`artifacts/audit/labelstudio_audit_summary.json`. Revisa los pares marcados
+como `near_claim` y `near_source`; son banderas, no descartes automáticos. Si
+decides excluir alguno, guarda sus `record_id` en un CSV local con columna
+`record_id` y pásalo como `EXCLUDE_RECORD_IDS` al siguiente comando. Después
+construye un manifiesto final con exactamente 400 `record_id` y la columna
+`split`:
 
 ```text
-240 train | 30 validation | 30 test
+320 train | 40 validation | 40 test
 ```
 
-El primer comando selecciona con semilla fija 300 tareas aptas, con claim
-completo y texto fuente no duplicado. Las tareas restantes quedan como reserva.
-No ejecutes el comando de nuevo: el manifiesto se congela para que no se pueda
-escoger el test después de observar resultados. Luego ejecuta:
+El primer comando selecciona con semilla fija 400 tareas aptas, con claim
+completo y sin duplicados exactos de fuente o claim. Las tareas restantes
+quedan como reserva. No ejecutes el comando de nuevo: el manifiesto se congela
+para que no se pueda escoger el test después de observar resultados. Luego
+ejecuta:
 
     make build-gold-manifest \
       LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json \
-      MANIFEST=/ruta/manifest_final_300.csv
+      MANIFEST=/ruta/manifest_final_400.csv \
+      EXCLUDE_RECORD_IDS=/ruta/exclusiones_revisadas.csv
     make import-labelstudio-gold \
       LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json \
-      MANIFEST=/ruta/manifest_final_300.csv
+      MANIFEST=/ruta/manifest_final_400.csv
     make split-gold
 
 El segundo comando solo incorpora al Gold los `record_id` del manifiesto y falla
-si falta un claim apto. El tercero verifica exactamente 240/30/30 y escribe
-`artifacts/gold/train.csv`, `validation.csv` y `test.csv`.
+si falta un claim apto. El tercero verifica exactamente 320/40/40 y escribe los
+CSV dentro de `artifacts/sem1_20261031/final/`.
 
-Entrena cada modelo con train, selecciona el checkpoint por validation e
-infiere únicamente sobre test:
+### Entrenar y medir la corrida de 400 claims
 
-    make train MODEL=t5s_spanish TRAIN=artifacts/gold/train.csv VALIDATION=artifacts/gold/validation.csv OUT=artifacts/checkpoints/t5s_spanish
-    make train MODEL=barto_spanish TRAIN=artifacts/gold/train.csv VALIDATION=artifacts/gold/validation.csv OUT=artifacts/checkpoints/barto_spanish
-    make train MODEL=mbart50_es TRAIN=artifacts/gold/train.csv VALIDATION=artifacts/gold/validation.csv OUT=artifacts/checkpoints/mbart50_es
-    make train MODEL=umt5_base_es TRAIN=artifacts/gold/train.csv VALIDATION=artifacts/gold/validation.csv OUT=artifacts/checkpoints/umt5_base_es
+Abre `notebooks/02_entrenar_modelos_sem1.ipynb` o ejecuta una sola orden:
 
-    make infer MODEL=t5s_spanish CHECKPOINT=artifacts/checkpoints/t5s_spanish/best INPUT=artifacts/gold/test.csv OUT=artifacts/predictions/t5s_spanish.jsonl
-    make evaluate PREDICTIONS=artifacts/predictions/t5s_spanish.jsonl REFERENCES=artifacts/gold/test.csv OUT=artifacts/evaluation/t5s_spanish
+    make run-sem1
 
-Repite inferencia y evaluación para los cuatro modelos. Abre
-`notebooks/02_resultados_modelos.ipynb` para que se genere la tabla comparativa
-de métricas y diagnósticos. La métrica principal es METEOR; ROUGE-L F1 y exact
-match normalizado son complementarias.
+El orquestador entrena cada modelo con los 320 casos train, selecciona el mejor
+checkpoint con los 40 casos validation, predice únicamente los 40 casos test y
+calcula METEOR, ROUGE-L P/R/F1 y BERTScore P/R/F1 contra esos mismos 40 claims Gold.
+Los artefactos locales se separan por corrida:
+
+```text
+artifacts/runs/sem1_20261031_400_claims_v1/
+├── logs/                 # salida completa de train, inferencia y evaluación
+├── models/<modelo>/best/ # checkpoint seleccionado por validation
+├── predictions/          # 40 claims generados por modelo
+├── evaluation/<modelo>/  # summary.csv y per_prediction.csv
+├── evaluation/summary.csv
+└── run_status.json        # estado, errores, dispositivo y metadatos
+```
+
+Si un modelo ya terminó dentro de esa misma corrida, `make resume-sem1` lo
+omite y conserva su resultado. Si una corrida queda incompleta, usa un nombre
+de `RUN_DIR` nuevo para reintentar sin mezclar artefactos parciales.
+
+Después abre `notebooks/02_resultados_modelos.ipynb`, ajusta `RUN_ID` si usaste
+otro nombre y ejecútalo. El notebook solo lee el resumen de esa corrida y
+genera las tablas comparativas bajo `evaluation/tables/`. METEOR es la métrica
+principal; ROUGE-L F1 y BERTScore F1 son complementarias.
 
 ## Flujo histórico de preparación local
 

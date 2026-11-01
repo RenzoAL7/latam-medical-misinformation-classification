@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 from collections import Counter
 from statistics import mean
-from typing import Iterable
+from typing import Any, Callable, Iterable
+
+
+BERTSCORE_MODEL_TYPE = "xlm-roberta-base"
+BERTSCORE_LANGUAGE = "es"
+_BERTSCORER: Any | None = None
 
 
 def tokenize(text: object) -> list[str]:
@@ -29,17 +34,23 @@ def lcs_length(left: list[str], right: list[str]) -> int:
     return previous[-1]
 
 
-def rouge_l_f1(reference: object, prediction: object) -> float:
+def rouge_l_prf(reference: object, prediction: object) -> tuple[float, float, float]:
+    """Devuelve precision, recall y F1 de ROUGE-L para un par de textos."""
     ref_tokens = tokenize(reference)
     pred_tokens = tokenize(prediction)
     if not ref_tokens or not pred_tokens:
-        return 0.0
+        return 0.0, 0.0, 0.0
     common = lcs_length(ref_tokens, pred_tokens)
     precision = common / len(pred_tokens)
     recall = common / len(ref_tokens)
     if not precision + recall:
-        return 0.0
-    return 2 * precision * recall / (precision + recall)
+        return precision, recall, 0.0
+    return precision, recall, 2 * precision * recall / (precision + recall)
+
+
+def rouge_l_f1(reference: object, prediction: object) -> float:
+    """Conserva el acceso directo al F1 de ROUGE-L para código existente."""
+    return rouge_l_prf(reference, prediction)[2]
 
 
 def meteor(reference: object, prediction: object) -> float:
@@ -61,29 +72,115 @@ def meteor(reference: object, prediction: object) -> float:
         ) from exc
 
 
-def reference_metrics(rows: Iterable[dict[str, object]]) -> tuple[list[dict[str, object]], dict[str, float]]:
+def _bertscore_device() -> str:
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _get_bertscorer() -> Any:
+    """Carga una vez el encoder para no recargarlo por cada modelo evaluado."""
+    global _BERTSCORER
+    if _BERTSCORER is not None:
+        return _BERTSCORER
+    try:
+        from bert_score import BERTScorer
+    except ImportError as exc:
+        raise RuntimeError("Instala el extra models para calcular BERTScore F1.") from exc
+    _BERTSCORER = BERTScorer(
+        lang=BERTSCORE_LANGUAGE,
+        model_type=BERTSCORE_MODEL_TYPE,
+        batch_size=8,
+        device=_bertscore_device(),
+        rescale_with_baseline=False,
+    )
+    return _BERTSCORER
+
+
+def bertscore_prf(
+    references: list[str], predictions: list[str]
+) -> list[tuple[float, float, float]]:
+    """Calcula precision, recall y F1 de BERTScore en lote para español."""
+    if len(references) != len(predictions):
+        raise ValueError("BERTScore requiere la misma cantidad de referencias y predicciones.")
+
+    scores = [(0.0, 0.0, 0.0)] * len(predictions)
+    nonempty = [
+        index
+        for index, (reference, prediction) in enumerate(zip(references, predictions, strict=True))
+        if tokenize(reference) and tokenize(prediction)
+    ]
+    if not nonempty:
+        return scores
+
+    precision, recall, f1 = _get_bertscorer().score(
+        cands=[predictions[index] for index in nonempty],
+        refs=[references[index] for index in nonempty],
+    )
+    for index, score_precision, score_recall, score_f1 in zip(
+        nonempty, precision, recall, f1, strict=True
+    ):
+        scores[index] = (float(score_precision), float(score_recall), float(score_f1))
+    return scores
+
+
+def bertscore_f1(references: list[str], predictions: list[str]) -> list[float]:
+    """Conserva el acceso directo al F1 de BERTScore para código existente."""
+    return [score_f1 for _, _, score_f1 in bertscore_prf(references, predictions)]
+
+
+def reference_metrics(
+    rows: Iterable[dict[str, object]],
+    *,
+    bertscore_scorer: Callable[
+        [list[str], list[str]], list[tuple[float, float, float]]
+    ] = bertscore_prf,
+) -> tuple[list[dict[str, object]], dict[str, float]]:
+    paired_rows = list(rows)
+    if not paired_rows:
+        raise ValueError("No hay filas emparejadas para evaluar.")
+
+    references = [str(row["reference_claim"]) for row in paired_rows]
+    predictions = [str(row["claim"]) for row in paired_rows]
+    bertscore_scores = bertscore_scorer(references, predictions)
+    if len(bertscore_scores) != len(paired_rows):
+        raise ValueError("El evaluador BERTScore devolvió una cantidad inválida de resultados.")
+
     per_row: list[dict[str, object]] = []
-    for row in rows:
-        reference = str(row["reference_claim"])
-        prediction = str(row["claim"])
+    for row, reference, prediction, bertscore in zip(
+        paired_rows, references, predictions, bertscore_scores, strict=True
+    ):
+        rouge_precision, rouge_recall, rouge_f1 = rouge_l_prf(reference, prediction)
+        bertscore_precision, bertscore_recall, bertscore_f1_score = bertscore
         per_row.append(
             {
                 **row,
-                "exact_match": float(normalize_for_match(reference) == normalize_for_match(prediction)),
                 "meteor": meteor(reference, prediction),
-                "rouge_l_f1": rouge_l_f1(reference, prediction),
+                "rouge_l_precision": rouge_precision,
+                "rouge_l_recall": rouge_recall,
+                "rouge_l_f1": rouge_f1,
+                "bertscore_precision": float(bertscore_precision),
+                "bertscore_recall": float(bertscore_recall),
+                "bertscore_f1": float(bertscore_f1_score),
                 "prediction_tokens": len(tokenize(prediction)),
             }
         )
 
-    if not per_row:
-        raise ValueError("No hay filas emparejadas para evaluar.")
-
     summary = {
         "n": float(len(per_row)),
-        "exact_match": mean(float(row["exact_match"]) for row in per_row),
         "meteor": mean(float(row["meteor"]) for row in per_row),
+        "rouge_l_precision": mean(float(row["rouge_l_precision"]) for row in per_row),
+        "rouge_l_recall": mean(float(row["rouge_l_recall"]) for row in per_row),
         "rouge_l_f1": mean(float(row["rouge_l_f1"]) for row in per_row),
+        "bertscore_precision": mean(float(row["bertscore_precision"]) for row in per_row),
+        "bertscore_recall": mean(float(row["bertscore_recall"]) for row in per_row),
+        "bertscore_f1": mean(float(row["bertscore_f1"]) for row in per_row),
         "mean_prediction_tokens": mean(float(row["prediction_tokens"]) for row in per_row),
     }
     return per_row, summary

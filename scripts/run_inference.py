@@ -81,6 +81,7 @@ def main() -> None:
             "length_penalty",
             "early_stopping",
         }
+        and value is not None
     }
     if not generation.get("do_sample", False):
         generation.pop("temperature", None)

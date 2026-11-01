@@ -6,13 +6,19 @@ SAMPLE_SIZE ?= 100
 VALIDATION_FRACTION ?= 0.2
 LABEL_STUDIO_EXPORT ?=
 MANIFEST ?=
-GOLD ?= artifacts/gold/reference_claims.csv
-GOLD_TRAIN ?= artifacts/gold/train.csv
-GOLD_VALIDATION ?= artifacts/gold/validation.csv
-GOLD_TEST ?= artifacts/gold/test.csv
+EXCLUDE_RECORD_IDS ?=
+AUDIT ?= artifacts/audit/labelstudio_claims_audit.csv
+DUPLICATES ?= artifacts/audit/labelstudio_duplicate_review.csv
+AUDIT_SUMMARY ?= artifacts/audit/labelstudio_audit_summary.json
+GOLD ?= artifacts/sem1_20261031/final/reference_claims.csv
+GOLD_TRAIN ?= artifacts/sem1_20261031/final/train.csv
+GOLD_VALIDATION ?= artifacts/sem1_20261031/final/validation.csv
+GOLD_TEST ?= artifacts/sem1_20261031/final/test.csv
+RUN_DIR ?= artifacts/runs/sem1_20261031_400_claims_v1
+RUN_MODELS ?= t5s_spanish barto_spanish mbart50_es umt5_base_es
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install test download-models prepare-corpus reference-template build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate review-sheet
+.PHONY: help setup install test download-models prepare-corpus reference-template audit-labelstudio build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate run-sem1 resume-sem1 review-sheet
 
 help:
 	@echo "Comandos disponibles:"
@@ -21,6 +27,7 @@ help:
 	@echo "  make download-models               Descarga solamente los pesos base en la cache local de Hugging Face"
 	@echo "  make prepare-corpus INPUT=/ruta.csv OUT=artifacts/candidates.jsonl"
 	@echo "  make reference-template INPUT=artifacts/candidates.jsonl OUT=artifacts/references.csv SAMPLE_SIZE=100"
+	@echo "  make audit-labelstudio LABEL_STUDIO_EXPORT=/ruta/export.json"
 	@echo "  make build-gold-manifest LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
 	@echo "  make import-labelstudio-gold LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
 	@echo "  make split-gold GOLD=artifacts/gold/reference_claims.csv"
@@ -29,6 +36,8 @@ help:
 	@echo "  make train MODEL=t5s_spanish TRAIN=/ruta.csv VALIDATION=/ruta.csv OUT=artifacts/checkpoints/t5s_spanish"
 	@echo "  make infer MODEL=t5s_spanish CHECKPOINT=/ruta INPUT=/ruta.jsonl OUT=artifacts/predictions.jsonl"
 	@echo "  make evaluate PREDICTIONS=/ruta.jsonl REFERENCES=/ruta.csv OUT=artifacts/evaluation"
+	@echo "  make run-sem1                     Entrena, infiere y evalúa los cuatro modelos sobre el Gold 400"
+	@echo "  make resume-sem1                  Continúa una corrida Sem1 ya completada por modelo"
 	@echo "  make review-sheet ...              Utilidad futura; fuera del alcance de Sem1"
 
 setup:
@@ -54,10 +63,14 @@ reference-template:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/candidates.jsonl" && exit 2)
 	$(PYTHON) scripts/create_reference_template.py --input "$(INPUT)" --output "$(OUT)" --sample-size "$(SAMPLE_SIZE)"
 
+audit-labelstudio:
+	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
+	$(PYTHON) scripts/audit_labelstudio_export.py --input "$(LABEL_STUDIO_EXPORT)" --audit-output "$(AUDIT)" --duplicates-output "$(DUPLICATES)" --summary-output "$(AUDIT_SUMMARY)"
+
 build-gold-manifest:
 	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
 	@test -n "$(MANIFEST)" || (echo "Falta MANIFEST=/ruta/al/manifest_final.csv" && exit 2)
-	$(PYTHON) scripts/build_sem1_manifest.py --input "$(LABEL_STUDIO_EXPORT)" --output "$(MANIFEST)"
+	$(PYTHON) scripts/build_sem1_manifest.py --input "$(LABEL_STUDIO_EXPORT)" --output "$(MANIFEST)" $(if $(EXCLUDE_RECORD_IDS),--exclude-record-ids "$(EXCLUDE_RECORD_IDS)")
 
 import-labelstudio-gold:
 	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
@@ -89,6 +102,12 @@ evaluate:
 	@test -n "$(PREDICTIONS)" || (echo "Falta PREDICTIONS=/ruta/predictions.jsonl" && exit 2)
 	@test -n "$(REFERENCES)" || (echo "Falta REFERENCES=/ruta/references.csv" && exit 2)
 	$(PYTHON) scripts/evaluate_claims.py --predictions "$(PREDICTIONS)" --references "$(REFERENCES)" --output-dir "$(OUT)"
+
+run-sem1:
+	$(PYTHON) scripts/run_sem1_experiment.py --train "$(GOLD_TRAIN)" --validation "$(GOLD_VALIDATION)" --test "$(GOLD_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS)
+
+resume-sem1:
+	$(PYTHON) scripts/run_sem1_experiment.py --train "$(GOLD_TRAIN)" --validation "$(GOLD_VALIDATION)" --test "$(GOLD_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS) --resume
 
 review-sheet:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/candidates.jsonl" && exit 2)

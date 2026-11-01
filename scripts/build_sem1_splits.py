@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Escribe los splits fijos 240/30/30 del Gold de Seminario 1."""
+"""Escribe los splits fijos 320/40/40 del Gold de Seminario 1."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from claim_extraction.data import read_table, validate_reference_table
 
 
-EXPECTED = {"train": 240, "validation": 30, "test": 30}
+EXPECTED = {"train": 320, "validation": 40, "test": 40}
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,7 +50,7 @@ def main() -> None:
     }
     if mismatched:
         raise ValueError(
-            "Los tamaños del Gold no coinciden con el diseño 240/30/30: "
+            "Los tamaños del Gold no coinciden con el diseño 320/40/40: "
             + json.dumps(mismatched, ensure_ascii=False)
         )
     if "source_hash" in frame:
@@ -60,6 +60,14 @@ def main() -> None:
             raise ValueError(
                 "Hay textos fuente repetidos en más de un split: "
                 + ", ".join(leaked_sources.index.astype(str).tolist()[:10])
+            )
+    if "claim_hash" in frame:
+        split_per_claim = frame.groupby("claim_hash")["split"].nunique()
+        leaked_claims = split_per_claim[split_per_claim.gt(1)]
+        if not leaked_claims.empty:
+            raise ValueError(
+                "Hay reference_claims repetidos en más de un split: "
+                + ", ".join(leaked_claims.index.astype(str).tolist()[:10])
             )
 
     output_paths = {
