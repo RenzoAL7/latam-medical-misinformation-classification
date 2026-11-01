@@ -10,13 +10,15 @@ EXCLUDE_RECORD_IDS ?=
 AUDIT ?= artifacts/audit/labelstudio_claims_audit.csv
 DUPLICATES ?= artifacts/audit/labelstudio_duplicate_review.csv
 AUDIT_SUMMARY ?= artifacts/audit/labelstudio_audit_summary.json
-GOLD ?= artifacts/gold/reference_claims.csv
-GOLD_TRAIN ?= artifacts/gold/train.csv
-GOLD_VALIDATION ?= artifacts/gold/validation.csv
-GOLD_TEST ?= artifacts/gold/test.csv
+GOLD ?= artifacts/sem1_20261031/final/reference_claims.csv
+GOLD_TRAIN ?= artifacts/sem1_20261031/final/train.csv
+GOLD_VALIDATION ?= artifacts/sem1_20261031/final/validation.csv
+GOLD_TEST ?= artifacts/sem1_20261031/final/test.csv
+RUN_DIR ?= artifacts/runs/sem1_20261031_400_claims_v1
+RUN_MODELS ?= t5s_spanish barto_spanish mbart50_es umt5_base_es
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install test download-models prepare-corpus reference-template audit-labelstudio build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate review-sheet
+.PHONY: help setup install test download-models prepare-corpus reference-template audit-labelstudio build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate run-sem1 resume-sem1 review-sheet
 
 help:
 	@echo "Comandos disponibles:"
@@ -34,6 +36,8 @@ help:
 	@echo "  make train MODEL=t5s_spanish TRAIN=/ruta.csv VALIDATION=/ruta.csv OUT=artifacts/checkpoints/t5s_spanish"
 	@echo "  make infer MODEL=t5s_spanish CHECKPOINT=/ruta INPUT=/ruta.jsonl OUT=artifacts/predictions.jsonl"
 	@echo "  make evaluate PREDICTIONS=/ruta.jsonl REFERENCES=/ruta.csv OUT=artifacts/evaluation"
+	@echo "  make run-sem1                     Entrena, infiere y evalúa los cuatro modelos sobre el Gold 400"
+	@echo "  make resume-sem1                  Continúa una corrida Sem1 ya completada por modelo"
 	@echo "  make review-sheet ...              Utilidad futura; fuera del alcance de Sem1"
 
 setup:
@@ -98,6 +102,12 @@ evaluate:
 	@test -n "$(PREDICTIONS)" || (echo "Falta PREDICTIONS=/ruta/predictions.jsonl" && exit 2)
 	@test -n "$(REFERENCES)" || (echo "Falta REFERENCES=/ruta/references.csv" && exit 2)
 	$(PYTHON) scripts/evaluate_claims.py --predictions "$(PREDICTIONS)" --references "$(REFERENCES)" --output-dir "$(OUT)"
+
+run-sem1:
+	$(PYTHON) scripts/run_sem1_experiment.py --train "$(GOLD_TRAIN)" --validation "$(GOLD_VALIDATION)" --test "$(GOLD_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS)
+
+resume-sem1:
+	$(PYTHON) scripts/run_sem1_experiment.py --train "$(GOLD_TRAIN)" --validation "$(GOLD_VALIDATION)" --test "$(GOLD_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS) --resume
 
 review-sheet:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/candidates.jsonl" && exit 2)

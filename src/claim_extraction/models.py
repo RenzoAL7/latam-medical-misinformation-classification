@@ -15,6 +15,15 @@ def configure_tokenizer(tokenizer: Any, *, model_id: str | None) -> Any:
 
 def configure_model(model: Any, tokenizer: Any, *, model_id: str) -> Any:
     """Fija el idioma de generación cuando el modelo lo necesita."""
+    # Transformers >= 4.57 valida también los valores heredados del checkpoint.
+    # Algunos checkpoints seq2seq conservan early_stopping=None, que ya no es
+    # aceptado aunque no se envíe ese parámetro en model.generate().
+    if getattr(model.config, "early_stopping", None) is None:
+        model.config.early_stopping = False
+    if getattr(model, "generation_config", None) is not None and getattr(
+        model.generation_config, "early_stopping", None
+    ) is None:
+        model.generation_config.early_stopping = False
     if model_id == "mbart50_es":
         language_id = tokenizer.lang_code_to_id["es_XX"]
         model.config.forced_bos_token_id = language_id

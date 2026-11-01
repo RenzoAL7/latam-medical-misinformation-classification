@@ -221,24 +221,38 @@ ejecuta:
     make split-gold
 
 El segundo comando solo incorpora al Gold los `record_id` del manifiesto y falla
-si falta un claim apto. El tercero verifica exactamente 320/40/40 y escribe
-`artifacts/gold/train.csv`, `validation.csv` y `test.csv`.
+si falta un claim apto. El tercero verifica exactamente 320/40/40 y escribe los
+CSV dentro de `artifacts/sem1_20261031/final/`.
 
-Entrena cada modelo con train, selecciona el checkpoint por validation e
-infiere únicamente sobre test:
+### Entrenar y medir la corrida de 400 claims
 
-    make train MODEL=t5s_spanish TRAIN=artifacts/gold/train.csv VALIDATION=artifacts/gold/validation.csv OUT=artifacts/checkpoints/t5s_spanish
-    make train MODEL=barto_spanish TRAIN=artifacts/gold/train.csv VALIDATION=artifacts/gold/validation.csv OUT=artifacts/checkpoints/barto_spanish
-    make train MODEL=mbart50_es TRAIN=artifacts/gold/train.csv VALIDATION=artifacts/gold/validation.csv OUT=artifacts/checkpoints/mbart50_es
-    make train MODEL=umt5_base_es TRAIN=artifacts/gold/train.csv VALIDATION=artifacts/gold/validation.csv OUT=artifacts/checkpoints/umt5_base_es
+Abre `notebooks/02_entrenar_modelos_sem1.ipynb` o ejecuta una sola orden:
 
-    make infer MODEL=t5s_spanish CHECKPOINT=artifacts/checkpoints/t5s_spanish/best INPUT=artifacts/gold/test.csv OUT=artifacts/predictions/t5s_spanish.jsonl
-    make evaluate PREDICTIONS=artifacts/predictions/t5s_spanish.jsonl REFERENCES=artifacts/gold/test.csv OUT=artifacts/evaluation/t5s_spanish
+    make run-sem1
 
-Repite inferencia y evaluación para los cuatro modelos. Abre
-`notebooks/02_resultados_modelos.ipynb` para que se genere la tabla comparativa
-de métricas y diagnósticos. La métrica principal es METEOR; ROUGE-L F1 y exact
-match normalizado son complementarias.
+El orquestador entrena cada modelo con los 320 casos train, selecciona el mejor
+checkpoint con los 40 casos validation, predice únicamente los 40 casos test y
+calcula METEOR, ROUGE-L F1 y exact match contra esos mismos 40 claims Gold.
+Los artefactos locales se separan por corrida:
+
+```text
+artifacts/runs/sem1_20261031_400_claims_v1/
+├── logs/                 # salida completa de train, inferencia y evaluación
+├── models/<modelo>/best/ # checkpoint seleccionado por validation
+├── predictions/          # 40 claims generados por modelo
+├── evaluation/<modelo>/  # summary.csv y per_prediction.csv
+├── evaluation/summary.csv
+└── run_status.json        # estado, errores, dispositivo y metadatos
+```
+
+Si un modelo ya terminó dentro de esa misma corrida, `make resume-sem1` lo
+omite y conserva su resultado. Si una corrida queda incompleta, usa un nombre
+de `RUN_DIR` nuevo para reintentar sin mezclar artefactos parciales.
+
+Después abre `notebooks/02_resultados_modelos.ipynb`, ajusta `RUN_ID` si usaste
+otro nombre y ejecútalo. El notebook solo lee el resumen de esa corrida y
+genera las tablas comparativas bajo `evaluation/tables/`. METEOR es la métrica
+principal; ROUGE-L F1 y exact match normalizado son complementarias.
 
 ## Flujo histórico de preparación local
 
