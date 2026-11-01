@@ -193,6 +193,27 @@ entrenamiento, inferencia y evaluación local de los cuatro modelos; traducción
 generación de consultas, PubMed y ranking son fases posteriores fuera de este
 checkout.
 
+### Recolectar noticias y cuerpos localmente
+
+Los scripts locales reproducen la fase previa al Gold. La clave de NewsData no
+se escribe en archivos ni se versiona: expórtala solo en la sesión actual.
+
+```bash
+export NEWSDATA_API_KEY='tu_clave_local'
+make fetch-news COUNTRIES=pe,ec,co
+make extract-bodies
+make prepare-corpus INPUT=artifacts/collection/newsdata_bodies.csv \
+  OUT=artifacts/collection/candidates.jsonl
+```
+
+`fetch_newsdata.py` guarda el inventario Bronze con URL, título, fecha y fuente.
+`extract_news_bodies.py` descarga cada URL y usa **BeautifulSoup** para extraer
+el body HTML. Conserva estados como `OK`, `CUERPO_INSUFICIENTE`, `HTTP_ERROR`
+o `URL_ERROR`; por tanto, no inventa ni descarta silenciosamente filas fallidas.
+`prepare_claim_corpus.py` conserva después solo cuerpos `OK` de al menos 400
+caracteres. Los CSV y JSONL generados quedan bajo `artifacts/`, ignorados por
+Git.
+
 ## Flujo de Seminario 1
 
 Cuando termine la anotación en Label Studio, descarga **Export → JSON**. No

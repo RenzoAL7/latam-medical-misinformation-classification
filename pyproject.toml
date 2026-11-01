@@ -9,6 +9,7 @@ description = "Experimentos reproducibles de extracción y normalización de cla
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "beautifulsoup4>=4.12",
     "pandas>=2.2",
 ]
 

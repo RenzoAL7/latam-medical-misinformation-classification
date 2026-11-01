@@ -2,6 +2,9 @@ VENV_PYTHON ?= $(shell if command -v python3.12 >/dev/null 2>&1; then echo pytho
 PYTHON ?= .venv/bin/python
 INPUT ?=
 OUT ?= artifacts
+BRONZE ?= artifacts/collection/newsdata_bronze.csv
+BODIES ?= artifacts/collection/newsdata_bodies.csv
+COUNTRIES ?=
 SAMPLE_SIZE ?= 100
 VALIDATION_FRACTION ?= 0.2
 LABEL_STUDIO_EXPORT ?=
@@ -18,13 +21,15 @@ RUN_DIR ?= artifacts/runs/sem1_20261031_400_claims_v1
 RUN_MODELS ?= t5s_spanish barto_spanish mbart50_es umt5_base_es
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install test download-models prepare-corpus reference-template audit-labelstudio build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate run-sem1 resume-sem1 review-sheet
+.PHONY: help setup install test fetch-news extract-bodies prepare-corpus reference-template audit-labelstudio build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate run-sem1 resume-sem1 review-sheet
 
 help:
 	@echo "Comandos disponibles:"
 	@echo "  make setup                         Crea .venv e instala el proyecto y las dependencias de modelos"
 	@echo "  make test                          Ejecuta las pruebas unitarias"
 	@echo "  make download-models               Descarga solamente los pesos base en la cache local de Hugging Face"
+	@echo "  make fetch-news COUNTRIES=pe,ec   Consulta NewsData API y guarda Bronze local"
+	@echo "  make extract-bodies BRONZE=/ruta.csv BODIES=/ruta.csv"
 	@echo "  make prepare-corpus INPUT=/ruta.csv OUT=artifacts/candidates.jsonl"
 	@echo "  make reference-template INPUT=artifacts/candidates.jsonl OUT=artifacts/references.csv SAMPLE_SIZE=100"
 	@echo "  make audit-labelstudio LABEL_STUDIO_EXPORT=/ruta/export.json"
@@ -54,6 +59,15 @@ test:
 
 download-models:
 	$(PYTHON) scripts/download_models.py --all
+
+fetch-news:
+	@test -n "$$NEWSDATA_API_KEY" || (echo "Define NEWSDATA_API_KEY en tu entorno" && exit 2)
+	@test -n "$(COUNTRIES)" || (echo "Falta COUNTRIES=pe,ec,..." && exit 2)
+	$(PYTHON) scripts/fetch_newsdata.py --output "$(BRONZE)" --countries "$(COUNTRIES)"
+
+extract-bodies:
+	@test -f "$(BRONZE)" || (echo "No existe BRONZE=$(BRONZE)" && exit 2)
+	$(PYTHON) scripts/extract_news_bodies.py --input "$(BRONZE)" --output "$(BODIES)"
 
 prepare-corpus:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/al/export.csv" && exit 2)

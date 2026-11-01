@@ -52,6 +52,8 @@ def test_mbart_is_configured_for_spanish_generation() -> None:
 
 def test_scripts_cover_phase_one_flow() -> None:
     for name in [
+        "fetch_newsdata.py",
+        "extract_news_bodies.py",
         "prepare_claim_corpus.py",
         "create_reference_template.py",
         "split_reference.py",
