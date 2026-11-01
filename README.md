@@ -33,7 +33,7 @@ aprendizaje es su claim de referencia humano.
 | Gold | `reference_claim` escrito en Label Studio | Es el target de entrenamiento y la referencia para las métricas. No se usa texto generado por modelos como Gold. |
 | Span | Fragmento literal que respalda el claim | Sirve para trazabilidad de la anotación; no entra al modelo ni es el target. |
 | Modelos | T5S, BARTO, mBART-50 y uMT5-Base | Única comparación de modelos de esta entrega. |
-| Métricas | METEOR, ROUGE-L F1 y exact match normalizado | METEOR es la métrica principal; las otras dos son complementarias. |
+| Métricas | METEOR, ROUGE-L F1 y BERTScore F1 | METEOR es la métrica principal; ROUGE-L aporta solapamiento y BERTScore similitud semántica. |
 | Separación | 320 train / 40 validation / 40 test | Se fija antes de entrenar y no se modifica después de observar resultados. |
 
 ### Por qué hay 700 tareas, pero el Gold tiene 400 noticias
@@ -76,7 +76,7 @@ flowchart LR
     G["Congelar split<br/>320 train · 40 validation · 40 test"]
     H["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
     I["Predecir sobre los 40 casos test"]
-    J["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · Exact match"]
+    J["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · BERTScore F1"]
 
     A --> B --> C --> D --> E --> F --> G --> H --> I --> J
 ```
@@ -92,7 +92,7 @@ Los datos que debe producir cada etapa son:
 | `reference_claims.csv` | Identidad, metadatos, `title`, `body`, `source_text`, `reference_claim`, elegibilidad y split | Gold completo usado por entrenamiento, inferencia y evaluación. |
 | `train.csv`, `validation.csv`, `test.csv` | Filas Gold separadas según el manifiesto | Entrenamiento, selección de checkpoint y evaluación final. |
 | `predictions/<modelo>.jsonl` | Un claim generado por cada caso test | Entrada de la evaluación. |
-| `evaluation/<modelo>/summary.csv` | METEOR, ROUGE-L F1, exact match y diagnósticos | Tabla comparativa del notebook. |
+| `evaluation/<modelo>/summary.csv` | METEOR, ROUGE-L F1, BERTScore F1 y diagnósticos | Tabla comparativa del notebook. |
 
 La anotación no es un ejercicio de copiar el span. Primero se selecciona el
 fragmento que sustenta la afirmación; después se escribe `reference_claim` como
@@ -154,11 +154,12 @@ las 400 que forman el Gold y deja las no seleccionadas fuera del experimento.
 No se inventan etiquetas ni se usan borradores generados por modelos como Gold.
 
 Con reference_claim anotado, se reportan exactamente tres métricas: METEOR,
-ROUGE-L F1 y exact match normalizado. Sin referencia solo se reportan
+ROUGE-L F1 y BERTScore F1. Sin referencia solo se reportan
 diagnósticos operativos (salidas vacías, claims muy cortos, longitud y
 duplicados); no se presentan como calidad del modelo. Esta separación reproduce
 la lógica evaluable de los trabajos de CheckThat! y evita calcular métricas sin
-ground truth.
+ground truth. BERTScore F1 usa `xlm-roberta-base` multilingüe, con español y
+sin reescalado de baseline, para medir similitud semántica ante paráfrasis.
 
 ## Preparación local
 
@@ -232,7 +233,7 @@ Abre `notebooks/02_entrenar_modelos_sem1.ipynb` o ejecuta una sola orden:
 
 El orquestador entrena cada modelo con los 320 casos train, selecciona el mejor
 checkpoint con los 40 casos validation, predice únicamente los 40 casos test y
-calcula METEOR, ROUGE-L F1 y exact match contra esos mismos 40 claims Gold.
+calcula METEOR, ROUGE-L F1 y BERTScore F1 contra esos mismos 40 claims Gold.
 Los artefactos locales se separan por corrida:
 
 ```text
@@ -252,7 +253,7 @@ de `RUN_DIR` nuevo para reintentar sin mezclar artefactos parciales.
 Después abre `notebooks/02_resultados_modelos.ipynb`, ajusta `RUN_ID` si usaste
 otro nombre y ejecútalo. El notebook solo lee el resumen de esa corrida y
 genera las tablas comparativas bajo `evaluation/tables/`. METEOR es la métrica
-principal; ROUGE-L F1 y exact match normalizado son complementarias.
+principal; ROUGE-L F1 y BERTScore F1 son complementarias.
 
 ## Flujo histórico de preparación local
 

@@ -127,7 +127,7 @@ def _read_model_summary(path: Path, model_id: str) -> dict[str, object]:
     row = frame.iloc[0].to_dict()
     if int(row["prediction_n"]) != EXPECTED_SPLITS["test"] or int(row["reference_n"]) != EXPECTED_SPLITS["test"]:
         raise ValueError(f"La evaluación de {model_id} no cubre los 40 casos test.")
-    if any(pd.isna(row[column]) for column in ("meteor", "rouge_l_f1", "exact_match")):
+    if any(pd.isna(row[column]) for column in ("meteor", "rouge_l_f1", "bertscore_f1")):
         raise ValueError(f"La evaluación de {model_id} no produjo las tres métricas de referencia.")
     return row
 

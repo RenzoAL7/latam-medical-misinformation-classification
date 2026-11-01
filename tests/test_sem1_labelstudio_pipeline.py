@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -238,6 +239,21 @@ def test_full_sem1_dry_run_with_700_tasks_and_400_gold_rows(tmp_path: Path) -> N
         encoding="utf-8",
     )
     evaluation = tmp_path / "evaluation"
+    bertscore_stub = tmp_path / "bertscore_stub"
+    bertscore_stub.mkdir()
+    (bertscore_stub / "bert_score.py").write_text(
+        "class BERTScorer:\n"
+        "    def __init__(self, **kwargs):\n"
+        "        pass\n"
+        "    def score(self, cands, refs):\n"
+        "        values = [1.0] * len(cands)\n"
+        "        return values, values, values\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(bertscore_stub), environment.get("PYTHONPATH", "")]
+    )
     subprocess.run(
         [
             sys.executable,
@@ -250,13 +266,14 @@ def test_full_sem1_dry_run_with_700_tasks_and_400_gold_rows(tmp_path: Path) -> N
             str(evaluation),
         ],
         check=True,
+        env=environment,
     )
     summary = pd.read_csv(evaluation / "summary.csv").iloc[0]
     assert int(summary["prediction_n"]) == 40
     assert int(summary["reference_n"]) == 40
     assert float(summary["meteor"]) > 0.99
     assert float(summary["rouge_l_f1"]) == 1.0
-    assert float(summary["exact_match"]) == 1.0
+    assert float(summary["bertscore_f1"]) == 1.0
 
 
 def test_audit_export_keeps_all_tasks_and_flags_duplicates(tmp_path: Path) -> None:

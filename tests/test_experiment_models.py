@@ -89,10 +89,10 @@ def test_candidate_filtering_preserves_one_news_unit() -> None:
 
 def test_metrics_require_reference_claims_and_keep_operational_diagnostics_separate() -> None:
     rows = [{"reference_claim": "La vacuna reduce el riesgo", "claim": "La vacuna reduce el riesgo"}]
-    details, summary = reference_metrics(rows)
+    details, summary = reference_metrics(rows, bertscore_scorer=lambda references, predictions: [1.0])
     assert summary["meteor"] > 0.99
     assert summary["rouge_l_f1"] == 1.0
-    assert details[0]["exact_match"] == 1.0
+    assert details[0]["bertscore_f1"] == 1.0
     assert operational_diagnostics([{"claim": ""}])["empty_rate"] == 1.0
     with_reference = pd.DataFrame(
         [{"record_id": "1", "source_text": "fuente", "reference_claim": "claim"}]
