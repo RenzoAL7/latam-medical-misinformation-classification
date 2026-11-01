@@ -272,7 +272,11 @@ def test_full_sem1_dry_run_with_700_tasks_and_400_gold_rows(tmp_path: Path) -> N
     assert int(summary["prediction_n"]) == 40
     assert int(summary["reference_n"]) == 40
     assert float(summary["meteor"]) > 0.99
+    assert float(summary["rouge_l_precision"]) == 1.0
+    assert float(summary["rouge_l_recall"]) == 1.0
     assert float(summary["rouge_l_f1"]) == 1.0
+    assert float(summary["bertscore_precision"]) == 1.0
+    assert float(summary["bertscore_recall"]) == 1.0
     assert float(summary["bertscore_f1"]) == 1.0
 
 

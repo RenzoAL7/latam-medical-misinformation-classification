@@ -92,7 +92,7 @@ Los datos que debe producir cada etapa son:
 | `reference_claims.csv` | Identidad, metadatos, `title`, `body`, `source_text`, `reference_claim`, elegibilidad y split | Gold completo usado por entrenamiento, inferencia y evaluación. |
 | `train.csv`, `validation.csv`, `test.csv` | Filas Gold separadas según el manifiesto | Entrenamiento, selección de checkpoint y evaluación final. |
 | `predictions/<modelo>.jsonl` | Un claim generado por cada caso test | Entrada de la evaluación. |
-| `evaluation/<modelo>/summary.csv` | METEOR, ROUGE-L F1, BERTScore F1 y diagnósticos | Tabla comparativa del notebook. |
+| `evaluation/<modelo>/summary.csv` | METEOR, ROUGE-L P/R/F1, BERTScore P/R/F1 y diagnósticos | Tabla comparativa y desglose complementario del notebook. |
 
 La anotación no es un ejercicio de copiar el span. Primero se selecciona el
 fragmento que sustenta la afirmación; después se escribe `reference_claim` como
@@ -153,8 +153,10 @@ tareas de Label Studio son un pool de candidatos: el manifiesto final define
 las 400 que forman el Gold y deja las no seleccionadas fuera del experimento.
 No se inventan etiquetas ni se usan borradores generados por modelos como Gold.
 
-Con reference_claim anotado, se reportan exactamente tres métricas: METEOR,
-ROUGE-L F1 y BERTScore F1. Sin referencia solo se reportan
+Con `reference_claim` anotado, la tabla principal reporta exactamente tres métricas:
+METEOR, ROUGE-L F1 y BERTScore F1. Además, el resultado exporta el desglose
+complementario de precision, recall y F1 para ROUGE-L y BERTScore; estas son
+métricas de coincidencia de texto, no precision/recall de clasificación. Sin referencia solo se reportan
 diagnósticos operativos (salidas vacías, claims muy cortos, longitud y
 duplicados); no se presentan como calidad del modelo. Esta separación reproduce
 la lógica evaluable de los trabajos de CheckThat! y evita calcular métricas sin
@@ -233,7 +235,7 @@ Abre `notebooks/02_entrenar_modelos_sem1.ipynb` o ejecuta una sola orden:
 
 El orquestador entrena cada modelo con los 320 casos train, selecciona el mejor
 checkpoint con los 40 casos validation, predice únicamente los 40 casos test y
-calcula METEOR, ROUGE-L F1 y BERTScore F1 contra esos mismos 40 claims Gold.
+calcula METEOR, ROUGE-L P/R/F1 y BERTScore P/R/F1 contra esos mismos 40 claims Gold.
 Los artefactos locales se separan por corrida:
 
 ```text

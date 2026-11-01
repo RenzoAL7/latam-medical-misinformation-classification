@@ -34,17 +34,23 @@ def lcs_length(left: list[str], right: list[str]) -> int:
     return previous[-1]
 
 
-def rouge_l_f1(reference: object, prediction: object) -> float:
+def rouge_l_prf(reference: object, prediction: object) -> tuple[float, float, float]:
+    """Devuelve precision, recall y F1 de ROUGE-L para un par de textos."""
     ref_tokens = tokenize(reference)
     pred_tokens = tokenize(prediction)
     if not ref_tokens or not pred_tokens:
-        return 0.0
+        return 0.0, 0.0, 0.0
     common = lcs_length(ref_tokens, pred_tokens)
     precision = common / len(pred_tokens)
     recall = common / len(ref_tokens)
     if not precision + recall:
-        return 0.0
-    return 2 * precision * recall / (precision + recall)
+        return precision, recall, 0.0
+    return precision, recall, 2 * precision * recall / (precision + recall)
+
+
+def rouge_l_f1(reference: object, prediction: object) -> float:
+    """Conserva el acceso directo al F1 de ROUGE-L para código existente."""
+    return rouge_l_prf(reference, prediction)[2]
 
 
 def meteor(reference: object, prediction: object) -> float:
@@ -97,12 +103,14 @@ def _get_bertscorer() -> Any:
     return _BERTSCORER
 
 
-def bertscore_f1(references: list[str], predictions: list[str]) -> list[float]:
-    """Calcula BERTScore F1 en lote con un encoder multilingüe para español."""
+def bertscore_prf(
+    references: list[str], predictions: list[str]
+) -> list[tuple[float, float, float]]:
+    """Calcula precision, recall y F1 de BERTScore en lote para español."""
     if len(references) != len(predictions):
         raise ValueError("BERTScore requiere la misma cantidad de referencias y predicciones.")
 
-    scores = [0.0] * len(predictions)
+    scores = [(0.0, 0.0, 0.0)] * len(predictions)
     nonempty = [
         index
         for index, (reference, prediction) in enumerate(zip(references, predictions, strict=True))
@@ -111,19 +119,28 @@ def bertscore_f1(references: list[str], predictions: list[str]) -> list[float]:
     if not nonempty:
         return scores
 
-    _, _, f1 = _get_bertscorer().score(
+    precision, recall, f1 = _get_bertscorer().score(
         cands=[predictions[index] for index in nonempty],
         refs=[references[index] for index in nonempty],
     )
-    for index, value in zip(nonempty, f1, strict=True):
-        scores[index] = float(value)
+    for index, score_precision, score_recall, score_f1 in zip(
+        nonempty, precision, recall, f1, strict=True
+    ):
+        scores[index] = (float(score_precision), float(score_recall), float(score_f1))
     return scores
+
+
+def bertscore_f1(references: list[str], predictions: list[str]) -> list[float]:
+    """Conserva el acceso directo al F1 de BERTScore para código existente."""
+    return [score_f1 for _, _, score_f1 in bertscore_prf(references, predictions)]
 
 
 def reference_metrics(
     rows: Iterable[dict[str, object]],
     *,
-    bertscore_scorer: Callable[[list[str], list[str]], list[float]] = bertscore_f1,
+    bertscore_scorer: Callable[
+        [list[str], list[str]], list[tuple[float, float, float]]
+    ] = bertscore_prf,
 ) -> tuple[list[dict[str, object]], dict[str, float]]:
     paired_rows = list(rows)
     if not paired_rows:
@@ -139,12 +156,18 @@ def reference_metrics(
     for row, reference, prediction, bertscore in zip(
         paired_rows, references, predictions, bertscore_scores, strict=True
     ):
+        rouge_precision, rouge_recall, rouge_f1 = rouge_l_prf(reference, prediction)
+        bertscore_precision, bertscore_recall, bertscore_f1_score = bertscore
         per_row.append(
             {
                 **row,
                 "meteor": meteor(reference, prediction),
-                "rouge_l_f1": rouge_l_f1(reference, prediction),
-                "bertscore_f1": float(bertscore),
+                "rouge_l_precision": rouge_precision,
+                "rouge_l_recall": rouge_recall,
+                "rouge_l_f1": rouge_f1,
+                "bertscore_precision": float(bertscore_precision),
+                "bertscore_recall": float(bertscore_recall),
+                "bertscore_f1": float(bertscore_f1_score),
                 "prediction_tokens": len(tokenize(prediction)),
             }
         )
@@ -152,7 +175,11 @@ def reference_metrics(
     summary = {
         "n": float(len(per_row)),
         "meteor": mean(float(row["meteor"]) for row in per_row),
+        "rouge_l_precision": mean(float(row["rouge_l_precision"]) for row in per_row),
+        "rouge_l_recall": mean(float(row["rouge_l_recall"]) for row in per_row),
         "rouge_l_f1": mean(float(row["rouge_l_f1"]) for row in per_row),
+        "bertscore_precision": mean(float(row["bertscore_precision"]) for row in per_row),
+        "bertscore_recall": mean(float(row["bertscore_recall"]) for row in per_row),
         "bertscore_f1": mean(float(row["bertscore_f1"]) for row in per_row),
         "mean_prediction_tokens": mean(float(row["prediction_tokens"]) for row in per_row),
     }
