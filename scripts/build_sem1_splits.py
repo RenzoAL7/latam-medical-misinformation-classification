@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Escribe los splits fijos 320/40/40 del Gold de Seminario 1."""
+"""Escribe los splits fijos 320/40/40 del conjunto de referencia de Sem1."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ EXPECTED = {"train": 320, "validation": 40, "test": 40}
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="Gold con la columna split.")
+    parser.add_argument("--input", required=True, help="Conjunto de referencia con la columna split.")
     parser.add_argument("--train-output", required=True)
     parser.add_argument("--validation-output", required=True)
     parser.add_argument("--test-output", required=True)
@@ -33,7 +33,7 @@ def main() -> None:
     args = parse_args()
     frame = validate_reference_table(read_table(Path(args.input).expanduser()))
     if "split" not in frame:
-        raise ValueError("El Gold no contiene la columna split.")
+        raise ValueError("El conjunto de referencia no contiene la columna split.")
     expected = {
         "train": args.expected_train,
         "validation": args.expected_validation,
@@ -42,7 +42,7 @@ def main() -> None:
     observed = frame["split"].value_counts().to_dict()
     invalid = sorted(set(observed).difference(expected))
     if invalid:
-        raise ValueError("El Gold contiene splits inválidos: " + ", ".join(invalid))
+        raise ValueError("El conjunto de referencia contiene splits inválidos: " + ", ".join(invalid))
     mismatched = {
         split: {"expected": total, "observed": int(observed.get(split, 0))}
         for split, total in expected.items()
@@ -50,7 +50,7 @@ def main() -> None:
     }
     if mismatched:
         raise ValueError(
-            "Los tamaños del Gold no coinciden con el diseño 320/40/40: "
+            "Los tamaños del conjunto de referencia no coinciden con el diseño 320/40/40: "
             + json.dumps(mismatched, ensure_ascii=False)
         )
     if "source_hash" in frame:

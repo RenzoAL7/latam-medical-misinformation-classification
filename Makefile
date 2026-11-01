@@ -2,6 +2,9 @@ VENV_PYTHON ?= $(shell if command -v python3.12 >/dev/null 2>&1; then echo pytho
 PYTHON ?= .venv/bin/python
 INPUT ?=
 OUT ?= artifacts
+NEWS_INVENTORY ?= artifacts/collection/newsdata_inventory.csv
+EXTRACTED_NEWS ?= artifacts/collection/newsdata_bodies.csv
+COUNTRIES ?=
 SAMPLE_SIZE ?= 100
 VALIDATION_FRACTION ?= 0.2
 LABEL_STUDIO_EXPORT ?=
@@ -10,33 +13,35 @@ EXCLUDE_RECORD_IDS ?=
 AUDIT ?= artifacts/audit/labelstudio_claims_audit.csv
 DUPLICATES ?= artifacts/audit/labelstudio_duplicate_review.csv
 AUDIT_SUMMARY ?= artifacts/audit/labelstudio_audit_summary.json
-GOLD ?= artifacts/sem1_20261031/final/reference_claims.csv
-GOLD_TRAIN ?= artifacts/sem1_20261031/final/train.csv
-GOLD_VALIDATION ?= artifacts/sem1_20261031/final/validation.csv
-GOLD_TEST ?= artifacts/sem1_20261031/final/test.csv
+REFERENCE_SET ?= artifacts/sem1_20261031/final/reference_claims.csv
+REFERENCE_TRAIN ?= artifacts/sem1_20261031/final/train.csv
+REFERENCE_VALIDATION ?= artifacts/sem1_20261031/final/validation.csv
+REFERENCE_TEST ?= artifacts/sem1_20261031/final/test.csv
 RUN_DIR ?= artifacts/runs/sem1_20261031_400_claims_v1
 RUN_MODELS ?= t5s_spanish barto_spanish mbart50_es umt5_base_es
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install test download-models prepare-corpus reference-template audit-labelstudio build-gold-manifest import-labelstudio-gold split-gold split-reference train infer evaluate run-sem1 resume-sem1 review-sheet
+.PHONY: help setup install test fetch-news extract-bodies prepare-corpus reference-template audit-labelstudio build-reference-manifest import-reference-set split-reference-set split-reference train infer evaluate run-sem1 resume-sem1 review-sheet
 
 help:
 	@echo "Comandos disponibles:"
 	@echo "  make setup                         Crea .venv e instala el proyecto y las dependencias de modelos"
 	@echo "  make test                          Ejecuta las pruebas unitarias"
 	@echo "  make download-models               Descarga solamente los pesos base en la cache local de Hugging Face"
+	@echo "  make fetch-news COUNTRIES=pe,ec   Consulta NewsData API y guarda el inventario local"
+	@echo "  make extract-bodies NEWS_INVENTORY=/ruta.csv EXTRACTED_NEWS=/ruta.csv"
 	@echo "  make prepare-corpus INPUT=/ruta.csv OUT=artifacts/candidates.jsonl"
 	@echo "  make reference-template INPUT=artifacts/candidates.jsonl OUT=artifacts/references.csv SAMPLE_SIZE=100"
 	@echo "  make audit-labelstudio LABEL_STUDIO_EXPORT=/ruta/export.json"
-	@echo "  make build-gold-manifest LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
-	@echo "  make import-labelstudio-gold LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
-	@echo "  make split-gold GOLD=artifacts/gold/reference_claims.csv"
+	@echo "  make build-reference-manifest LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
+	@echo "  make import-reference-set LABEL_STUDIO_EXPORT=/ruta/export.json MANIFEST=/ruta/manifest.csv"
+	@echo "  make split-reference-set REFERENCE_SET=artifacts/reference/reference_claims.csv"
 	@echo "  make split-reference INPUT=artifacts/references.csv TRAIN=artifacts/train.csv VALIDATION=artifacts/validation.csv"
 	@echo "  Modelos: t5s_spanish, barto_spanish, mbart50_es, umt5_base_es"
 	@echo "  make train MODEL=t5s_spanish TRAIN=/ruta.csv VALIDATION=/ruta.csv OUT=artifacts/checkpoints/t5s_spanish"
 	@echo "  make infer MODEL=t5s_spanish CHECKPOINT=/ruta INPUT=/ruta.jsonl OUT=artifacts/predictions.jsonl"
 	@echo "  make evaluate PREDICTIONS=/ruta.jsonl REFERENCES=/ruta.csv OUT=artifacts/evaluation"
-	@echo "  make run-sem1                     Entrena, infiere y evalúa los cuatro modelos sobre el Gold 400"
+	@echo "  make run-sem1                     Entrena, infiere y evalúa los cuatro modelos sobre 400 referencias"
 	@echo "  make resume-sem1                  Continúa una corrida Sem1 ya completada por modelo"
 	@echo "  make review-sheet ...              Utilidad futura; fuera del alcance de Sem1"
 
@@ -55,6 +60,15 @@ test:
 download-models:
 	$(PYTHON) scripts/download_models.py --all
 
+fetch-news:
+	@test -n "$$NEWSDATA_API_KEY" || (echo "Define NEWSDATA_API_KEY en tu entorno" && exit 2)
+	@test -n "$(COUNTRIES)" || (echo "Falta COUNTRIES=pe,ec,..." && exit 2)
+	$(PYTHON) scripts/fetch_newsdata.py --output "$(NEWS_INVENTORY)" --countries "$(COUNTRIES)"
+
+extract-bodies:
+	@test -f "$(NEWS_INVENTORY)" || (echo "No existe NEWS_INVENTORY=$(NEWS_INVENTORY)" && exit 2)
+	$(PYTHON) scripts/extract_news_bodies.py --input "$(NEWS_INVENTORY)" --output "$(EXTRACTED_NEWS)"
+
 prepare-corpus:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/al/export.csv" && exit 2)
 	$(PYTHON) scripts/prepare_claim_corpus.py --input "$(INPUT)" --output "$(OUT)"
@@ -67,18 +81,18 @@ audit-labelstudio:
 	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
 	$(PYTHON) scripts/audit_labelstudio_export.py --input "$(LABEL_STUDIO_EXPORT)" --audit-output "$(AUDIT)" --duplicates-output "$(DUPLICATES)" --summary-output "$(AUDIT_SUMMARY)"
 
-build-gold-manifest:
+build-reference-manifest:
 	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
 	@test -n "$(MANIFEST)" || (echo "Falta MANIFEST=/ruta/al/manifest_final.csv" && exit 2)
 	$(PYTHON) scripts/build_sem1_manifest.py --input "$(LABEL_STUDIO_EXPORT)" --output "$(MANIFEST)" $(if $(EXCLUDE_RECORD_IDS),--exclude-record-ids "$(EXCLUDE_RECORD_IDS)")
 
-import-labelstudio-gold:
+import-reference-set:
 	@test -n "$(LABEL_STUDIO_EXPORT)" || (echo "Falta LABEL_STUDIO_EXPORT=/ruta/al/export.json" && exit 2)
 	@test -n "$(MANIFEST)" || (echo "Falta MANIFEST=/ruta/al/manifest_final.csv" && exit 2)
-	$(PYTHON) scripts/import_annotation_gold.py --input "$(LABEL_STUDIO_EXPORT)" --manifest "$(MANIFEST)" --output "$(GOLD)" --require-complete
+	$(PYTHON) scripts/import_reference_set.py --input "$(LABEL_STUDIO_EXPORT)" --manifest "$(MANIFEST)" --output "$(REFERENCE_SET)" --require-complete
 
-split-gold:
-	$(PYTHON) scripts/build_sem1_splits.py --input "$(GOLD)" --train-output "$(GOLD_TRAIN)" --validation-output "$(GOLD_VALIDATION)" --test-output "$(GOLD_TEST)"
+split-reference-set:
+	$(PYTHON) scripts/build_sem1_splits.py --input "$(REFERENCE_SET)" --train-output "$(REFERENCE_TRAIN)" --validation-output "$(REFERENCE_VALIDATION)" --test-output "$(REFERENCE_TEST)"
 
 split-reference:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/references.csv" && exit 2)
@@ -104,10 +118,10 @@ evaluate:
 	$(PYTHON) scripts/evaluate_claims.py --predictions "$(PREDICTIONS)" --references "$(REFERENCES)" --output-dir "$(OUT)"
 
 run-sem1:
-	$(PYTHON) scripts/run_sem1_experiment.py --train "$(GOLD_TRAIN)" --validation "$(GOLD_VALIDATION)" --test "$(GOLD_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS)
+	$(PYTHON) scripts/run_sem1_experiment.py --train "$(REFERENCE_TRAIN)" --validation "$(REFERENCE_VALIDATION)" --test "$(REFERENCE_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS)
 
 resume-sem1:
-	$(PYTHON) scripts/run_sem1_experiment.py --train "$(GOLD_TRAIN)" --validation "$(GOLD_VALIDATION)" --test "$(GOLD_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS) --resume
+	$(PYTHON) scripts/run_sem1_experiment.py --train "$(REFERENCE_TRAIN)" --validation "$(REFERENCE_VALIDATION)" --test "$(REFERENCE_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS) --resume
 
 review-sheet:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/candidates.jsonl" && exit 2)

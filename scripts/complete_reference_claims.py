@@ -2,7 +2,7 @@
 """Completa un lote piloto de reference_claims a partir del texto de cada noticia.
 
 Las referencias son borradores de anotación y deben revisarse antes de usarlas
-como gold labels definitivos.
+como etiquetas de referencia definitivas.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ def main() -> None:
         row["reference_claim"] = CLAIMS[row["record_id"]]
         row["annotation_status"] = "AI_DRAFT"
         row["annotator_id"] = "codex"
-        row["annotation_notes"] = "Borrador generado a partir de la noticia; revisar antes de considerarlo gold label."
+        row["annotation_notes"] = "Borrador generado a partir de la noticia; revisar antes de considerarlo etiqueta de referencia."
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

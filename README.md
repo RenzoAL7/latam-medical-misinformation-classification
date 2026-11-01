@@ -13,7 +13,7 @@ de entrada y revisión humana son fases posteriores y quedan fuera de esta rama.
 ## Contexto rápido para colaboradores
 
 > **Estado del experimento:** este README describe el protocolo ejecutable de
-> Seminario 1. Los datos Gold y los checkpoints se mantienen locales e
+> Seminario 1. El conjunto de referencia anotado y los checkpoints se mantienen locales e
 > ignorados por Git. No se deben inferir métricas finales desde este documento:
 > solo existen después de una corrida registrada de los cuatro modelos.
 
@@ -24,24 +24,32 @@ evalúa si el claim es verdadero o falso; tampoco se evalúa recuperación de
 evidencia científica. La unidad de análisis es una noticia y el objetivo de
 aprendizaje es su claim de referencia humano.
 
+Antes de construir el conjunto de referencia anotado, el corpus se recolecta desde **NewsData API** con
+noticias médicas en español. `fetch-newsdata` conserva el inventario inicial
+de noticias (URL, título y fecha); después `extract-news-body` descarga el HTML
+de cada URL y extrae el cuerpo con **BeautifulSoup**. Solo las noticias con
+`body` disponible y al menos 400 caracteres pasan al pool candidato de
+Label Studio. Esta fase prepara el corpus; no es una etapa de recuperación ni
+verificación científica.
+
 ### Decisiones que no se deben cambiar durante Sem1
 
 | Decisión | Regla de Sem1 | Motivo |
 | --- | --- | --- |
 | Unidad de salida | Un claim central por noticia | Mantiene un objetivo seq2seq manejable y comparable entre los cuatro modelos. |
 | Entrada de modelo | `source_text = title + body` | Los cuatro modelos reciben exactamente el mismo texto. La bajada solo ayuda a anotar. |
-| Gold | `reference_claim` escrito en Label Studio | Es el target de entrenamiento y la referencia para las métricas. No se usa texto generado por modelos como Gold. |
-| Anotación en Label Studio | Elegibilidad + `reference_claim` | La elegibilidad decide si la noticia entra al Gold; `reference_claim` es el target. No se anotan spans en Sem1. |
+| Conjunto de referencia anotado | `reference_claim` escrito en Label Studio | Es el target de entrenamiento y la referencia para las métricas. No se usa texto generado por modelos como referencia. |
+| Anotación en Label Studio | Elegibilidad + `reference_claim` | La elegibilidad decide si la noticia entra al conjunto de referencia; `reference_claim` es el target. No se anotan spans en Sem1. |
 | Modelos | T5S, BARTO, mBART-50 y uMT5-Base | Única comparación de modelos de esta entrega. |
 | Métricas | METEOR, ROUGE-L F1 y BERTScore F1 | METEOR es la métrica principal; ROUGE-L aporta solapamiento y BERTScore similitud semántica. |
 | Separación | 320 train / 40 validation / 40 test | Se fija antes de entrenar y no se modifica después de observar resultados. |
 
-### Por qué hay 700 tareas, pero el Gold tiene 400 noticias
+### Por qué hay 700 tareas, pero el conjunto de referencia tiene 400 noticias
 
 Las 700 tareas de Label Studio son un **pool de cribado**, no 700 ejemplos de
 entrenamiento. Algunas noticias no tendrán un claim médico central adecuado,
 podrán ser ruido editorial o podrán compartir el mismo texto fuente. Después
-de anotar, solo pueden entrar al Gold las tareas que cumplan simultáneamente:
+de anotar, solo pueden entrar al conjunto de referencia las tareas que cumplan simultáneamente:
 
 1. Estén marcadas como aptas con claim (`APTA_CON_CLAIM`).
 2. Tengan un `reference_claim` no vacío.
@@ -67,30 +75,34 @@ inventa claims.
 
 ```mermaid
 flowchart LR
-    A["Noticias médicas en español<br/>Inventario: title, subtitle y body"]
-    B["Filtrar cuerpos disponibles<br/>y ≥ 400 caracteres"]
-    C["700 tareas candidatas<br/>en Label Studio"]
-    D["Anotar una noticia<br/>claim central + elegibilidad"]
-    E["Exportar JSON y auditar<br/>700 tareas + duplicados a revisar"]
-    F["Construir reference_claims.csv<br/>400 pares noticia → claim"]
-    G["Congelar split<br/>320 train · 40 validation · 40 test"]
-    H["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
-    I["Predecir sobre los 40 casos test"]
-    J["Comparar predicción vs. Gold<br/>METEOR · ROUGE-L F1 · BERTScore F1"]
+    A["NewsData API<br/>noticias médicas en español"]
+    B["Inventario de noticias<br/>URL · título · fecha"]
+    C["Extraer body HTML<br/>BeautifulSoup"]
+    D["Filtrar cuerpos disponibles<br/>body ≥ 400 caracteres"]
+    E["700 tareas candidatas<br/>en Label Studio"]
+    F["Anotar una noticia<br/>claim central + elegibilidad"]
+    G["Exportar JSON y auditar<br/>700 tareas + duplicados a revisar"]
+    H["Construir reference_claims.csv<br/>400 pares noticia → claim"]
+    I["Congelar split<br/>320 train · 40 validation · 40 test"]
+    J["Fine-tuning supervisado<br/>T5S · BARTO · mBART-50 · uMT5"]
+    K["Predecir sobre los 40 casos test"]
+    L["Comparar predicción vs. referencia<br/>METEOR · ROUGE-L F1 · BERTScore F1"]
 
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L
 ```
 
 Los datos que debe producir cada etapa son:
 
 | Artefacto | Contenido esencial | Uso |
 | --- | --- | --- |
+| Inventario de noticias | URL, título, fuente y fecha de NewsData API | Punto de partida trazable para recuperar los cuerpos de noticia. |
+| Cuerpos extraídos | HTML procesado con BeautifulSoup, `body` y estado de extracción | Filtrar noticias con cuerpo utilizable antes de Label Studio. |
 | Export JSON de Label Studio | Tarea, selección de elegibilidad y `reference_claim` | Fuente local de la anotación; no se versiona en Git. |
 | `labelstudio_claims_audit.csv` | Las 700 tareas, estado, `reference_claim`, hashes y banderas de calidad | Revisión del cribado y de duplicados; no entra al entrenamiento. |
 | `labelstudio_duplicate_review.csv` | Pares de fuentes o claims exactos/similares y acción sugerida | Revisión manual de similitudes antes de congelar el manifiesto. |
 | `manifest_final_400.csv` | `record_id`, `split`, `sample_role`, `source_hash`, `claim_hash`, país y fecha | Lista cerrada de las 400 noticias y de sus splits. |
-| `reference_claims.csv` | Identidad, metadatos, `title`, `body`, `source_text`, `reference_claim`, elegibilidad y split | Gold completo usado por entrenamiento, inferencia y evaluación. |
-| `train.csv`, `validation.csv`, `test.csv` | Filas Gold separadas según el manifiesto | Entrenamiento, selección de checkpoint y evaluación final. |
+| `reference_claims.csv` | Identidad, metadatos, `title`, `body`, `source_text`, `reference_claim`, elegibilidad y split | Conjunto de referencia completo usado por entrenamiento, inferencia y evaluación. |
+| `train.csv`, `validation.csv`, `test.csv` | Filas de referencia separadas según el manifiesto | Entrenamiento, selección de checkpoint y evaluación final. |
 | `predictions/<modelo>.jsonl` | Un claim generado por cada caso test | Entrada de la evaluación. |
 | `evaluation/<modelo>/summary.csv` | METEOR, ROUGE-L P/R/F1, BERTScore P/R/F1 y diagnósticos | Tabla comparativa y desglose complementario del notebook. |
 
@@ -141,16 +153,16 @@ de Drive **#49** usa fine-tuning de encoder-decoder SLMs para los idiomas que
 tienen train/dev/test, incluido español; reserva el zero-shot para LLMs con
 prompting y lenguas sin datos. Los papers **#80** y **#81** también formulan
 la normalización como generación seq2seq supervisada. Por ello T5S, BARTO,
-mBART-50 y uMT5 se ajustan localmente con el Gold manual; no se presentan como
+mBART-50 y uMT5 se ajustan localmente con las referencias manuales; no se presentan como
 extractores zero-shot. La única comparación de Sem1 consiste en los resultados
-de esos cuatro modelos bajo el mismo Gold y los mismos splits.
+de esos cuatro modelos bajo el mismo conjunto de referencia y los mismos splits.
 
 El CSV recibido contiene noticias y cuerpos, pero no claims de referencia. Por
 eso la primera fase tiene un requisito explícito: anotar un subconjunto con un
 claim central antes de entrenar o calcular métricas de referencia. Las 700
 tareas de Label Studio son un pool de candidatos: el manifiesto final define
-las 400 que forman el Gold y deja las no seleccionadas fuera del experimento.
-No se inventan etiquetas ni se usan borradores generados por modelos como Gold.
+las 400 que forman el conjunto de referencia y deja las no seleccionadas fuera del experimento.
+No se inventan etiquetas ni se usan borradores generados por modelos como referencias.
 
 Con `reference_claim` anotado, la tabla principal reporta exactamente tres métricas:
 METEOR, ROUGE-L F1 y BERTScore F1. Además, el resultado exporta el desglose
@@ -176,10 +188,31 @@ Los pesos se guardan en la caché local de Hugging Face, no dentro del
 repositorio. La descarga incluye pesos base, no checkpoints finetuneados
 inexistentes o no publicados. No se conserva una integración de sincronización
 ni automatización con Label Studio: solo se importa localmente su export JSON
-manual para construir el Gold. La rama queda deliberadamente limitada al
+manual para construir el conjunto de referencia. La rama queda deliberadamente limitada al
 entrenamiento, inferencia y evaluación local de los cuatro modelos; traducción,
 generación de consultas, PubMed y ranking son fases posteriores fuera de este
 checkout.
+
+### Recolectar noticias y cuerpos localmente
+
+Los scripts locales reproducen la fase previa al conjunto de referencia. La clave de NewsData no
+se escribe en archivos ni se versiona: expórtala solo en la sesión actual.
+
+```bash
+export NEWSDATA_API_KEY='tu_clave_local'
+make fetch-news COUNTRIES=pe,ec,co
+make extract-bodies
+make prepare-corpus INPUT=artifacts/collection/newsdata_bodies.csv \
+  OUT=artifacts/collection/candidates.jsonl
+```
+
+`fetch_newsdata.py` guarda el inventario de noticias con URL, título, fecha y fuente.
+`extract_news_bodies.py` descarga cada URL y usa **BeautifulSoup** para extraer
+el body HTML. Conserva estados como `OK`, `CUERPO_INSUFICIENTE`, `HTTP_ERROR`
+o `URL_ERROR`; por tanto, no inventa ni descarta silenciosamente filas fallidas.
+`prepare_claim_corpus.py` conserva después solo cuerpos `OK` de al menos 400
+caracteres. Los CSV y JSONL generados quedan bajo `artifacts/`, ignorados por
+Git.
 
 ## Flujo de Seminario 1
 
@@ -187,7 +220,7 @@ Cuando termine la anotación en Label Studio, descarga **Export → JSON**. No
 uses el CSV crudo de Label Studio para entrenar. Primero audita las 700 tareas:
 
 Si prefieres ejecutar el flujo guiado, abre
-`notebooks/01_construir_gold_sem1.ipynb`. El notebook ejecuta exactamente los
+`notebooks/01_construir_referencias_sem1.ipynb`. El notebook ejecuta exactamente los
 scripts descritos aquí y valida que termine en 400 filas con splits 320/40/40.
 
     make audit-labelstudio \
@@ -213,16 +246,16 @@ quedan como reserva. No ejecutes el comando de nuevo: el manifiesto se congela
 para que no se pueda escoger el test después de observar resultados. Luego
 ejecuta:
 
-    make build-gold-manifest \
+    make build-reference-manifest \
       LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json \
       MANIFEST=/ruta/manifest_final_400.csv \
       EXCLUDE_RECORD_IDS=/ruta/exclusiones_revisadas.csv
-    make import-labelstudio-gold \
+    make import-reference-set \
       LABEL_STUDIO_EXPORT=/ruta/export_label_studio.json \
       MANIFEST=/ruta/manifest_final_400.csv
-    make split-gold
+    make split-reference-set
 
-El segundo comando solo incorpora al Gold los `record_id` del manifiesto y falla
+El segundo comando solo incorpora al conjunto de referencia los `record_id` del manifiesto y falla
 si falta un claim apto. El tercero verifica exactamente 320/40/40 y escribe los
 CSV dentro de `artifacts/sem1_20261031/final/`.
 
@@ -234,7 +267,7 @@ Abre `notebooks/02_entrenar_modelos_sem1.ipynb` o ejecuta una sola orden:
 
 El orquestador entrena cada modelo con los 320 casos train, selecciona el mejor
 checkpoint con los 40 casos validation, predice únicamente los 40 casos test y
-calcula METEOR, ROUGE-L P/R/F1 y BERTScore P/R/F1 contra esos mismos 40 claims Gold.
+calcula METEOR, ROUGE-L P/R/F1 y BERTScore P/R/F1 contra esos mismos 40 claims de referencia.
 Los artefactos locales se separan por corrida:
 
 ```text
