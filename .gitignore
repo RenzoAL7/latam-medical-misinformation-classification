@@ -33,3 +33,4 @@ model_cache/
 
 # Excepción: tablas agregadas publicadas del experimento Sem1.
 !docs/results/sem1_20261031_400_claims_v1/tables/*.csv
+!docs/results/sem1_20261102_400_claims_controlled_5ep_v2/tables/*.csv

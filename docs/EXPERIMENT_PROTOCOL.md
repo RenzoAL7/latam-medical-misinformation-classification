@@ -50,21 +50,31 @@ papers de Drive #49, #80 y #81 para pares de texto y claim anotados. No se
 reporta una comparación zero-shot con checkpoints base: los enfoques zero-shot
 de #49 usan LLMs instruccionales con prompting, no estos cuatro modelos base.
 
+Para que la tabla compare arquitectura y preentrenamiento —no una cantidad
+distinta de oportunidades de actualización— se fija un presupuesto común:
+cinco épocas como máximo, batch efectivo de 8, learning rate de 3e-5, sin
+warmup ni weight decay y decodificación determinista con cuatro beams. Cada
+modelo conserva el checkpoint base y, en mBART-50, los códigos de idioma
+español. El checkpoint con menor pérdida de validación dentro de esas cinco
+épocas se evalúa una sola vez sobre el test. Las configuraciones de #49, #80 y
+#81 son antecedentes para el diseño, no recetas trasladadas sin ajuste: esos
+trabajos usan corpus, idiomas y tamaños de entrenamiento diferentes.
+
 1. T5S: `vgaraujov/t5-base-spanish`, modelo encoder-decoder preentrenado en
-   español. Se ajusta con entrada `source_text`, cinco épocas, learning rate
-   3e-5 y cuatro beams.
+   español.
 2. BARTO: `vgaraujov/bart-base-spanish`, modelo BART preentrenado en español.
    Se ajusta con el mismo contrato source-to-claim y cuatro beams.
 3. mBART-50: `facebook/mbart-large-50`, modelo multilingüe usado en trabajos
    de normalización multilingüe. Se establece `src_lang=es_XX`,
    `tgt_lang=es_XX` y `forced_bos_token_id` para que la salida sea española.
-4. uMT5-Base: se conserva la configuración española de MMA at CheckThat! 2025:
-   ajuste post-a-claim, 20 épocas, learning rate 5e-4, weight decay 0.01,
-   warmup de 90 pasos y cinco beams. La acumulación de gradientes conserva el
-   batch efectivo mientras se adapta a la memoria local.
+4. uMT5-Base: `google/umt5-base`, modelo multilingüe. Se ejecuta bajo el mismo
+   presupuesto controlado; no se replica el ajuste de 20 épocas de #80 porque
+   ese paper usó un corpus considerablemente mayor y tal diferencia impediría
+   atribuir el resultado al modelo.
 
-La configuración ejecutable está en configs/models.json. Todos se ejecutan
-localmente con Transformers y PyTorch; no se llama a una API generativa.
+La configuración ejecutable está en configs/models.json y queda copiada en el
+manifiesto de cada corrida. Todos se ejecutan localmente con Transformers y
+PyTorch; no se llama a una API generativa.
 Los claims antiguos producidos por una API no forman parte del corpus ni de la
 evaluación. La plataforma de anotación solo aporta un export JSON manual al
 conversor local; no hay sincronización ni servicios externos durante el

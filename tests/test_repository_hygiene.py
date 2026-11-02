@@ -16,18 +16,24 @@ def test_input_and_generated_artifacts_are_not_tracked() -> None:
         capture_output=True,
         text=True,
     ).stdout.splitlines()
-    # Only the seven aggregate result tables are public; input rows remain local.
+    # Only aggregate result tables are public; input rows remain local.
+    result_run_ids = {
+        "sem1_20261031_400_claims_v1",
+        "sem1_20261102_400_claims_controlled_5ep_v2",
+    }
+    table_names = [
+        "01_distribucion_particiones",
+        "02_longitudes_palabras",
+        "03_distribucion_pais_territorio",
+        "04_checkpoints_seleccionados",
+        "05_metricas_principales",
+        "06_desglose_precision_recall_f1",
+        "07_diagnosticos_generacion",
+    ]
     result_tables = {
-        f"docs/results/sem1_20261031_400_claims_v1/tables/{name}.csv"
-        for name in [
-            "01_distribucion_particiones",
-            "02_longitudes_palabras",
-            "03_distribucion_pais_territorio",
-            "04_checkpoints_seleccionados",
-            "05_metricas_principales",
-            "06_desglose_precision_recall_f1",
-            "07_diagnosticos_generacion",
-        ]
+        f"docs/results/{run_id}/tables/{name}.csv"
+        for run_id in result_run_ids
+        for name in table_names
     }
     for path in tracked:
         if path.endswith(".csv") and (REPOSITORY_ROOT / path).exists():

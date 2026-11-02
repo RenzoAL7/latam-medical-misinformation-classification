@@ -78,21 +78,19 @@
       "paper": "MMA at CheckThat! 2025",
       "paper_url": "https://ceur-ws.org/Vol-4038/paper_88.pdf",
       "training": {
-        "epochs": 20,
-        "learning_rate": 0.0005,
-        "weight_decay": 0.01,
-        "warmup_steps": 90,
-        "effective_batch_size": 32,
+        "epochs": 5,
+        "learning_rate": 0.00003,
+        "weight_decay": 0.0,
+        "warmup_steps": 0,
+        "effective_batch_size": 8,
         "max_source_length": 512,
         "max_target_length": 96
       },
       "generation": {
-        "num_beams": 5,
-        "top_p": 0.85,
-        "top_k": 40,
+        "num_beams": 4,
         "max_new_tokens": 96
       },
-      "notes": "Modelo multilingüe con configuración española de MMA at CheckThat!; se conserva como referencia multilingüe."
+      "notes": "Modelo multilingüe incluido bajo el mismo presupuesto controlado de Sem1 que los demás modelos; el paper MMA at CheckThat! se usa como antecedente, no como receta copiada."
     }
   ]
 }

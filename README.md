@@ -41,6 +41,7 @@ verificación científica.
 | Conjunto de referencia anotado | `reference_claim` escrito en Label Studio | Es el target de entrenamiento y la referencia para las métricas. No se usa texto generado por modelos como referencia. |
 | Anotación en Label Studio | Elegibilidad + `reference_claim` | La elegibilidad decide si la noticia entra al conjunto de referencia; `reference_claim` es el target. No se anotan spans en Sem1. |
 | Modelos | T5S, BARTO, mBART-50 y uMT5-Base | Única comparación de modelos de esta entrega. |
+| Presupuesto de ajuste | 5 épocas, batch efectivo 8, LR 3e-5, sin warmup ni weight decay, 4 beams | Evita atribuir a la arquitectura una diferencia de oportunidades de actualización o decodificación. |
 | Métricas | METEOR, ROUGE-L F1 y BERTScore F1 | METEOR es la métrica principal; ROUGE-L aporta solapamiento y BERTScore similitud semántica. |
 | Separación | 320 train / 40 validation / 40 test | Se fija antes de entrenar y no se modifica después de observar resultados. |
 
@@ -176,9 +177,13 @@ sin reescalado de baseline, para medir similitud semántica ante paráfrasis.
 
 ## Preparación local
 
-En un Mac con Apple Silicon el código detecta MPS automáticamente. La
-configuración conserva los hiperparámetros de cada artículo como punto de
-partida y ajusta batch/gradient accumulation al límite de memoria local.
+En un Mac con Apple Silicon el código detecta MPS automáticamente. Para aislar
+el efecto del checkpoint y de su preentrenamiento, la comparación controlada
+fija el mismo presupuesto de ajuste para los cuatro modelos: cinco épocas,
+batch efectivo 8, learning rate 3e-5, sin warmup ni weight decay y
+decodificación con cuatro beams. Los papers orientan la selección de modelos,
+pero sus hiperparámetros no se copian mecánicamente porque usan corpus y
+tamaños de entrenamiento distintos.
 
     make setup
     make test
@@ -271,7 +276,7 @@ calcula METEOR, ROUGE-L P/R/F1 y BERTScore P/R/F1 contra esos mismos 40 claims d
 Los artefactos locales se separan por corrida:
 
 ```text
-artifacts/runs/sem1_20261031_400_claims_v1/
+artifacts/runs/sem1_20261102_400_claims_controlled_5ep_v2/
 ├── logs/                 # salida completa de train, inferencia y evaluación
 ├── models/<modelo>/best/ # checkpoint seleccionado por validation
 ├── predictions/          # 40 claims generados por modelo
@@ -284,10 +289,8 @@ Si un modelo ya terminó dentro de esa misma corrida, `make resume-sem1` lo
 omite y conserva su resultado. Si una corrida queda incompleta, usa un nombre
 de `RUN_DIR` nuevo para reintentar sin mezclar artefactos parciales.
 
-Después abre `notebooks/02_resultados_modelos.ipynb`, ajusta `RUN_ID` si usaste
-otro nombre y ejecútalo. El notebook solo lee el resumen de esa corrida y
-genera las tablas comparativas bajo `evaluation/tables/`. METEOR es la métrica
-principal; ROUGE-L F1 y BERTScore F1 son complementarias.
+El notebook de entrenamiento muestra la tabla compacta al terminar. METEOR es
+la métrica principal; ROUGE-L F1 y BERTScore F1 son complementarias.
 
 ### Métricas y figuras para el artículo
 
@@ -308,9 +311,17 @@ figuras PNG a 300 dpi y PDF, y un manifiesto con hashes de las entradas en:
 Solo lee los resultados existentes; no entrena, no vuelve a calcular BERTScore
 ni consulta servicios externos. Sus salidas visibles contienen agregados, sin
 textos individuales de noticias o afirmaciones. Las salidas locales quedan en
-`artifacts/`, ignorado por Git. El resumen publicado de la corrida
-`sem1_20261031_400_claims_v1`, con sus tablas y figuras exportadas, está en
-[Resultados Sem1](docs/results/sem1_20261031_400_claims_v1/README.md).
+`artifacts/`, ignorado por Git. La corrida controlada se registra bajo
+`sem1_20261102_400_claims_controlled_5ep_v2`; sus tablas y figuras se publican
+solo después de ejecutar los cuatro modelos con esa configuración:
+
+    make publish-sem1-results
+
+El publicador verifica que los cuatro manifiestos de entrenamiento compartan
+el presupuesto controlado antes de copiar exclusivamente tablas y figuras
+agregadas a `docs/results/`. La [corrida controlada publicada](docs/results/sem1_20261102_400_claims_controlled_5ep_v2/README.md)
+es la tabla que debe citarse. La corrida
+anterior se conserva como antecedente preliminar, no como comparación final.
 
 ## Flujo histórico de preparación local
 

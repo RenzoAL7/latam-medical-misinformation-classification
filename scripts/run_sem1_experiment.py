@@ -184,6 +184,15 @@ def main() -> None:
             "test": str(test_path),
             "rows": input_rows,
         },
+        "model_configurations": {
+            model_id: {
+                "base_checkpoint": registry[model_id].base_checkpoint,
+                "training": registry[model_id].training,
+                "generation": registry[model_id].generation,
+                "language": registry[model_id].language,
+            }
+            for model_id in args.models
+        },
         "models": {},
     }
     _write_json(status_path, status)
