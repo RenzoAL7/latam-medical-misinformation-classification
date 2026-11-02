@@ -1,0 +1,5 @@
+﻿Modelo,Salidas vacías (%),Menos de 5 tokens (%),Longitud media (tokens léxicos),Repeticiones adicionales (%)
+T5S,2.5,22.5,12.85,5.0
+BARTO,0.0,0.0,18.85,0.0
+mBART-50,0.0,0.0,18.65,0.0
+uMT5-Base,15.0,20.0,20.725,0.0

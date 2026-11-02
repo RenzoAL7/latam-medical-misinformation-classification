@@ -1,4 +1,10 @@
-# Resultados Sem1 — extracción de afirmaciones médicas centrales
+# Resultados Sem1 preliminares — configuración no controlada
+
+> Esta corrida histórica no debe usarse para comparar arquitecturas ni para
+> afirmar que uMT5-Base es superior: uMT5 se ejecutó con 20 épocas y un
+> presupuesto de optimización y decodificación distinto de los otros modelos.
+> Se conserva solo por trazabilidad. La comparación válida se publica en la
+> corrida controlada de cinco épocas para los cuatro modelos.
 
 Corrida: `sem1_20261031_400_claims_v1`. Resultados locales existentes de T5S, BARTO, mBART-50 y uMT5-Base.
 

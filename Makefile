@@ -17,11 +17,12 @@ REFERENCE_SET ?= artifacts/sem1_20261031/final/reference_claims.csv
 REFERENCE_TRAIN ?= artifacts/sem1_20261031/final/train.csv
 REFERENCE_VALIDATION ?= artifacts/sem1_20261031/final/validation.csv
 REFERENCE_TEST ?= artifacts/sem1_20261031/final/test.csv
-RUN_DIR ?= artifacts/runs/sem1_20261031_400_claims_v1
+RUN_DIR ?= artifacts/runs/sem1_20261102_400_claims_controlled_5ep_v2
 RUN_MODELS ?= t5s_spanish barto_spanish mbart50_es umt5_base_es
+RESULTS_DIR ?= docs/results/sem1_20261102_400_claims_controlled_5ep_v2
 
 .DEFAULT_GOAL := help
-.PHONY: help setup install test fetch-news extract-bodies prepare-corpus reference-template audit-labelstudio build-reference-manifest import-reference-set split-reference-set split-reference train infer evaluate run-sem1 resume-sem1 review-sheet
+.PHONY: help setup install test fetch-news extract-bodies prepare-corpus reference-template audit-labelstudio build-reference-manifest import-reference-set split-reference-set split-reference train infer evaluate run-sem1 resume-sem1 publish-sem1-results review-sheet
 
 help:
 	@echo "Comandos disponibles:"
@@ -43,6 +44,7 @@ help:
 	@echo "  make evaluate PREDICTIONS=/ruta.jsonl REFERENCES=/ruta.csv OUT=artifacts/evaluation"
 	@echo "  make run-sem1                     Entrena, infiere y evalúa los cuatro modelos sobre 400 referencias"
 	@echo "  make resume-sem1                  Continúa una corrida Sem1 ya completada por modelo"
+	@echo "  make publish-sem1-results         Publica tablas y figuras agregadas de una corrida controlada"
 	@echo "  make review-sheet ...              Utilidad futura; fuera del alcance de Sem1"
 
 setup:
@@ -122,6 +124,9 @@ run-sem1:
 
 resume-sem1:
 	$(PYTHON) scripts/run_sem1_experiment.py --train "$(REFERENCE_TRAIN)" --validation "$(REFERENCE_VALIDATION)" --test "$(REFERENCE_TEST)" --run-dir "$(RUN_DIR)" --models $(RUN_MODELS) --resume
+
+publish-sem1-results:
+	$(PYTHON) scripts/publish_sem1_results.py --run-dir "$(RUN_DIR)" --output-dir "$(RESULTS_DIR)"
 
 review-sheet:
 	@test -n "$(INPUT)" || (echo "Falta INPUT=/ruta/candidates.jsonl" && exit 2)

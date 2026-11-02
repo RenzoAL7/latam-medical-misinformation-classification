@@ -60,6 +60,7 @@ def test_scripts_cover_phase_one_flow() -> None:
         "train_seq2seq.py",
         "run_inference.py",
         "evaluate_claims.py",
+        "publish_sem1_results.py",
         "build_blind_review_sheet.py",
     ]:
         assert (ROOT / "scripts" / name).is_file()
@@ -120,4 +121,24 @@ def test_metrics_require_reference_claims_and_keep_operational_diagnostics_separ
 
 def test_configs_are_valid_json() -> None:
     json.loads((ROOT / "configs" / "models.json").read_text(encoding="utf-8"))
+
+
+def test_sem1_uses_a_common_optimization_and_generation_budget() -> None:
+    registry = load_registry()
+    training_keys = {
+        "epochs",
+        "learning_rate",
+        "weight_decay",
+        "warmup_steps",
+        "effective_batch_size",
+        "max_source_length",
+        "max_target_length",
+    }
+    generation_keys = {"num_beams", "max_new_tokens"}
+    first = registry["t5s_spanish"]
+    expected_training = {key: first.training[key] for key in training_keys}
+    expected_generation = {key: first.generation[key] for key in generation_keys}
+    for spec in registry.values():
+        assert {key: spec.training[key] for key in training_keys} == expected_training
+        assert {key: spec.generation[key] for key in generation_keys} == expected_generation
 
