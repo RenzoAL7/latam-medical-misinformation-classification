@@ -30,3 +30,6 @@ model_cache/
 *.pth
 *.ckpt
 *.safetensors
+
+# Excepción: tablas agregadas publicadas del experimento Sem1.
+!docs/results/sem1_20261031_400_claims_v1/tables/*.csv

@@ -1,0 +1,72 @@
+{
+  "run_id": "sem1_20261031_400_claims_v1",
+  "created_at_utc": "2026-11-01T18:31:06.779769+00:00",
+  "reference_directory": "artifacts/sem1_20261031/final",
+  "split_counts": {
+    "train": 320,
+    "validation": 40,
+    "test": 40
+  },
+  "models": [
+    "t5s_spanish",
+    "barto_spanish",
+    "mbart50_es",
+    "umt5_base_es"
+  ],
+  "test_cases_per_model": 40,
+  "inputs_sha256": {
+    "artifacts/sem1_20261031/final/train.csv": "6fc441285d445080ba095cb5bf9ba56d6d2ffe11744e87f6faa05c29178e8584",
+    "artifacts/sem1_20261031/final/validation.csv": "fc4d71196c5387170530f86013b470b216d80800136b7ad898c49064cc4d643d",
+    "artifacts/sem1_20261031/final/test.csv": "79b7c3e52bd4e3b7b4c36d1cef57cf3a628bd374a6f71d843c7a873d245df612",
+    "artifacts/runs/sem1_20261031_400_claims_v1/evaluation/t5s_spanish/per_prediction.csv": "78bacebd7140769951b43da828322f64fe342546d93d5235c179c30d25ad60f2",
+    "artifacts/runs/sem1_20261031_400_claims_v1/evaluation/t5s_spanish/summary.csv": "3913f1dca058da2ec1bb02c6b4a82d7767e7a8e55aa601ed8bdade61c4c7f6ef",
+    "artifacts/runs/sem1_20261031_400_claims_v1/evaluation/barto_spanish/per_prediction.csv": "27724251d439f8632f9f0e4bb707276f08b916fab8e5386d17b2bbc6734fc6ec",
+    "artifacts/runs/sem1_20261031_400_claims_v1/evaluation/barto_spanish/summary.csv": "1dcd57a9c625f71fc70b5d09b03301dc70f523ed1c7d17d631ff8a6ac06c8060",
+    "artifacts/runs/sem1_20261031_400_claims_v1/evaluation/mbart50_es/per_prediction.csv": "0dd3ad4e386b95e677fa56d4c6d861bf47d7157989672dbd3c40250e166cd8e6",
+    "artifacts/runs/sem1_20261031_400_claims_v1/evaluation/mbart50_es/summary.csv": "378fc3b8c6ddd8fc9a15a2e019e7b547c4906848e6d7183ee3fa2c3bcaef1d82",
+    "artifacts/runs/sem1_20261031_400_claims_v1/evaluation/umt5_base_es/per_prediction.csv": "dd480baba66e9f85232db7f03136c7138b8d2da6e703172e11a70ba202904a06",
+    "artifacts/runs/sem1_20261031_400_claims_v1/evaluation/umt5_base_es/summary.csv": "929ad5cbbc0b82b926816fc4ab0935e722054857ba033ad585a10fd4bdd30d9e",
+    "artifacts/runs/sem1_20261031_400_claims_v1/models/t5s_spanish/training_manifest.json": "d6bfb3de3a1d914c15bda5b759a2b56c07b95ca77cf0b20e1ee25346d2c7a894",
+    "artifacts/runs/sem1_20261031_400_claims_v1/models/t5s_spanish/checkpoint-200/trainer_state.json": "186d51ac241515feba6c733775eaca6916d68c8478add7164a668f5fbd709b8b",
+    "artifacts/runs/sem1_20261031_400_claims_v1/models/barto_spanish/training_manifest.json": "454bc49f36d9fca28d0c410c11e8488cdd311302a6e2e52e089f5d666a17e22d",
+    "artifacts/runs/sem1_20261031_400_claims_v1/models/barto_spanish/checkpoint-200/trainer_state.json": "5d6e00396f254eaf444b09b57b6c97f87b128fe3e226ea3f7b52f0404f60a9b2",
+    "artifacts/runs/sem1_20261031_400_claims_v1/models/mbart50_es/training_manifest.json": "da21a4de55c27619012235b6546df34b1a3563e1a8872370eb1a38f935a71434",
+    "artifacts/runs/sem1_20261031_400_claims_v1/models/mbart50_es/checkpoint-200/trainer_state.json": "07e588e2510e9a88e137c8c417e1a5bcdf86fa1a2f437a65686fb1d6beec1dc2",
+    "artifacts/runs/sem1_20261031_400_claims_v1/models/umt5_base_es/training_manifest.json": "7adc6061554bd0270c750bfb6a4e0420b420c92015ad5abc8eb9be6285e665c2",
+    "artifacts/runs/sem1_20261031_400_claims_v1/models/umt5_base_es/checkpoint-200/trainer_state.json": "e93e889453f197800c77a17853fc1555e1611cb3be8dad9d606f050059c38677"
+  },
+  "validation_checks_passed": 118,
+  "versions": {
+    "python": "3.14.6",
+    "pandas": "3.0.6",
+    "numpy": "2.5.3",
+    "matplotlib": "3.11.2"
+  },
+  "files": {
+    "tables/01_distribucion_particiones.csv": "41f84b329f1553403ed07f5c0405c1fe04a84bf2d23b00db645bbe212094da71",
+    "tables/01_distribucion_particiones.html": "84f65f1688a28eb13073e6da34c6d690203750f7733fbbfdff305701f475b702",
+    "tables/02_longitudes_palabras.csv": "57a3bae48dc3e617d1ce5286a1dc00ce2d440591a82c946ba8714416927d288a",
+    "tables/02_longitudes_palabras.html": "bb09a1323bff1b26f36ee6b88b1de3250b853afae85e6b5113f62aa2b239cd52",
+    "figures/01_histogramas_longitud_palabras.png": "dc3dbe4cd1694a59dcbee98dfec76318c7482898a06beac5f6bd9c4b6ba4e972",
+    "figures/01_histogramas_longitud_palabras.pdf": "d152f962ee5e82aa45c0936d466a73da16af6fff849ec9b41020c7651e8a3069",
+    "tables/03_distribucion_pais_territorio.csv": "0d39e1814becc8289790a4f7b25d032d61604d812cdb72fc5484a83c68c77212",
+    "tables/03_distribucion_pais_territorio.html": "90fe798446bb1ddd505627c8b2cf3266c0b8fcbef4091d0dfd3521102ee8c419",
+    "figures/02_curvas_perdida_entrenamiento_validacion.png": "a33ca25a7826b5155b7bf1e4f877206df5ab1344d51b7fdab692a89f49e6078d",
+    "figures/02_curvas_perdida_entrenamiento_validacion.pdf": "10f48d1068a6833e93be4d49e21edcc72933481f9e9ec08a771fa6cbe324dc4b",
+    "tables/04_checkpoints_seleccionados.csv": "4501443b40e8f1c40db762cf5cb8883bf0676cef4f38fb92d3ff6ded518ec56e",
+    "tables/04_checkpoints_seleccionados.html": "ff69bb3eb81ea1ca740cd3f09e3eee13b6a4fa5f3087cfaebb56bba5b5b10eff",
+    "tables/05_metricas_principales.csv": "491101c8d0fd77bdef830336de33f52bee2f8dc6801fd6abd787d32b9b941e64",
+    "tables/05_metricas_principales.html": "bd8054806b63f3f988a174a4ad2ce442a6d37a3acde3a7a6c74ef4a41be711de",
+    "tables/06_desglose_precision_recall_f1.csv": "2a5c00bdee60fa3e7dd5bee208c8ce559d797ac724a1302fb4dd99fa5f649ad5",
+    "tables/06_desglose_precision_recall_f1.html": "c3627ae27fd58914f06549d100943a085dcb43f35b8816a3a6dbe28083db9c10",
+    "figures/03_comparacion_metricas.png": "cbe32620c734576c538902d5d40d6e5913aa20e2cab20e7ab01e9ef044d665aa",
+    "figures/03_comparacion_metricas.pdf": "a5cdcedb4657a89d1eaf0b5952dac8caa1c065b7616982a34eca082153c4efdf",
+    "figures/04_distribucion_metricas_por_noticia.png": "2fa98b41dc8183649f98804a232ceb319145be141bf95220a621daee1951afc3",
+    "figures/04_distribucion_metricas_por_noticia.pdf": "61fffd4bc943577e042533af40491f026f58c38b7d17d9959aaf59e655f02e2c",
+    "tables/07_diagnosticos_generacion.csv": "e66e92649298ebd116528d91b73c854d408c92a9dbe227fa57afb95687e39811",
+    "tables/07_diagnosticos_generacion.html": "77ed1a878908bb63aff7eddb6849091ab1c654e73ce391821a9cf1b5fe729b22"
+  },
+  "metric_source": "Medias de per_prediction.csv, contrastadas con summary.csv; sin recalcular modelos.",
+  "histogram_unit": "Palabras separadas por espacios del texto completo, antes del truncamiento.",
+  "loss_history": "Último checkpoint por paso numérico; seleccionado indicado por modelo."
+}

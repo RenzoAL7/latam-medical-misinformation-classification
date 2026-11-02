@@ -1,0 +1,5 @@
+﻿Modelo,Épocas ejecutadas,Época seleccionada,Pérdida de validación seleccionada,Checkpoint
+T5S,5.0,5.0,2.0806922912597656,checkpoint-200
+BARTO,5.0,3.0,1.383249044418335,checkpoint-120
+mBART-50,5.0,3.0,2.117967128753662,checkpoint-120
+uMT5-Base,20.0,8.0,1.7079365253448486,checkpoint-80

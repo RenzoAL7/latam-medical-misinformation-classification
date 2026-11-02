@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import subprocess
 from pathlib import Path
 
@@ -15,10 +16,29 @@ def test_input_and_generated_artifacts_are_not_tracked() -> None:
         capture_output=True,
         text=True,
     ).stdout.splitlines()
-    assert not any(
-        path.endswith(".csv") and (REPOSITORY_ROOT / path).exists()
-        for path in tracked
-    )
+    # Only the seven aggregate result tables are public; input rows remain local.
+    result_tables = {
+        f"docs/results/sem1_20261031_400_claims_v1/tables/{name}.csv"
+        for name in [
+            "01_distribucion_particiones",
+            "02_longitudes_palabras",
+            "03_distribucion_pais_territorio",
+            "04_checkpoints_seleccionados",
+            "05_metricas_principales",
+            "06_desglose_precision_recall_f1",
+            "07_diagnosticos_generacion",
+        ]
+    }
+    for path in tracked:
+        if path.endswith(".csv") and (REPOSITORY_ROOT / path).exists():
+            assert path in result_tables
+            with (REPOSITORY_ROOT / path).open(encoding="utf-8-sig", newline="") as stream:
+                headers = set(csv.DictReader(stream).fieldnames or [])
+            assert headers
+            assert headers.isdisjoint({
+                "record_id", "title", "body", "source_text", "input_text",
+                "claim", "reference_claim",
+            })
     assert not any(path.startswith("artifacts/") for path in tracked)
     assert not any(path.startswith("data/raw/") for path in tracked)
 

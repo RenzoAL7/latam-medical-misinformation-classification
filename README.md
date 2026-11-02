@@ -289,6 +289,29 @@ otro nombre y ejecútalo. El notebook solo lee el resumen de esa corrida y
 genera las tablas comparativas bajo `evaluation/tables/`. METEOR es la métrica
 principal; ROUGE-L F1 y BERTScore F1 son complementarias.
 
+### Métricas y figuras para el artículo
+
+Abre `notebooks/03_metricas_y_figuras_sem1.ipynb` y ejecuta todas las celdas.
+Configura `RUN_ID` y `REFERENCE_DIR` si vas a analizar otra corrida y su corpus.
+Instala las dependencias de análisis, si hace falta:
+
+    python -m pip install -e ".[analysis]"
+
+El notebook verifica las particiones y la correspondencia del test, agrega las
+métricas ya calculadas y contrasta sus medias con los resúmenes de evaluación.
+Genera histogramas de longitudes en palabras, curvas completas de pérdida por
+modelo, gráficos comparativos y distribuciones de puntajes. Exporta tablas CSV/HTML,
+figuras PNG a 300 dpi y PDF, y un manifiesto con hashes de las entradas en:
+
+    artifacts/runs/<RUN_ID>/evaluation/paper_results/
+
+Solo lee los resultados existentes; no entrena, no vuelve a calcular BERTScore
+ni consulta servicios externos. Sus salidas visibles contienen agregados, sin
+textos individuales de noticias o afirmaciones. Las salidas locales quedan en
+`artifacts/`, ignorado por Git. El resumen publicado de la corrida
+`sem1_20261031_400_claims_v1`, con sus tablas y figuras exportadas, está en
+[Resultados Sem1](docs/results/sem1_20261031_400_claims_v1/README.md).
+
 ## Flujo histórico de preparación local
 
 Primero prepara candidatos desde el CSV entregado. El archivo original no se
