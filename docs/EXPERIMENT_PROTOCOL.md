@@ -22,10 +22,11 @@ extracción y deduplica por `record_id`. Produce CSV locales de inventario,
 cuerpos y tareas de Label Studio.
 
 El export de Label Studio se descarga en CSV. El notebook 01 lo audita y el
-notebook 02 selecciona con semilla fija 400 tareas aptas con afirmación completa
-y texto fuente no duplicado, y escribe un manifiesto final de `record_id`. El
-manifiesto asigna los splits fijos: 320 para train, 40 para validation y 40 para
-test. Las tareas no seleccionadas no entran al conjunto de referencia ni a las
+notebook 02 selecciona con semilla fija 500 tareas aptas con afirmación completa
+y texto fuente no duplicado, y escribe un manifiesto final de `record_id` en
+`artifacts/sem1/claims_500/`. El manifiesto asigna los splits fijos: 400 para
+train, 50 para validation y 50 para test. Las tareas no seleccionadas no entran
+al conjunto de referencia ni a las
 métricas. El conjunto final no se sobrescribe: se congela antes de entrenar para
 impedir que el test se elija por sus resultados.
 

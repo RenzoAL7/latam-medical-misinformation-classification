@@ -17,7 +17,7 @@ El flujo se ejecuta en Jupyter mediante cinco notebooks secuenciales.
 | --- | --- | --- | --- |
 | 00 | `00_recolectar_noticias.ipynb` | NewsData API y `.env` | candidatos, cuerpos extraídos, balance y tareas para Label Studio |
 | 01 | `01_auditar_export_labelstudio.ipynb` | export CSV más reciente de Label Studio | auditoría y candidatas aptas |
-| 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 400: 320 train, 40 validation, 40 test |
+| 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 500: 400 train, 50 validation, 50 test |
 | 03 | `03_entrenar_modelos.ipynb` | los tres CSV cerrados | checkpoints y predicciones locales de test |
 | 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas, tablas y figuras locales |
 
@@ -82,12 +82,12 @@ auditoría con su nombre y hash. El notebook 02 usa las filas aptas con
 crea, sin fechas en el nombre, estas rutas fijas:
 
 ```text
-artifacts/sem1/final/
+artifacts/sem1/claims_500/
 ├── reference_claims.csv
 ├── train.csv
 ├── validation.csv
 ├── test.csv
-├── manifest_final_400.csv
+├── manifest_final_500.csv
 ├── reserve_candidates.csv
 └── split_summary.json
 ```
@@ -111,7 +111,7 @@ solo registran manifiestos y estado de una corrida.
 
 El notebook 03 valida que los splits no compartan `record_id`, `source_hash` o
 `claim_hash`. Entrena cada modelo con `train.csv`, escoge el checkpoint por
-pérdida de `validation.csv` y recién entonces genera predicciones para los 40
+pérdida de `validation.csv` y recién entonces genera predicciones para los 50
 casos de `test.csv`.
 
 El notebook 04 calcula:
@@ -154,7 +154,7 @@ artifacts/               Datos, anotaciones, modelos y resultados locales (ignor
 ```
 
 Los resultados existentes en `docs/results/` son evidencia agregada de
-corridas históricas. La comparación controlada vigente es
-`sem1_20261102_400_claims_controlled_5ep_v2`; no se deben mezclar con una
-corrida nueva ni usar la corrida preliminar no controlada para comparar
-arquitecturas.
+corridas históricas. La comparación controlada
+`sem1_20261102_400_claims_controlled_5ep_v2` corresponde al conjunto previo de
+400 claims; no se debe mezclar con la futura corrida de 500 claims ni usar la
+corrida preliminar no controlada para comparar arquitecturas.
