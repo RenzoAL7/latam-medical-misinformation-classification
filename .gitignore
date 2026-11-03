@@ -12,16 +12,12 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Corpus, anotaciones y resultados: no se versionan textos de noticias ni respuestas humanas.
-data/raw/
-data/derived/
-data/annotations/
 artifacts/
 outputs/
 checkpoints/
 model_cache/
 *.csv
 *.jsonl
-!data/README.md
 
 # Credenciales y pesos locales
 *.key

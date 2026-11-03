@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
-from typing import Iterable
 
 import pandas as pd
 
@@ -18,22 +16,7 @@ REQUIRED_REFERENCE_COLUMNS = {"record_id", "source_text", "reference_claim"}
 
 def read_table(path: str | Path) -> pd.DataFrame:
     path = Path(path)
-    if path.suffix.lower() == ".jsonl":
-        rows = [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-        return pd.DataFrame(rows)
     return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
-
-
-def write_jsonl(rows: Iterable[dict], path: str | Path) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def _require_columns(frame: pd.DataFrame, expected: set[str], label: str) -> None:
