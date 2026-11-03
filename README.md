@@ -11,7 +11,7 @@ evaluar el modelo; no equivale a una validación de veracidad médica.
 
 ## Flujo operativo: notebooks 00 → 04
 
-El flujo se ejecuta en Jupyter, no mediante scripts ni `Makefile`.
+El flujo se ejecuta en Jupyter mediante cinco notebooks secuenciales.
 
 | Paso | Notebook | Entrada | Salida local |
 | --- | --- | --- | --- |
