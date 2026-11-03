@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -10,6 +11,7 @@ from claim_extraction.metrics import operational_diagnostics, reference_metrics
 from claim_extraction.models import configure_model, configure_tokenizer
 from claim_extraction.registry import load_registry
 from claim_extraction.text import input_for_model
+from claim_extraction.workflow import _make_training_progress_callback
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +56,27 @@ def test_mbart_is_configured_for_spanish_generation() -> None:
 def test_model_input_uses_the_reference_source_or_title_and_body() -> None:
     assert input_for_model({"source_text": "Texto ya preparado."}) == "Texto ya preparado."
     assert input_for_model({"title": "Título", "body": "Cuerpo"}) == "Título\n\nCuerpo"
+
+
+def test_training_progress_callback_reports_percent_without_duplicates() -> None:
+    reports: list[tuple[int, int, int]] = []
+    callback = _make_training_progress_callback(
+        object,
+        reporter=lambda percent, current, total: reports.append((percent, current, total)),
+        every_percent=5,
+    )
+    assert callback is not None
+    control = object()
+
+    def state(step: int) -> SimpleNamespace:
+        return SimpleNamespace(global_step=step, max_steps=100, is_local_process_zero=True)
+
+    callback.on_train_begin(None, state(0), control)
+    for step in (1, 5, 9, 10, 100):
+        callback.on_step_end(None, state(step), control)
+    callback.on_train_end(None, state(100), control)
+
+    assert reports == [(0, 0, 100), (5, 5, 100), (10, 10, 100), (100, 100, 100)]
 
 
 def test_metrics_keep_reference_and_operational_results_separate() -> None:

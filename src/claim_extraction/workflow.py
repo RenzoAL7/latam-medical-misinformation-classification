@@ -137,6 +137,52 @@ def _training_arguments(
     return training_arguments_class(**values)
 
 
+def _make_training_progress_callback(
+    callback_base: type[Any],
+    *,
+    reporter: Callable[[int, int, int], None] | None,
+    every_percent: int,
+) -> Any | None:
+    """Crea un callback ligero para mostrar hitos de entrenamiento en notebooks."""
+    if not 1 <= every_percent <= 100:
+        raise ValueError("progress_every_percent debe estar entre 1 y 100.")
+    if reporter is None:
+        return None
+
+    class TrainingProgressCallback(callback_base):
+        def __init__(self) -> None:
+            self.last_reported_percent = -1
+
+        def _report(self, state: Any) -> None:
+            if not getattr(state, "is_local_process_zero", True):
+                return
+            total_steps = int(getattr(state, "max_steps", 0) or 0)
+            if total_steps < 1:
+                return
+            current_steps = max(0, int(getattr(state, "global_step", 0) or 0))
+            percent = min(100, int(100 * current_steps / total_steps))
+            if percent == self.last_reported_percent:
+                return
+            crossed_interval = percent // every_percent > self.last_reported_percent // every_percent
+            if percent == 100 or self.last_reported_percent < 0 or crossed_interval:
+                reporter(percent, current_steps, total_steps)
+                self.last_reported_percent = percent
+
+        def on_train_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            self._report(state)
+            return control
+
+        def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            self._report(state)
+            return control
+
+        def on_train_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> Any:
+            self._report(state)
+            return control
+
+    return TrainingProgressCallback()
+
+
 def train_seq2seq_model(
     *,
     model_id: str,
@@ -149,10 +195,14 @@ def train_seq2seq_model(
     base_checkpoint: str | Path | None = None,
     epochs: float | None = None,
     learning_rate: float | None = None,
+    progress_reporter: Callable[[int, int, int], None] | None = None,
+    progress_every_percent: int = 5,
 ) -> dict[str, Any]:
     """Ajusta un modelo y guarda su mejor checkpoint bajo ``output_dir``."""
     if batch_size < 1:
         raise ValueError("batch_size debe ser positivo.")
+    if not 1 <= progress_every_percent <= 100:
+        raise ValueError("progress_every_percent debe estar entre 1 y 100.")
     spec = get_model(model_id)
     train = validate_reference_table(train)
     validation = validate_reference_table(validation)
@@ -168,6 +218,7 @@ def train_seq2seq_model(
             DataCollatorForSeq2Seq,
             Seq2SeqTrainer,
             Seq2SeqTrainingArguments,
+            TrainerCallback,
             set_seed,
         )
     except ImportError as exc:
@@ -221,6 +272,13 @@ def train_seq2seq_model(
         trainer_kwargs["processing_class"] = tokenizer
     else:
         trainer_kwargs["tokenizer"] = tokenizer
+    progress_callback = _make_training_progress_callback(
+        TrainerCallback,
+        reporter=progress_reporter,
+        every_percent=progress_every_percent,
+    )
+    if progress_callback is not None:
+        trainer_kwargs["callbacks"] = [progress_callback]
     trainer = Seq2SeqTrainer(**trainer_kwargs)
     trainer.train()
     best_dir = model_dir / "best"
