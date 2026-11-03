@@ -55,7 +55,10 @@ def test_input_and_generated_artifacts_are_not_tracked() -> None:
                 }
             )
     assert not any(path.startswith("artifacts/") for path in tracked)
-    assert not any(path.startswith("data/raw/") for path in tracked)
+    assert not any(
+        path.startswith("data/") and (REPOSITORY_ROOT / path).exists()
+        for path in tracked
+    )
 
 
 def test_obsolete_binary_baseline_is_removed() -> None:
