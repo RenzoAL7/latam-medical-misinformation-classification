@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from claim_extraction.data import prepare_news_candidates, validate_reference_table
+from claim_extraction.data import validate_reference_table
 from claim_extraction.metrics import operational_diagnostics, reference_metrics
 from claim_extraction.models import configure_model, configure_tokenizer
 from claim_extraction.registry import load_registry
+from claim_extraction.text import input_for_model
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,28 +51,9 @@ def test_mbart_is_configured_for_spanish_generation() -> None:
     assert FakeModel.generation_config.forced_bos_token_id == 7
 
 
-def test_candidate_filtering_preserves_one_news_unit() -> None:
-    frame = pd.DataFrame(
-        [
-            {
-                "record_id": "ok",
-                "title": "Título",
-                "body": "Una noticia médica con suficiente contenido para el filtro.",
-                "body_available": "SI",
-                "extraction_status": "OK",
-            },
-            {
-                "record_id": "bad",
-                "title": "Título",
-                "body": "Contenido",
-                "body_available": "NO",
-                "extraction_status": "OK",
-            },
-        ]
-    )
-    result = prepare_news_candidates(frame, min_body_chars=10)
-    assert result["record_id"].tolist() == ["ok"]
-    assert result["source_text"].iloc[0].startswith("Título")
+def test_model_input_uses_the_reference_source_or_title_and_body() -> None:
+    assert input_for_model({"source_text": "Texto ya preparado."}) == "Texto ya preparado."
+    assert input_for_model({"title": "Título", "body": "Cuerpo"}) == "Título\n\nCuerpo"
 
 
 def test_metrics_keep_reference_and_operational_results_separate() -> None:

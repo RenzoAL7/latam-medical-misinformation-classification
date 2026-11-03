@@ -48,11 +48,6 @@ def rouge_l_prf(reference: object, prediction: object) -> tuple[float, float, fl
     return precision, recall, 2 * precision * recall / (precision + recall)
 
 
-def rouge_l_f1(reference: object, prediction: object) -> float:
-    """Conserva el acceso directo al F1 de ROUGE-L para código existente."""
-    return rouge_l_prf(reference, prediction)[2]
-
-
 def meteor(reference: object, prediction: object) -> float:
     """Calcula METEOR con NLTK; exige wordnet y omw-1.4 instalados."""
     try:
@@ -128,11 +123,6 @@ def bertscore_prf(
     ):
         scores[index] = (float(score_precision), float(score_recall), float(score_f1))
     return scores
-
-
-def bertscore_f1(references: list[str], predictions: list[str]) -> list[float]:
-    """Conserva el acceso directo al F1 de BERTScore para código existente."""
-    return [score_f1 for _, _, score_f1 in bertscore_prf(references, predictions)]
 
 
 def reference_metrics(

@@ -13,7 +13,6 @@ class ModelSpec:
     id: str
     display_name: str
     base_checkpoint: str
-    input_adapter: str
     paper: str
     paper_url: str
     training: dict[str, Any]
@@ -43,8 +42,4 @@ def get_model(model_id: str) -> ModelSpec:
     except KeyError as exc:
         available = ", ".join(sorted(registry))
         raise ValueError(f"Modelo desconocido: {model_id}. Disponibles: {available}") from exc
-
-
-def model_ids() -> list[str]:
-    return sorted(load_registry())
 

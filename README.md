@@ -60,11 +60,11 @@ Crea un archivo `.env` local —ignorado por Git— con:
 NEWSDATA_API_KEY=tu_clave
 ```
 
-El notebook consulta noticias de salud en español, extrae cuerpos con
-BeautifulSoup y aplica round robin entre países/territorios de LATAM para
-completar las cuotas configuradas. Solo genera `labelstudio_tasks.csv` cuando
-cumple el objetivo de balance de esa corrida. El inventario y los cuerpos son
-artefactos de trazabilidad, no datos de entrenamiento.
+El notebook consulta una vez cada país/territorio de LATAM, extrae cuerpos con
+BeautifulSoup y aplica round robin para dar diversidad a la muestra. Si un
+país se queda sin candidatos utilizables, los demás completan el total. Solo
+genera `labelstudio_tasks.csv` cuando reúne 50 cuerpos válidos. El inventario
+y los cuerpos son artefactos de trazabilidad, no datos de entrenamiento.
 
 En Label Studio importa `labelstudio_tasks.csv` como **List of tasks**.
 

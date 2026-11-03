@@ -78,10 +78,10 @@ def validate_sem1_splits(
     return frames
 
 
-def _model_inputs(frame: pd.DataFrame, spec: Any) -> pd.DataFrame:
+def _model_inputs(frame: pd.DataFrame) -> pd.DataFrame:
     work = frame.copy()
     work["input_text"] = [
-        input_for_model(row, spec) for row in work.to_dict(orient="records")
+        input_for_model(row) for row in work.to_dict(orient="records")
     ]
     work["target_text"] = work["reference_claim"].map(str)
     return work[["input_text", "target_text"]]
@@ -156,8 +156,8 @@ def train_seq2seq_model(
     spec = get_model(model_id)
     train = validate_reference_table(train)
     validation = validate_reference_table(validation)
-    train_data = _model_inputs(train, spec)
-    validation_data = _model_inputs(validation, spec)
+    train_data = _model_inputs(train)
+    validation_data = _model_inputs(validation)
     if train_data.empty or validation_data.empty:
         raise ValueError("Train y validation deben contener al menos una fila válida.")
 
@@ -303,7 +303,7 @@ def generate_predictions(
     predictions: list[dict[str, str]] = []
     for start in range(0, len(records), batch_size):
         batch = records[start : start + batch_size]
-        inputs = [input_for_model(record, spec) for record in batch]
+        inputs = [input_for_model(record) for record in batch]
         encoded = tokenizer(
             inputs,
             max_length=max_source,

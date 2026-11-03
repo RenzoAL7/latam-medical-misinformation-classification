@@ -4,7 +4,6 @@
       "id": "t5s_spanish",
       "display_name": "T5S",
       "base_checkpoint": "vgaraujov/t5-base-spanish",
-      "input_adapter": "plain",
       "paper": "Spanish Pre-trained Language Models",
       "paper_url": "https://aclanthology.org/2024.lrec-main.1283/",
       "training": {
@@ -26,7 +25,6 @@
       "id": "barto_spanish",
       "display_name": "BARTO",
       "base_checkpoint": "vgaraujov/bart-base-spanish",
-      "input_adapter": "plain",
       "paper": "Spanish Pre-trained Language Models",
       "paper_url": "https://aclanthology.org/2024.lrec-main.1283/",
       "training": {
@@ -48,7 +46,6 @@
       "id": "mbart50_es",
       "display_name": "mBART-50",
       "base_checkpoint": "facebook/mbart-large-50",
-      "input_adapter": "plain",
       "paper": "AKCIT-FN at CheckThat! 2025",
       "paper_url": "https://arxiv.org/abs/2509.11496",
       "training": {
@@ -74,7 +71,6 @@
       "id": "umt5_base_es",
       "display_name": "uMT5-Base",
       "base_checkpoint": "google/umt5-base",
-      "input_adapter": "plain",
       "paper": "MMA at CheckThat! 2025",
       "paper_url": "https://ceur-ws.org/Vol-4038/paper_88.pdf",
       "training": {
