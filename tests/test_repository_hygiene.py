@@ -84,6 +84,11 @@ def test_notebook_first_components_are_the_only_operational_entrypoints() -> Non
     assert all((REPOSITORY_ROOT / path).is_file() for path in retained)
 
 
+def test_requirements_installs_the_complete_notebook_environment() -> None:
+    requirements = (REPOSITORY_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    assert "-e .[analysis,models,dev]" in requirements
+
+
 def test_notebooks_are_unexecuted_and_do_not_call_legacy_cli_files() -> None:
     for name in ACTIVE_NOTEBOOKS:
         notebook = json.loads((REPOSITORY_ROOT / "notebooks" / name).read_text(encoding="utf-8"))

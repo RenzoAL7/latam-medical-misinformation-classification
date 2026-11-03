@@ -28,14 +28,19 @@ notebook.
 
 ## Preparación local
 
-Requiere Python 3.11 o superior. Desde la raíz del repositorio:
+Requiere Python 3.11 o superior. Después de clonar el repositorio, desde su
+raíz:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e '.[analysis,models,dev]'
+.venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -m nltk.downloader wordnet omw-1.4
 ```
+
+`requirements.txt` instala el proyecto con todos los grupos necesarios:
+Jupyter, análisis, entrenamiento, evaluación y pruebas. No subas `.venv` a
+Git: contiene binarios y rutas específicas de cada computadora.
 
 Para comprobar la lógica local sin descargar modelos ni corpus:
 
