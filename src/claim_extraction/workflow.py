@@ -22,7 +22,8 @@ from .registry import get_model
 from .text import input_for_model
 
 
-EXPECTED_SPLIT_SIZES = {"train": 320, "validation": 40, "test": 40}
+# Diseño vigente del corpus de fine-tuning: 500 claims únicos y sin fuga entre splits.
+EXPECTED_SPLIT_SIZES = {"train": 400, "validation": 50, "test": 50}
 _UNIQUE_COLUMNS = ("record_id", "source_hash", "claim_hash")
 
 
