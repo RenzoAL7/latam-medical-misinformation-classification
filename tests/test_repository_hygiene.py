@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import csv
+import json
 import subprocess
 from pathlib import Path
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+ACTIVE_NOTEBOOKS = {
+    "00_recolectar_noticias.ipynb",
+    "01_auditar_export_labelstudio.ipynb",
+    "02_construir_splits_train_val_test.ipynb",
+    "03_entrenar_modelos.ipynb",
+    "04_evaluar_y_visualizar_modelos.ipynb",
+}
 
 
 def test_input_and_generated_artifacts_are_not_tracked() -> None:
@@ -16,7 +24,6 @@ def test_input_and_generated_artifacts_are_not_tracked() -> None:
         capture_output=True,
         text=True,
     ).stdout.splitlines()
-    # Only aggregate result tables are public; input rows remain local.
     result_run_ids = {
         "sem1_20261031_400_claims_v1",
         "sem1_20261102_400_claims_controlled_5ep_v2",
@@ -41,10 +48,12 @@ def test_input_and_generated_artifacts_are_not_tracked() -> None:
             with (REPOSITORY_ROOT / path).open(encoding="utf-8-sig", newline="") as stream:
                 headers = set(csv.DictReader(stream).fieldnames or [])
             assert headers
-            assert headers.isdisjoint({
-                "record_id", "title", "body", "source_text", "input_text",
-                "claim", "reference_claim",
-            })
+            assert headers.isdisjoint(
+                {
+                    "record_id", "title", "body", "source_text", "input_text",
+                    "claim", "reference_claim",
+                }
+            )
     assert not any(path.startswith("artifacts/") for path in tracked)
     assert not any(path.startswith("data/raw/") for path in tracked)
 
@@ -62,27 +71,39 @@ def test_obsolete_binary_baseline_is_removed() -> None:
     )
 
 
-def test_removed_cloud_and_legacy_paths_are_absent() -> None:
-    obsolete = [
-        "labelstudio",
-        "oci",
+def test_notebook_first_components_are_the_only_operational_entrypoints() -> None:
+    notebooks = {path.name for path in (REPOSITORY_ROOT / "notebooks").glob("*.ipynb")}
+    assert notebooks == ACTIVE_NOTEBOOKS
+    assert not (REPOSITORY_ROOT / "scripts").exists()
+    assert not (REPOSITORY_ROOT / "Makefile").exists()
+    retained = [
+        "configs/models.json",
+        "src/claim_extraction/workflow.py",
+        "src/claim_extraction/registry.py",
     ]
+    assert all((REPOSITORY_ROOT / path).is_file() for path in retained)
+
+
+def test_notebooks_are_unexecuted_and_do_not_call_legacy_cli_files() -> None:
+    for name in ACTIVE_NOTEBOOKS:
+        notebook = json.loads((REPOSITORY_ROOT / "notebooks" / name).read_text(encoding="utf-8"))
+        for cell in notebook["cells"]:
+            if cell.get("cell_type") != "code":
+                continue
+            assert not cell.get("outputs")
+            source = "".join(cell.get("source", []))
+            assert "scripts/" not in source
+            assert "subprocess" not in source
+            compile(source, f"{name}:cell", "exec")
+
+
+def test_removed_cloud_and_legacy_paths_are_absent() -> None:
+    obsolete = ["labelstudio", "oci"]
     assert all(
         not (REPOSITORY_ROOT / path).exists()
         or not any((REPOSITORY_ROOT / path).iterdir())
         for path in obsolete
     )
-
-
-def test_local_model_pipeline_components_remain() -> None:
-    retained = [
-        "configs/models.json",
-        "scripts/train_seq2seq.py",
-        "scripts/run_inference.py",
-        "scripts/evaluate_claims.py",
-        "src/claim_extraction/registry.py",
-    ]
-    assert all((REPOSITORY_ROOT / path).is_file() for path in retained)
 
 
 def test_removed_external_claim_api_names_are_absent() -> None:
@@ -91,10 +112,10 @@ def test_removed_external_claim_api_names_are_absent() -> None:
             "rg",
             "-n",
             "-i",
-            "gemini|google-generative|generativelanguage|label.?studio",
+            "gemini|google-generative|generativelanguage",
             "src",
-            "scripts",
             "configs",
+            "notebooks",
         ],
         cwd=REPOSITORY_ROOT,
         check=False,

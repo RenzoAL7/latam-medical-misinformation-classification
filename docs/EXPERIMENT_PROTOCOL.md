@@ -10,23 +10,24 @@ La unidad de análisis es una noticia. Cada salida debe ser declarativa,
 verificable y autocontenida. No es un veredicto de verdad, una traducción ni
 una consulta de búsqueda.
 
-La noticia conserva record_id y source_hash. Las predicciones conservan además
-model_id, checkpoint, texto de entrada, dispositivo, parámetros de generación
-y fecha de ejecución. Los textos y anotaciones generados se mantienen fuera de
-Git.
+La noticia conserva `record_id` y `source_hash`. Las predicciones conservan
+además `model_id`, checkpoint y dispositivo. Los textos, anotaciones y
+predicciones individuales se mantienen fuera de Git.
 
 ## 2. Datos y anotación
 
-El CSV de MedNews se filtra a filas con body_available=SI,
-extraction_status=OK, título no vacío y cuerpo de al menos 400 caracteres. Se
-deduplica por record_id. La salida es un JSONL local de candidatos.
+El notebook 00 filtra las noticias recolectadas a filas con cuerpo disponible,
+título no vacío y longitud mínima configurada; además conserva diagnóstico de
+extracción y deduplica por `record_id`. Produce CSV locales de inventario,
+cuerpos y tareas de Label Studio.
 
-El export de Label Studio se descarga en JSON. Un script selecciona con semilla
-fija 400 tareas aptas con claim completo y texto fuente no duplicado, y escribe
-un manifiesto final de `record_id`. El manifiesto asigna los splits fijos: 320
-para train, 40 para validation y 40 para test. Las tareas no seleccionadas no
-entran al conjunto de referencia ni a las métricas. El manifiesto no se sobrescribe: se congela
-antes de entrenar para impedir que el test se elija por sus resultados.
+El export de Label Studio se descarga en CSV. El notebook 01 lo audita y el
+notebook 02 selecciona con semilla fija 400 tareas aptas con afirmación completa
+y texto fuente no duplicado, y escribe un manifiesto final de `record_id`. El
+manifiesto asigna los splits fijos: 320 para train, 40 para validation y 40 para
+test. Las tareas no seleccionadas no entran al conjunto de referencia ni a las
+métricas. El conjunto final no se sobrescribe: se congela antes de entrenar para
+impedir que el test se elija por sus resultados.
 
 La anotación produce un claim central fiel a la fuente, no una opinión del
 anotador, un veredicto, una consulta PubMed ni varios claims. Una noticia sin
@@ -76,9 +77,9 @@ La configuración ejecutable está en configs/models.json y queda copiada en el
 manifiesto de cada corrida. Todos se ejecutan localmente con Transformers y
 PyTorch; no se llama a una API generativa.
 Los claims antiguos producidos por una API no forman parte del corpus ni de la
-evaluación. La plataforma de anotación solo aporta un export JSON manual al
-conversor local; no hay sincronización ni servicios externos durante el
-entrenamiento o la inferencia.
+evaluación. La plataforma de anotación solo aporta un export CSV manual al
+flujo local de notebooks; no hay sincronización ni servicios externos durante
+el entrenamiento o la inferencia.
 
 ## 4. Métricas
 

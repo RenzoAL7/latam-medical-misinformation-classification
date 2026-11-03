@@ -8,7 +8,7 @@
 
 Corrida: `sem1_20261031_400_claims_v1`. Resultados locales existentes de T5S, BARTO, mBART-50 y uMT5-Base.
 
-El corpus anotado contiene 400 noticias latinoamericanas en español: 320 de entrenamiento, 40 de validación y 40 de prueba. Cada modelo se evaluó sobre las mismas 40 noticias de prueba. Las tablas y figuras se generaron con el [notebook ejecutado](../../../notebooks/03_metricas_y_figuras_sem1.ipynb), sin repetir el entrenamiento ni la inferencia.
+El corpus anotado contiene 400 noticias latinoamericanas en español: 320 de entrenamiento, 40 de validación y 40 de prueba. Cada modelo se evaluó sobre las mismas 40 noticias de prueba. Estas tablas y figuras son artefactos históricos de esa corrida; el flujo operativo vigente de evaluación está en [el notebook 04](../../../notebooks/04_evaluar_y_visualizar_modelos.ipynb).
 
 ## Métricas principales
 

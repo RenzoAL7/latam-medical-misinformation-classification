@@ -50,22 +50,6 @@ def test_mbart_is_configured_for_spanish_generation() -> None:
     assert FakeModel.generation_config.forced_bos_token_id == 7
 
 
-def test_scripts_cover_phase_one_flow() -> None:
-    for name in [
-        "fetch_newsdata.py",
-        "extract_news_bodies.py",
-        "prepare_claim_corpus.py",
-        "create_reference_template.py",
-        "split_reference.py",
-        "train_seq2seq.py",
-        "run_inference.py",
-        "evaluate_claims.py",
-        "publish_sem1_results.py",
-        "build_blind_review_sheet.py",
-    ]:
-        assert (ROOT / "scripts" / name).is_file()
-
-
 def test_candidate_filtering_preserves_one_news_unit() -> None:
     frame = pd.DataFrame(
         [
@@ -90,12 +74,14 @@ def test_candidate_filtering_preserves_one_news_unit() -> None:
     assert result["source_text"].iloc[0].startswith("Título")
 
 
-def test_metrics_require_reference_claims_and_keep_operational_diagnostics_separate() -> None:
+def test_metrics_keep_reference_and_operational_results_separate() -> None:
     rows = [{"reference_claim": "La vacuna reduce el riesgo", "claim": "La vacuna reduce el riesgo"}]
     details, summary = reference_metrics(
-        rows, bertscore_scorer=lambda references, predictions: [(1.0, 1.0, 1.0)]
+        rows,
+        bertscore_scorer=lambda references, predictions: [(1.0, 1.0, 1.0)],
+        meteor_scorer=lambda reference, prediction: 1.0,
     )
-    assert summary["meteor"] > 0.99
+    assert summary["meteor"] == 1.0
     assert summary["rouge_l_precision"] == 1.0
     assert summary["rouge_l_recall"] == 1.0
     assert summary["rouge_l_f1"] == 1.0
@@ -103,6 +89,7 @@ def test_metrics_require_reference_claims_and_keep_operational_diagnostics_separ
     assert summary["bertscore_recall"] == 1.0
     assert details[0]["bertscore_f1"] == 1.0
     assert operational_diagnostics([{"claim": ""}])["empty_rate"] == 1.0
+
     with_reference = pd.DataFrame(
         [{"record_id": "1", "source_text": "fuente", "reference_claim": "claim"}]
     )
@@ -141,4 +128,3 @@ def test_sem1_uses_a_common_optimization_and_generation_budget() -> None:
     for spec in registry.values():
         assert {key: spec.training[key] for key in training_keys} == expected_training
         assert {key: spec.generation[key] for key in generation_keys} == expected_generation
-

@@ -141,6 +141,7 @@ def reference_metrics(
     bertscore_scorer: Callable[
         [list[str], list[str]], list[tuple[float, float, float]]
     ] = bertscore_prf,
+    meteor_scorer: Callable[[object, object], float] = meteor,
 ) -> tuple[list[dict[str, object]], dict[str, float]]:
     paired_rows = list(rows)
     if not paired_rows:
@@ -161,7 +162,7 @@ def reference_metrics(
         per_row.append(
             {
                 **row,
-                "meteor": meteor(reference, prediction),
+                "meteor": float(meteor_scorer(reference, prediction)),
                 "rouge_l_precision": rouge_precision,
                 "rouge_l_recall": rouge_recall,
                 "rouge_l_f1": rouge_f1,
