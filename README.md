@@ -142,6 +142,28 @@ El diseño controlado fija hasta cinco épocas, batch efectivo 8, learning rate
 [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md) para el alcance y
 las reglas metodológicas completas.
 
+## Resultados publicados: corrida controlada de 400
+
+La corrida histórica `sem1_20261102_400_claims_controlled_5ep_v2` evaluó los
+cuatro modelos sobre 40 noticias de prueba, a partir de un conjunto cerrado de
+400 noticias (320 de entrenamiento, 40 de validación y 40 de prueba). Todos
+usaron hasta cinco épocas, batch efectivo 8, learning rate 3e-5, sin warmup ni
+weight decay y cuatro beams; el checkpoint se escogió por pérdida de validación.
+
+| Modelo | METEOR | ROUGE-L F1 | BERTScore F1 |
+| --- | ---: | ---: | ---: |
+| T5S | 0.1735 | 0.2209 | 0.8246 |
+| BARTO | 0.3150 | 0.3258 | 0.8997 |
+| mBART-50 | 0.2786 | 0.2941 | 0.8974 |
+| uMT5-Base | 0.2160 | 0.1981 | 0.7427 |
+
+En ese piloto BARTO obtuvo el valor más alto en las tres métricas. Los puntajes
+miden similitud entre la predicción y la afirmación de referencia: no prueban
+veracidad médica ni exactitud clínica. Consulta los
+[resultados agregados y sus figuras](docs/results/sem1_20261102_400_claims_controlled_5ep_v2/README.md)
+para el detalle. Esta corrida de 400 no se combina ni se compara directamente
+con la futura corrida de 500 claims descrita arriba.
+
 ## Estructura del repositorio
 
 ```text
