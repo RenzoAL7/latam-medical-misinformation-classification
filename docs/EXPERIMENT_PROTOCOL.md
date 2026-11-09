@@ -16,10 +16,11 @@ predicciones individuales se mantienen fuera de Git.
 
 ## 2. Datos y anotación
 
-El notebook 00 filtra las noticias recolectadas a filas con cuerpo disponible,
-título no vacío y longitud mínima configurada; además conserva diagnóstico de
-extracción y deduplica por `record_id`. Produce CSV locales de inventario,
-cuerpos y tareas de Label Studio.
+Desde el 08/11/2026 la recolección corre en OCI dos veces al día. El flujo
+conserva noticias con cuerpo disponible, título y longitud mínima, descarta las
+repetidas y carga las tareas en Label Studio; guarda en Object Storage las
+seleccionadas y las descartadas con su motivo. El notebook 00, que armaba lotes
+manuales, se retiró el 09/11/2026 y sigue en el historial de Git.
 
 El export de Label Studio se descarga en CSV. El notebook 01 lo audita y el
 notebook 02 selecciona con semilla fija 500 tareas aptas con afirmación completa

@@ -9,19 +9,18 @@ genera consultas, hace ranking ni extrae múltiples afirmaciones. La
 `reference_claim` es una afirmación de referencia anotada para entrenar y
 evaluar el modelo; no equivale a una validación de veracidad médica.
 
-## Flujo operativo: notebooks 00 → 04
+## Flujo operativo: notebooks 01 → 04
 
-El flujo se ejecuta en Jupyter mediante cinco notebooks secuenciales.
+El flujo se ejecuta en Jupyter mediante cuatro notebooks secuenciales.
 
 | Paso | Notebook | Entrada | Salida local |
 | --- | --- | --- | --- |
-| 00 | `00_recolectar_noticias.ipynb` | NewsData API y `.env` | candidatos, cuerpos extraídos, balance y tareas para Label Studio |
 | 01 | `01_auditar_export_labelstudio.ipynb` | export CSV más reciente de Label Studio | auditoría y candidatas aptas |
 | 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 500: 400 train, 50 validation, 50 test |
 | 03 | `03_entrenar_modelos.ipynb` | los tres CSV cerrados | checkpoints y predicciones locales de test |
 | 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas, tablas y figuras locales |
 
-Los notebooks 00–02 son los únicos que se necesitan antes de entrenar. Los
+Los notebooks 01–02 son los únicos que se necesitan antes de entrenar. Los
 notebooks 03–04 reutilizan funciones comprobables de `src/claim_extraction/`,
 pero la secuencia de trabajo y sus parámetros se ven directamente en cada
 notebook.
@@ -85,21 +84,16 @@ En equipos Apple Silicon, PyTorch usa MPS cuando está disponible; CUDA se usa
 cuando existe. Los pesos base se descargan a la caché local de Hugging Face y
 no se versionan.
 
-## 00. Recolección de noticias
+## Recolección de noticias
 
-Crea un archivo `.env` local —ignorado por Git— con:
+Las noticias llegan solas a Label Studio. A las 08:00 y 20:00 de Lima, un flujo
+en OCI consulta NewsData, extrae los cuerpos, descarta las repetidas y deja
+hasta 50 tareas por corrida en Object Storage. Un timer de la VM las importa al
+proyecto de Label Studio. Ese flujo se administra en OCI y no forma parte de
+este repositorio.
 
-```text
-NEWSDATA_API_KEY=tu_clave
-```
-
-El notebook consulta una vez cada país/territorio de LATAM, extrae cuerpos con
-BeautifulSoup y aplica round robin para dar diversidad a la muestra. Si un
-país se queda sin candidatos utilizables, los demás completan el total. Solo
-genera `labelstudio_tasks.csv` cuando reúne 50 cuerpos válidos. El inventario
-y los cuerpos son artefactos de trazabilidad, no datos de entrenamiento.
-
-En Label Studio importa `labelstudio_tasks.csv` como **List of tasks**.
+El notebook 00, que armaba lotes manuales, se retiró el 09/11/2026 y sigue
+disponible en el historial de Git.
 
 ## 01–02. Export, auditoría y splits cerrados
 
@@ -221,7 +215,7 @@ con la corrida local `claims_500_v1` de 500 claims.
 ```text
 configs/                 Registro de modelos y configuración controlada
 docs/                    Protocolo y resultados agregados históricos
-notebooks/               Flujo operativo 00–04
+notebooks/               Flujo operativo 01–04
 src/claim_extraction/    Lógica reusable y comprobable
 tests/                   Pruebas sin corpus ni pesos locales
 artifacts/               Datos, anotaciones, modelos y resultados locales (ignorado)
