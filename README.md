@@ -100,7 +100,7 @@ disponible en el historial de Git.
 Cuando termines de anotar, descarga el export CSV de Label Studio y cópialo a:
 
 ```text
-artifacts/labelstudio/exports/
+artifacts/01_labelstudio/exports/
 ```
 
 El notebook 01 detecta automáticamente el CSV más reciente y conserva una
@@ -109,7 +109,7 @@ auditoría con su nombre y hash. El notebook 02 usa las filas aptas con
 crea, sin fechas en el nombre, estas rutas fijas:
 
 ```text
-artifacts/sem1/claims_500/
+artifacts/02_conjuntos/claims_500/
 ├── reference_claims.csv
 ├── train.csv
 ├── validation.csv
@@ -219,6 +219,11 @@ notebooks/               Flujo operativo 01–04
 src/claim_extraction/    Lógica reusable y comprobable
 tests/                   Pruebas sin corpus ni pesos locales
 artifacts/               Datos, anotaciones, modelos y resultados locales (ignorado)
+  01_labelstudio/        Exports CSV de Label Studio y auditoría del notebook 01
+  02_conjuntos/          Conjuntos cerrados: claims_400, claims_500 y claims_1500
+  03_corridas/           Modelos, predicciones y evaluación de cada corrida
+  codigo_oci/            Copia local del flujo automático en OCI
+  archivo/               Material antiguo que el flujo ya no usa
 ```
 
 Los resultados existentes en `docs/results/` son evidencia agregada de
