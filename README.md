@@ -26,6 +26,39 @@ notebooks 03–04 reutilizan funciones comprobables de `src/claim_extraction/`,
 pero la secuencia de trabajo y sus parámetros se ven directamente en cada
 notebook.
 
+## Próxima etapa: 1500 claims y clasificación de temas
+
+**Estado:** planificado el 08/11/2026 a partir de las recomendaciones de
+asesoría. A esa fecha, el repositorio no contiene `claims_1500`, el clasificador
+de temas ni la evaluación por tema.
+
+El flujo objetivo amplía el conjunto a 1500 noticias aptas y agrega un paso
+secundario para identificar el tema de cada noticia:
+
+```text
+1. Recolección
+2. Anotación: aptitud, tema y claim
+3. Conjunto final: 1200 train / 150 validation / 150 test
+   ├── 4A. Clasificación de temas
+   └── 4B. Entrenamiento de claims
+5. Evaluación: METEOR global y por tema
+```
+
+El conjunto nuevo se guardará como `claims_1500`, sin modificar `claims_500`.
+La extracción de claims sigue siendo el aporte principal.
+
+La clasificación de temas asigna una de siete categorías: Cáncer,
+Cardiometabólicas, Nutrición y suplementos, Salud mental y neurología,
+Infecciosas e inmunidad, Sistema de salud y políticas, y Otra. No usa
+fine-tuning ni evalúa la veracidad de la noticia. Su diseño es:
+
+- **Representación del texto:** `paraphrase-multilingual-MiniLM-L12-v2`,
+  `paraphrase-multilingual-mpnet-base-v2` y TF-IDF como línea base.
+- **Clasificadores:** regresión logística y SVM lineal, ambos con pesos por
+  clase porque los temas están desbalanceados.
+- **Entrada:** título y comienzo del cuerpo.
+- **Selección:** la mejor de las seis combinaciones por F1 macro en validación.
+
 ## Preparación local
 
 Requiere Python 3.11 o superior. Después de clonar el repositorio, desde su
@@ -127,6 +160,27 @@ cuerpos, anotaciones, predicciones individuales y pesos permanecen bajo
 `artifacts/`, que está ignorado por Git. Solo los agregados revisados pueden
 publicarse en `docs/results/`.
 
+### Variantes de entrenamiento
+
+**Estado:** implementadas localmente al 08/11/2026. El código y su protocolo se
+publicarán en un cambio aparte.
+
+Los cuatro modelos podrán entrenarse con las mismas particiones en cuatro
+variantes:
+
+| Variante | Entrenamiento | Learning rate |
+| --- | --- | --- |
+| `epocas_5` | Ajuste completo, 5 épocas | 3e-5 |
+| `epocas_10` | Ajuste completo, 10 épocas | 3e-5 |
+| `epocas_20` | Ajuste completo, 20 épocas | 3e-5 |
+| `lora` | Solo adaptadores LoRA (r=8, alpha=32, dropout 0,1), 10 épocas | 3e-4 |
+
+Early Stopping detiene el entrenamiento tras tres épocas sin mejora en la
+pérdida de validación. Para cada modelo se conserva la variante con menor
+pérdida de validación; `test.csv` no interviene en esa elección. Al 08/11/2026
+solo `epocas_5` (corrida `claims_500_v1`) se ha ejecutado sobre el conjunto
+completo.
+
 ## Modelos y configuración controlada
 
 La configuración ejecutable está en `configs/models.json`. La comparación usa
@@ -162,7 +216,7 @@ miden similitud entre la predicción y la afirmación de referencia: no prueban
 veracidad médica ni exactitud clínica. Consulta los
 [resultados agregados y sus figuras](docs/results/sem1_20261102_400_claims_controlled_5ep_v2/README.md)
 para el detalle. Esta corrida de 400 no se combina ni se compara directamente
-con la futura corrida de 500 claims descrita arriba.
+con la corrida local `claims_500_v1` de 500 claims.
 
 ## Estructura del repositorio
 
@@ -178,5 +232,6 @@ artifacts/               Datos, anotaciones, modelos y resultados locales (ignor
 Los resultados existentes en `docs/results/` son evidencia agregada de
 corridas históricas. La comparación controlada
 `sem1_20261102_400_claims_controlled_5ep_v2` corresponde al conjunto previo de
-400 claims; no se debe mezclar con la futura corrida de 500 claims ni usar la
-corrida preliminar no controlada para comparar arquitecturas.
+400 claims; no se debe mezclar con la corrida local `claims_500_v1` de 500
+claims ni con la futura de 1500, ni usar la corrida preliminar no controlada
+para comparar arquitecturas.
