@@ -8,7 +8,6 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 ACTIVE_NOTEBOOKS = {
-    "00_recolectar_noticias.ipynb",
     "01_auditar_export_labelstudio.ipynb",
     "02_construir_splits_train_val_test.ipynb",
     "03_entrenar_modelos.ipynb",
@@ -103,24 +102,6 @@ def test_notebooks_are_unexecuted_and_do_not_call_legacy_cli_files() -> None:
             assert "scripts/" not in source
             assert "subprocess" not in source
             compile(source, f"{name}:cell", "exec")
-
-
-def test_collection_notebook_uses_bounded_requests_and_a_total_body_target() -> None:
-    notebook = json.loads(
-        (REPOSITORY_ROOT / "notebooks" / "00_recolectar_noticias.ipynb").read_text(
-            encoding="utf-8"
-        )
-    )
-    source = "\n".join(
-        "".join(cell.get("source", []))
-        for cell in notebook["cells"]
-        if cell.get("cell_type") == "code"
-    )
-    assert "API_REQUESTS_PER_COUNTRY = 1" in source
-    assert "def request_pages" not in source
-    assert "while len(labelstudio_rows) < TARGET_NEWS:" in source
-    assert "writer.writerows(labelstudio_rows)" in source
-    assert "country_quotas" not in source
 
 
 def test_removed_cloud_and_legacy_paths_are_absent() -> None:
