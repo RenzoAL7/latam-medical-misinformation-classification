@@ -12,6 +12,7 @@ ACTIVE_NOTEBOOKS = {
     "02_construir_splits_train_val_test.ipynb",
     "03_entrenar_modelos.ipynb",
     "04_evaluar_y_visualizar_modelos.ipynb",
+    "05_clasificar_temas.ipynb",
 }
 
 

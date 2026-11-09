@@ -7,6 +7,7 @@ sin ocultar la secuencia metodológica fuera de ellos.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 from datetime import datetime, timezone
@@ -22,21 +23,22 @@ from .registry import get_model
 from .text import input_for_model
 
 
-# Diseño vigente del corpus de fine-tuning: 500 claims únicos y sin fuga entre splits.
-EXPECTED_SPLIT_SIZES = {"train": 400, "validation": 50, "test": 50}
+# Conjuntos cerrados admitidos: cada notebook elige uno y valida sus tamaños.
+DATASET_SPLIT_SIZES: dict[str, dict[str, int]] = {
+    "claims_500": {"train": 400, "validation": 50, "test": 50},
+    "claims_1500": {"train": 1200, "validation": 150, "test": 150},
+}
 _UNIQUE_COLUMNS = ("record_id", "source_hash", "claim_hash")
 
 
 # Variantes del experimento. Cada una tiene su propia carpeta de corrida.
 # Épocas: 5 (paper 99), 10 (paper 100) y 20 (paper 80, T5). LoRA: r=8 (papers 75 y 80),
 # alpha=32 y dropout=0.1 (paper 75), con 10 épocas (paper 75), aplicado a T5 en el paper 100.
-# epocas_5 reutiliza claims_500_v1: con paciencia 3 su mejor checkpoint no cambia.
 EXPERIMENT_VARIANTS: dict[str, dict[str, Any]] = {
-    "epocas_5": {"run_name": "claims_500_v1", "epochs": 5, "lora": None},
-    "epocas_10": {"run_name": "claims_500_v2_epocas_10", "epochs": 10, "lora": None},
-    "epocas_20": {"run_name": "claims_500_v2_epocas_20", "epochs": 20, "lora": None},
+    "epocas_5": {"epochs": 5, "lora": None},
+    "epocas_10": {"epochs": 10, "lora": None},
+    "epocas_20": {"epochs": 20, "lora": None},
     "lora": {
-        "run_name": "claims_500_v2_lora",
         "epochs": 10,
         # Coincide con el paper 97; en BARTO, 3e-5 apenas aprendía en validación y 3e-4 sí.
         "learning_rate": 3e-4,
@@ -45,6 +47,58 @@ EXPERIMENT_VARIANTS: dict[str, dict[str, Any]] = {
 }
 # Capas de atención con nombres T5/uMT5 (q, k, v, o) y BART/mBART (*_proj).
 LORA_TARGET_MODULES = ["q", "k", "v", "o", "q_proj", "k_proj", "v_proj", "out_proj"]
+# Carpetas ya usadas con claims_500; epocas_5 reutiliza claims_500_v1 porque con
+# paciencia 3 su mejor checkpoint no cambia. Los conjuntos nuevos no reutilizan nada.
+_CLAIMS_500_RUN_NAMES = {
+    "epocas_5": "claims_500_v1",
+    "epocas_10": "claims_500_v2_epocas_10",
+    "epocas_20": "claims_500_v2_epocas_20",
+    "lora": "claims_500_v2_lora",
+}
+
+
+def run_name_for(dataset_name: str, variant: str) -> str:
+    """Nombra la corrida por conjunto y variante para que no se mezclen entre sí."""
+    if dataset_name not in DATASET_SPLIT_SIZES:
+        raise ValueError(f"Conjunto desconocido: {dataset_name}.")
+    if variant not in EXPERIMENT_VARIANTS:
+        raise ValueError(f"Variante desconocida: {variant}.")
+    if dataset_name == "claims_500":
+        return _CLAIMS_500_RUN_NAMES[variant]
+    return f"{dataset_name}_{variant}"
+
+
+def split_fingerprints(splits: Mapping[str, pd.DataFrame]) -> dict[str, str]:
+    """Resume qué noticias forman cada split, sin guardar su contenido."""
+    return {
+        name: hashlib.sha256("\n".join(sorted(frame["record_id"])).encode("utf-8")).hexdigest()[:16]
+        for name, frame in splits.items()
+    }
+
+
+def assert_run_matches(
+    manifest: Mapping[str, Any],
+    *,
+    dataset_name: str,
+    variant: str,
+    fingerprints: Mapping[str, str],
+) -> None:
+    """Impide reanudar o evaluar una corrida hecha con otros datos o variante.
+
+    Las corridas antiguas no registran variante ni huellas; para ellas solo se
+    puede comprobar el conjunto.
+    """
+    expected = {
+        "dataset_name": dataset_name,
+        "variant": variant,
+        "split_fingerprints": dict(fingerprints),
+    }
+    for key, value in expected.items():
+        if key in manifest and manifest[key] != value:
+            raise ValueError(
+                f"La corrida no corresponde a este experimento: {key} es "
+                f"{manifest[key]!r} y se esperaba {value!r}."
+            )
 
 
 def available_device() -> str:
@@ -63,7 +117,7 @@ def available_device() -> str:
 def validate_sem1_splits(
     paths: Mapping[str, str | Path],
     *,
-    expected_sizes: Mapping[str, int] = EXPECTED_SPLIT_SIZES,
+    expected_sizes: Mapping[str, int],
 ) -> dict[str, pd.DataFrame]:
     """Lee y valida los tres CSV congelados antes de ajustar un modelo."""
     expected_names = set(expected_sizes)

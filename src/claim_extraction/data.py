@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +17,56 @@ REQUIRED_REFERENCE_COLUMNS = {"record_id", "source_text", "reference_claim"}
 def read_table(path: str | Path) -> pd.DataFrame:
     path = Path(path)
     return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+
+
+def _shingles(text: str, size: int) -> set[str]:
+    words = re.findall(r"\w+", text.lower(), flags=re.UNICODE)
+    if len(words) < size:
+        return {" ".join(words)} if words else set()
+    return {" ".join(words[index : index + size]) for index in range(len(words) - size + 1)}
+
+
+def _similar(left: set[str], right: set[str], threshold: float) -> bool:
+    # Si los tamaños ya impiden alcanzar el umbral, se evita calcular la intersección.
+    if not left or not right or min(len(left), len(right)) < threshold * max(len(left), len(right)):
+        return False
+    common = len(left & right)
+    return common / (len(left) + len(right) - common) >= threshold
+
+
+def near_duplicate_groups(
+    sources: Sequence[str],
+    claims: Sequence[str],
+    *,
+    source_threshold: float = 0.5,
+    claim_threshold: float = 0.5,
+) -> list[int]:
+    """Devuelve un grupo por fila; las casi-duplicadas comparten grupo.
+
+    Dos noticias se enlazan si sus textos comparten trigramas de palabras o sus
+    claims comparten bigramas (Jaccard mayor o igual al umbral). Captura notas
+    de agencia reproducidas con cambios menores, que el hash exacto no detecta.
+    """
+    if len(sources) != len(claims):
+        raise ValueError("sources y claims deben tener la misma longitud.")
+    source_sets = [_shingles(text, 3) for text in sources]
+    claim_sets = [_shingles(text, 2) for text in claims]
+    parents = list(range(len(sources)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    for left in range(len(sources)):
+        for right in range(left + 1, len(sources)):
+            if _similar(source_sets[left], source_sets[right], source_threshold) or _similar(
+                claim_sets[left], claim_sets[right], claim_threshold
+            ):
+                root_left, root_right = find(left), find(right)
+                parents[max(root_left, root_right)] = min(root_left, root_right)
+    return [find(index) for index in range(len(sources))]
 
 
 def _require_columns(frame: pd.DataFrame, expected: set[str], label: str) -> None:

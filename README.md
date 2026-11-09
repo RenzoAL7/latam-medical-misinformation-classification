@@ -9,16 +9,18 @@ genera consultas, hace ranking ni extrae múltiples afirmaciones. La
 `reference_claim` es una afirmación de referencia anotada para entrenar y
 evaluar el modelo; no equivale a una validación de veracidad médica.
 
-## Flujo operativo: notebooks 01 → 04
+## Flujo operativo: notebooks 01 → 05
 
-El flujo se ejecuta en Jupyter mediante cuatro notebooks secuenciales.
+El flujo se ejecuta en Jupyter. Los notebooks 01 a 04 son secuenciales; el 05
+solo necesita los splits del 02.
 
 | Paso | Notebook | Entrada | Salida local |
 | --- | --- | --- | --- |
 | 01 | `01_auditar_export_labelstudio.ipynb` | export CSV más reciente de Label Studio | auditoría y candidatas aptas |
-| 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 500: 400 train, 50 validation, 50 test |
+| 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 1500: 1200 train, 150 validation, 150 test |
 | 03 | `03_entrenar_modelos.ipynb` | los tres CSV cerrados | checkpoints y predicciones locales de test |
-| 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas, tablas y figuras locales |
+| 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas con intervalos, resultados por tema, tablas y figuras locales |
+| 05 | `05_clasificar_temas.ipynb` | los tres CSV cerrados | clasificador de temas elegido y su evaluación |
 
 Los notebooks 01–02 son los únicos que se necesitan antes de entrenar. Los
 notebooks 03–04 reutilizan funciones comprobables de `src/claim_extraction/`,
@@ -28,8 +30,9 @@ notebook.
 ## Próxima etapa: 1500 claims y clasificación de temas
 
 **Estado:** planificado el 08/11/2026 a partir de las recomendaciones de
-asesoría. A esa fecha, el repositorio no contiene `claims_1500`, el clasificador
-de temas ni la evaluación por tema.
+asesoría. Desde el 09/11/2026 los notebooks admiten `claims_1500` y contienen el
+clasificador de temas y la evaluación por tema. El conjunto todavía no existe:
+depende de terminar la anotación.
 
 El flujo objetivo amplía el conjunto a 1500 noticias aptas y agrega un paso
 secundario para identificar el tema de cada noticia:
@@ -105,16 +108,17 @@ artifacts/01_labelstudio/exports/
 
 El notebook 01 detecta automáticamente el CSV más reciente y conserva una
 auditoría con su nombre y hash. El notebook 02 usa las filas aptas con
-`reference_claim`, descarta duplicados exactos de texto fuente o afirmación y
-crea, sin fechas en el nombre, estas rutas fijas:
+`reference_claim`, descarta duplicados exactos de texto fuente o afirmación,
+envía a train las noticias casi duplicadas y crea, sin fechas en el nombre, estas
+rutas fijas:
 
 ```text
-artifacts/02_conjuntos/claims_500/
+artifacts/02_conjuntos/claims_1500/
 ├── reference_claims.csv
 ├── train.csv
 ├── validation.csv
 ├── test.csv
-├── manifest_final_500.csv
+├── manifest_final_1500.csv
 ├── reserve_candidates.csv
 └── split_summary.json
 ```
@@ -138,15 +142,19 @@ solo registran manifiestos y estado de una corrida.
 
 El notebook 03 valida que los splits no compartan `record_id`, `source_hash` o
 `claim_hash`. Entrena cada modelo con `train.csv`, escoge el checkpoint por
-pérdida de `validation.csv` y recién entonces genera predicciones para los 50
-casos de `test.csv`.
+pérdida de `validation.csv` y recién entonces genera predicciones para los
+casos de `test.csv`. Cada corrida se nombra por conjunto y variante, y el notebook
+se detiene si se intenta reanudar una corrida hecha con otros datos.
 
 El notebook 04 calcula:
 
 - METEOR (métrica principal),
 - ROUGE-L precisión, recall y F1,
 - BERTScore precisión, recall y F1,
-- diagnósticos de salidas vacías, muy cortas y repetidas.
+- diagnósticos de salidas vacías, muy cortas y repetidas,
+- intervalos de confianza y diferencias pareadas entre modelos,
+- METEOR con stemmer español como análisis de sensibilidad,
+- métricas por tema anotado.
 
 Estos puntajes miden similitud entre una predicción y la afirmación de
 referencia. No prueban exactitud clínica ni veracidad de la noticia. Los
@@ -168,9 +176,9 @@ en cuatro variantes, definidas en `src/claim_extraction/workflow.py`:
 
 Early Stopping detiene el entrenamiento tras tres épocas sin mejora en la
 pérdida de validación. Para cada modelo se conserva la variante con menor
-pérdida de validación; `test.csv` no interviene en esa elección. Al 08/11/2026
-solo `epocas_5` (corrida `claims_500_v1`) se ha ejecutado sobre el conjunto
-completo. El detalle está en la sección 3.1 de
+pérdida de validación; `test.csv` no interviene en esa elección. Al 09/11/2026
+solo `epocas_5` de `claims_500` (corrida `claims_500_v1`) se ha ejecutado sobre un
+conjunto completo. El detalle está en la sección 3.1 de
 [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md).
 
 ## Modelos y configuración controlada
@@ -215,7 +223,7 @@ con la corrida local `claims_500_v1` de 500 claims.
 ```text
 configs/                 Registro de modelos y configuración controlada
 docs/                    Protocolo y resultados agregados históricos
-notebooks/               Flujo operativo 01–04
+notebooks/               Flujo operativo 01–05
 oci_pipeline/            Selección de lotes en OCI e importador a Label Studio
 src/claim_extraction/    Lógica reusable y comprobable
 tests/                   Pruebas sin corpus ni pesos locales
@@ -223,6 +231,7 @@ artifacts/               Datos, anotaciones, modelos y resultados locales (ignor
   01_labelstudio/        Exports CSV de Label Studio y auditoría del notebook 01
   02_conjuntos/          Conjuntos cerrados: claims_400, claims_500 y claims_1500
   03_corridas/           Modelos, predicciones y evaluación de cada corrida
+  04_temas/              Comparación y evaluación del clasificador de temas
   archivo/               Material antiguo que el flujo ya no usa
 ```
 

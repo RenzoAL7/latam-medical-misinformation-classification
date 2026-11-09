@@ -67,6 +67,25 @@ def meteor(reference: object, prediction: object) -> float:
         ) from exc
 
 
+def meteor_spanish_stem(reference: object, prediction: object) -> float:
+    """METEOR con stemmer español: análisis de sensibilidad de la métrica principal.
+
+    ``meteor`` conserva la configuración por defecto de NLTK, con stemmer Porter y
+    WordNet en inglés, que no reconocen flexiones ni sinónimos en español.
+    """
+    try:
+        from nltk.stem.snowball import SnowballStemmer
+        from nltk.translate.meteor_score import meteor_score
+    except ImportError as exc:
+        raise RuntimeError("Instala el extra models para calcular METEOR.") from exc
+
+    ref_tokens = tokenize(reference)
+    pred_tokens = tokenize(prediction)
+    if not ref_tokens or not pred_tokens:
+        return 0.0
+    return float(meteor_score([ref_tokens], pred_tokens, stemmer=SnowballStemmer("spanish")))
+
+
 def _bertscore_device() -> str:
     try:
         import torch

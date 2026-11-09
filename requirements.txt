@@ -1,3 +1,3 @@
-# Entorno completo para ejecutar los notebooks 00–04 y las pruebas.
+# Entorno completo para ejecutar los notebooks 01–05 y las pruebas.
 # Las versiones y grupos directos se mantienen en pyproject.toml.
 -e .[analysis,models,dev]
