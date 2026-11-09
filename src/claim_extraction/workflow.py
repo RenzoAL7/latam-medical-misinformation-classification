@@ -27,6 +27,26 @@ EXPECTED_SPLIT_SIZES = {"train": 400, "validation": 50, "test": 50}
 _UNIQUE_COLUMNS = ("record_id", "source_hash", "claim_hash")
 
 
+# Variantes del experimento. Cada una tiene su propia carpeta de corrida.
+# Épocas: 5 (paper 99), 10 (paper 100) y 20 (paper 80, T5). LoRA: r=8 (papers 75 y 80),
+# alpha=32 y dropout=0.1 (paper 75), con 10 épocas (paper 75), aplicado a T5 en el paper 100.
+# epocas_5 reutiliza claims_500_v1: con paciencia 3 su mejor checkpoint no cambia.
+EXPERIMENT_VARIANTS: dict[str, dict[str, Any]] = {
+    "epocas_5": {"run_name": "claims_500_v1", "epochs": 5, "lora": None},
+    "epocas_10": {"run_name": "claims_500_v2_epocas_10", "epochs": 10, "lora": None},
+    "epocas_20": {"run_name": "claims_500_v2_epocas_20", "epochs": 20, "lora": None},
+    "lora": {
+        "run_name": "claims_500_v2_lora",
+        "epochs": 10,
+        # Coincide con el paper 97; en BARTO, 3e-5 apenas aprendía en validación y 3e-4 sí.
+        "learning_rate": 3e-4,
+        "lora": {"r": 8, "alpha": 32, "dropout": 0.1},
+    },
+}
+# Capas de atención con nombres T5/uMT5 (q, k, v, o) y BART/mBART (*_proj).
+LORA_TARGET_MODULES = ["q", "k", "v", "o", "q_proj", "k_proj", "v_proj", "out_proj"]
+
+
 def available_device() -> str:
     """Devuelve el dispositivo preferido sin requerir Torch al importar el módulo."""
     try:
@@ -98,6 +118,7 @@ def _training_arguments(
     epochs: float | None,
     learning_rate: float | None,
     use_cpu: bool,
+    gradient_checkpointing: bool = False,
 ) -> Any:
     training = spec.training
     effective_batch = int(training["effective_batch_size"])
@@ -135,6 +156,8 @@ def _training_arguments(
         values["use_cpu"] = use_cpu
     elif use_cpu and "no_cuda" in signature.parameters:
         values["no_cuda"] = True
+    if gradient_checkpointing and "gradient_checkpointing" in signature.parameters:
+        values["gradient_checkpointing"] = True
     return training_arguments_class(**values)
 
 
@@ -184,6 +207,26 @@ def _make_training_progress_callback(
     return TrainingProgressCallback()
 
 
+def _apply_lora(model: Any, lora: Mapping[str, Any], gradient_checkpointing: bool) -> Any:
+    try:
+        from peft import LoraConfig, TaskType, get_peft_model
+    except ImportError as exc:
+        raise RuntimeError("Falta peft. Instala: pip install -e '.[analysis,models,dev]'") from exc
+    if gradient_checkpointing:
+        model.enable_input_require_grads()
+    return get_peft_model(
+        model,
+        LoraConfig(
+            task_type=TaskType.SEQ_2_SEQ_LM,
+            r=int(lora["r"]),
+            lora_alpha=int(lora["alpha"]),
+            lora_dropout=float(lora["dropout"]),
+            target_modules=LORA_TARGET_MODULES,
+            bias="none",
+        ),
+    )
+
+
 def train_seq2seq_model(
     *,
     model_id: str,
@@ -198,6 +241,9 @@ def train_seq2seq_model(
     learning_rate: float | None = None,
     progress_reporter: Callable[[int, int, int], None] | None = None,
     progress_every_percent: int = 5,
+    gradient_checkpointing: bool = False,
+    early_stopping_patience: int | None = None,
+    lora: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ajusta un modelo y guarda su mejor checkpoint bajo ``output_dir``."""
     if batch_size < 1:
@@ -217,6 +263,7 @@ def train_seq2seq_model(
         from datasets import Dataset
         from transformers import (
             DataCollatorForSeq2Seq,
+            EarlyStoppingCallback,
             Seq2SeqTrainer,
             Seq2SeqTrainingArguments,
             TrainerCallback,
@@ -233,6 +280,18 @@ def train_seq2seq_model(
     tokenizer = load_tokenizer(checkpoint, model_id=spec.id, **cache_kwargs)
     model = load_seq2seq_model(checkpoint, model_id=spec.id, **cache_kwargs)
     configure_model(model, tokenizer, model_id=spec.id)
+    if gradient_checkpointing:
+        if not hasattr(model, "gradient_checkpointing_enable"):
+            raise RuntimeError("El checkpoint no admite gradient checkpointing.")
+        model.gradient_checkpointing_enable()
+        if hasattr(model.config, "use_cache"):
+            model.config.use_cache = False
+    if lora:
+        model = _apply_lora(model, lora, gradient_checkpointing)
+    parameters_total = sum(parameter.numel() for parameter in model.parameters())
+    parameters_trainable = sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
     max_source = int(spec.training["max_source_length"])
     max_target = int(spec.training["max_target_length"])
 
@@ -261,6 +320,7 @@ def train_seq2seq_model(
         epochs=epochs,
         learning_rate=learning_rate,
         use_cpu=not has_accelerator,
+        gradient_checkpointing=gradient_checkpointing,
     )
     trainer_kwargs: dict[str, Any] = {
         "model": model,
@@ -278,13 +338,24 @@ def train_seq2seq_model(
         reporter=progress_reporter,
         every_percent=progress_every_percent,
     )
-    if progress_callback is not None:
-        trainer_kwargs["callbacks"] = [progress_callback]
+    callbacks: list[Any] = [] if progress_callback is None else [progress_callback]
+    if early_stopping_patience is not None:
+        callbacks.append(EarlyStoppingCallback(early_stopping_patience=early_stopping_patience))
+    if callbacks:
+        trainer_kwargs["callbacks"] = callbacks
     trainer = Seq2SeqTrainer(**trainer_kwargs)
     trainer.train()
     best_dir = model_dir / "best"
-    trainer.save_model(best_dir)
+    if lora:
+        # Se fusiona el adaptador para que la inferencia cargue un checkpoint normal.
+        trainer.model.merge_and_unload().save_pretrained(best_dir)
+    else:
+        trainer.save_model(best_dir)
     tokenizer.save_pretrained(best_dir)
+    evaluations = [row for row in trainer.state.log_history if "eval_loss" in row]
+    best_evaluation = min(evaluations, key=lambda row: row["eval_loss"])
+    requested_epochs = arguments.num_train_epochs
+    epochs_run = round(evaluations[-1]["epoch"])
 
     manifest = {
         "model_id": spec.id,
@@ -296,6 +367,17 @@ def train_seq2seq_model(
         "validation_rows": int(len(validation_data)),
         "seed": seed,
         "device": available_device(),
+        "gradient_checkpointing": gradient_checkpointing,
+        "learning_rate": arguments.learning_rate,
+        "epochs_requested": requested_epochs,
+        "epochs_run": epochs_run,
+        "early_stopping_patience": early_stopping_patience,
+        "stopped_early": epochs_run < requested_epochs,
+        "best_epoch": round(best_evaluation["epoch"]),
+        "best_eval_loss": best_evaluation["eval_loss"],
+        "lora": dict(lora) if lora else None,
+        "parameters_total": parameters_total,
+        "parameters_trainable": parameters_trainable,
         "training": spec.training,
         "generation": spec.generation,
     }

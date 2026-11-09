@@ -162,11 +162,8 @@ publicarse en `docs/results/`.
 
 ### Variantes de entrenamiento
 
-**Estado:** implementadas localmente al 08/11/2026. El código y su protocolo se
-publicarán en un cambio aparte.
-
-Los cuatro modelos podrán entrenarse con las mismas particiones en cuatro
-variantes:
+El notebook 03 permite entrenar los cuatro modelos con las mismas particiones
+en cuatro variantes, definidas en `src/claim_extraction/workflow.py`:
 
 | Variante | Entrenamiento | Learning rate |
 | --- | --- | --- |
@@ -179,7 +176,8 @@ Early Stopping detiene el entrenamiento tras tres épocas sin mejora en la
 pérdida de validación. Para cada modelo se conserva la variante con menor
 pérdida de validación; `test.csv` no interviene en esa elección. Al 08/11/2026
 solo `epocas_5` (corrida `claims_500_v1`) se ha ejecutado sobre el conjunto
-completo.
+completo. El detalle está en la sección 3.1 de
+[`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md).
 
 ## Modelos y configuración controlada
 

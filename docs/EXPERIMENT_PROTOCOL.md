@@ -53,8 +53,8 @@ reporta una comparación zero-shot con checkpoints base: los enfoques zero-shot
 de #49 usan LLMs instruccionales con prompting, no estos cuatro modelos base.
 
 Para que la tabla compare arquitectura y preentrenamiento —no una cantidad
-distinta de oportunidades de actualización— se fija un presupuesto común:
-cinco épocas como máximo, batch efectivo de 8, learning rate de 3e-5, sin
+distinta de oportunidades de actualización— la corrida base usa un presupuesto
+común: cinco épocas como máximo, batch efectivo de 8, learning rate de 3e-5, sin
 warmup ni weight decay y decodificación determinista con cuatro beams. Cada
 modelo conserva el checkpoint base y, en mBART-50, los códigos de idioma
 español. El checkpoint con menor pérdida de validación dentro de esas cinco
@@ -69,12 +69,40 @@ trabajos usan corpus, idiomas y tamaños de entrenamiento diferentes.
 3. mBART-50: `facebook/mbart-large-50`, modelo multilingüe usado en trabajos
    de normalización multilingüe. Se establece `src_lang=es_XX`,
    `tgt_lang=es_XX` y `forced_bos_token_id` para que la salida sea española.
-4. uMT5-Base: `google/umt5-base`, modelo multilingüe. Se ejecuta bajo el mismo
-   presupuesto controlado; no se replica el ajuste de 20 épocas de #80 porque
-   ese paper usó un corpus considerablemente mayor y tal diferencia impediría
-   atribuir el resultado al modelo.
+4. uMT5-Base: `google/umt5-base`, modelo multilingüe. En la corrida base se
+   ejecuta bajo el mismo presupuesto controlado.
 
-La configuración ejecutable está en configs/models.json y queda copiada en el
+### 3.1 Variantes de entrenamiento (Acta de Asesoría N.° 1, 07/11/2026)
+
+La asesora recomendó modificar la metodología de entrenamiento incorporando
+Early Stopping y LoRA. Desde el 08/11/2026 los cuatro modelos pueden entrenarse
+con las mismas particiones en estas variantes. La de 5 épocas es la corrida
+base y las demás todavía no se han ejecutado sobre el conjunto completo.
+
+| Variante | Entrenamiento | Antecedente en Drive |
+| --- | --- | --- |
+| `epocas_5` | Ajuste completo, 5 épocas; reutiliza `claims_500_v1` | #99 |
+| `epocas_10` | Ajuste completo, 10 épocas | #100 |
+| `epocas_20` | Ajuste completo, 20 épocas | #80 |
+| `lora` | Solo adaptadores LoRA, r=8, alpha=32, dropout=0,1, 10 épocas, learning rate de 3e-4 | #75, #80, #100 |
+
+- **Early Stopping:** se detiene tras tres épocas sin mejora en la pérdida de
+  validación y se conserva el mejor checkpoint (#66). `epocas_5` se entrenó sin
+  este mecanismo; como ningún modelo tuvo su mejor punto en la época 1, la
+  paciencia de tres épocas no habría cambiado el checkpoint elegido.
+- **LoRA:** se aplica a las capas de atención query, key, value y output (#75).
+  El learning rate de 3e-4 coincide con #97 y se comprobó solo con validación
+  en BARTO: tras dos épocas, la pérdida fue 2,26 con 3e-5 y 1,68 con 3e-4.
+- **Selección:** para cada modelo se elige la variante con menor pérdida de
+  validación. El test no interviene en esa elección; sus métricas solo se
+  reportan.
+- **Lectura de resultados:** cambiar épocas o aplicar LoRA modifica las
+  oportunidades de actualización, así que la comparación entre variantes mide
+  el efecto del entrenamiento dentro de cada modelo. Los antecedentes usan
+  corpus, idiomas y tamaños diferentes, y no son recetas trasladadas sin ajuste.
+
+La configuración base está en configs/models.json, las variantes en
+`src/claim_extraction/workflow.py`, y ambas quedan registradas en el
 manifiesto de cada corrida. Todos se ejecutan localmente con Transformers y
 PyTorch; no se llama a una API generativa.
 Los claims antiguos producidos por una API no forman parte del corpus ni de la
