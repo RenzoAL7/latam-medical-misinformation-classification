@@ -89,8 +89,8 @@ no se versionan.
 Las noticias llegan solas a Label Studio. A las 08:00 y 20:00 de Lima, un flujo
 en OCI consulta NewsData, extrae los cuerpos, descarta las repetidas y deja
 hasta 50 tareas por corrida en Object Storage. Un timer de la VM las importa al
-proyecto de Label Studio. Ese flujo se administra en OCI y no forma parte de
-este repositorio.
+proyecto de Label Studio. El código propio de la selección de lotes y del importador
+está en [`oci_pipeline/`](oci_pipeline/README.md).
 
 El notebook 00, que armaba lotes manuales, se retiró el 09/11/2026 y sigue
 disponible en el historial de Git.
@@ -216,13 +216,13 @@ con la corrida local `claims_500_v1` de 500 claims.
 configs/                 Registro de modelos y configuración controlada
 docs/                    Protocolo y resultados agregados históricos
 notebooks/               Flujo operativo 01–04
+oci_pipeline/            Selección de lotes en OCI e importador a Label Studio
 src/claim_extraction/    Lógica reusable y comprobable
 tests/                   Pruebas sin corpus ni pesos locales
 artifacts/               Datos, anotaciones, modelos y resultados locales (ignorado)
   01_labelstudio/        Exports CSV de Label Studio y auditoría del notebook 01
   02_conjuntos/          Conjuntos cerrados: claims_400, claims_500 y claims_1500
   03_corridas/           Modelos, predicciones y evaluación de cada corrida
-  codigo_oci/            Copia local del flujo automático en OCI
   archivo/               Material antiguo que el flujo ya no usa
 ```
 
