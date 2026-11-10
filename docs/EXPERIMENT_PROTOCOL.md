@@ -108,10 +108,12 @@ base y las demás todavía no se han ejecutado sobre el conjunto completo.
   se entrenó sin este mecanismo; como ningún modelo tuvo su mejor punto en la
   época 1, la paciencia de tres épocas no habría cambiado el checkpoint elegido.
   En `claims_1500` todas las variantes se entrenan desde cero con early stopping.
-- **Corridas:** cada corrida se nombra por conjunto, variante y semilla; la semilla
-  base no añade sufijo. Su manifiesto registra una huella de los `record_id` de cada
-  split, y los notebooks 03 y 04 se detienen si se intenta reanudar o evaluar una
-  corrida hecha con otros datos o con otra semilla.
+- **Corridas:** cada corrida se nombra por conjunto y variante, y todas usan la
+  misma semilla (sección 4.2). Su manifiesto registra una huella de los `record_id`
+  de cada split, y los notebooks 03 y 04 se detienen si se intenta reanudar o
+  evaluar una corrida hecha con otros datos o con otra semilla. Al terminar cada
+  modelo se conserva solo el mejor checkpoint (`best/`) y su historial de pérdidas
+  (`trainer_state.json`).
 - **LoRA:** se aplica a las capas de atención query, key, value y output (#75).
   El learning rate de 3e-4 coincide con #97 y se comprobó solo con validación
   en BARTO: tras dos épocas, la pérdida fue 2,26 con 3e-5 y 1,68 con 3e-4.
@@ -194,36 +196,35 @@ resultados. Todo cambio posterior se anota en el registro del final de esta
 sección; si ocurre después de ver test, se reporta como exploratorio.
 
 **Comparación.** Se comparan los cuatro modelos, cada uno con la variante elegida
-por pérdida de validación con la semilla base. La unidad de análisis es la noticia:
-los cuatro se evalúan sobre las mismas 150 noticias de test, así que cada comparación
-es pareada. METEOR es la métrica principal. ROUGE-L, BERTScore y `meteor_stem_es` se
-reportan como complementarias.
+por pérdida de validación. La unidad de análisis es la noticia: los cuatro se
+evalúan sobre las mismas 150 noticias de test, así que cada comparación es pareada.
+METEOR es la métrica principal. ROUGE-L, BERTScore y `meteor_stem_es` se reportan
+como complementarias. Las tablas y figuras de esta comparación se guardan en
+`artifacts/05_resultados_finales/<conjunto>/`.
 
-**Semillas.** Las repeticiones miden cuánto cambia el resultado al repetir el
-entrenamiento con las mismas noticias, algo que el bootstrap sobre test no captura.
+**Semilla.** Todas las variantes y modelos usan una sola semilla, 20261103.
 
-- Se usan tres semillas: 20261103 (base), 20261104 y 20261105.
-- Solo se repite la variante elegida de cada modelo, con los mismos splits. La
-  semilla cambia el orden de las noticias, el dropout y, en LoRA, los valores
-  iniciales de los adaptadores.
-- Antes de generar predicciones de test de `claims_1500` se puede hacer un piloto con
-  `claims_500` y `epocas_5`. Si la desviación entre semillas del METEOR medio de algún
-  modelo supera 0,02, se usan cinco semillas, agregando 20261106 y 20261107. Con tres
-  semillas, esa desviación aportaría a la diferencia entre dos modelos un ruido de
-  0,016, parecido al de muestrear 150 noticias (0,017, estimado con las diferencias
-  por noticia de `claims_500_v1`).
-- Ninguna semilla se elige por su resultado. Todas las previstas se reportan.
+- Repetir el entrenamiento con otras semillas mediría cuánto cambia el resultado al
+  reentrenar, algo que el bootstrap sobre test no captura. Se descarta por costo:
+  dos semillas más sumarían 8 entrenamientos a los 16 de las variantes, unas 32
+  horas estimadas en el equipo local.
+- Ese costo no cambiaría la lectura. En `claims_500` las diferencias grandes entre
+  modelos llegan a 0,17 de METEOR, y una semilla no las invertiría. La diferencia
+  entre BARTO y mBART-50 (0,006) está muy por debajo de la mínima que se puede
+  detectar con 150 noticias, cerca de 0,05, así que seguiría sin distinguirse.
+- La semilla única se declara como limitación. Si al final queda tiempo, se puede
+  repetir la configuración final de los cuatro modelos con 20261104 y 20261105 como
+  análisis de robustez, reportado aparte y sin cambiar las conclusiones principales.
 
 Antecedentes en Drive: #66 reporta media y desviación con 10 semillas, #43 y #51
-repiten con varias semillas, y #69 declara la semilla única como limitación.
+repiten con varias semillas, y #69 usa una sola semilla y lo declara como limitación.
 
 **Pruebas.** Se aplican con un nivel de significancia de 0,05:
 
-1. El puntaje de cada modelo en cada noticia se promedia entre semillas.
-2. Friedman compara los cuatro modelos a la vez.
-3. Wilcoxon de rangos con signo, bilateral, compara cada uno de los seis pares.
-4. Holm corrige los seis p-valores, por separado en cada métrica.
-5. Cada par reporta su diferencia media, un intervalo del 95 % por bootstrap pareado
+1. Friedman compara los cuatro modelos a la vez.
+2. Wilcoxon de rangos con signo, bilateral, compara cada uno de los seis pares.
+3. Holm corrige los seis p-valores, por separado en cada métrica.
+4. Cada par reporta su diferencia media, un intervalo del 95 % por bootstrap pareado
    sobre las noticias (10 000 réplicas), el efecto rango-biserial y cuántas noticias
    gana cada modelo.
 
@@ -244,13 +245,11 @@ prueban exactitud clínica ni veracidad.
 | Friedman con p < 0,05 y par con p de Holm < 0,05 | «A supera a B», con diferencia, intervalo, p ajustado y efecto. |
 | Par con p de Holm ≥ 0,05 | «A y B no se distinguen con este test.» No se escribe que sean iguales o equivalentes. |
 | La media y los rangos apuntan en sentidos opuestos | No se concluye y se explica la discrepancia. |
-| El primer lugar cambia entre semillas | Se reporta cuántas veces quedó primero cada modelo y se escribe que ese lugar no es estable. |
 
 **Reglas.**
 
-- Test no interviene en la elección de variante ni en el número de semillas de
-  `claims_1500`.
-- El nivel de significancia, las semillas y las comparaciones no cambian después de
+- Test no interviene en la elección de variante de `claims_1500`.
+- El nivel de significancia, la semilla y las comparaciones no cambian después de
   mirar test.
 - Una corrida que falla por un error técnico se repite con la misma semilla. Una
   corrida no se repite por tener un mal resultado.
@@ -262,6 +261,7 @@ prueban exactitud clínica ni veracidad.
 | Fecha | Cambio | Motivo | ¿Antes o después de ver test? |
 | --- | --- | --- | --- |
 | 10/11/2026 | Se adoptan esta sección, las semillas y la validación cruzada en temas | Medir la estabilidad del entrenamiento y comparar los modelos con pruebas pareadas | Antes de crear `claims_1500`. El test de `claims_500` ya se había visto |
+| 10/11/2026 | Se usa una sola semilla en lugar de tres, y los resultados finales se guardan en `artifacts/05_resultados_finales/` | Las repeticiones costarían unas 32 horas y no cambiarían la lectura de las comparaciones | Antes de crear `claims_1500` |
 
 ## 5. Fuera del alcance de Sem1
 

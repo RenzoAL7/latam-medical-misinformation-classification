@@ -8,22 +8,21 @@ import pandas as pd
 import pytest
 
 from claim_extraction.analysis import (
-    average_over_seeds,
     bootstrap_uncertainty,
     holm_adjust,
     metrics_by_topic,
     model_significance_tests,
-    seed_stability,
 )
 from claim_extraction.data import near_duplicate_groups
 from claim_extraction.workflow import (
     BASE_SEED,
     DATASET_SPLIT_SIZES,
-    EXPERIMENT_SEEDS,
     assert_run_matches,
-    load_per_prediction_by_seed,
+    load_selected_evaluations,
+    remove_intermediate_checkpoints,
     run_name_for,
     split_fingerprints,
+    training_history,
 )
 
 
@@ -35,14 +34,6 @@ def test_run_names_do_not_mix_datasets_and_keep_existing_500_runs() -> None:
     assert run_name_for("claims_1500", "epocas_5") == "claims_1500_epocas_5"
     with pytest.raises(ValueError, match="Conjunto"):
         run_name_for("claims_900", "epocas_5")
-
-
-def test_run_names_separate_seeds_but_keep_the_base_seed_folder() -> None:
-    assert EXPERIMENT_SEEDS[0] == BASE_SEED
-    assert len(set(EXPERIMENT_SEEDS)) == len(EXPERIMENT_SEEDS)
-    assert run_name_for("claims_500", "epocas_5", BASE_SEED) == "claims_500_v1"
-    assert run_name_for("claims_500", "epocas_5", 20261104) == "claims_500_v1_seed20261104"
-    assert run_name_for("claims_1500", "lora", 20261105) == "claims_1500_lora_seed20261105"
 
 
 def test_run_manifest_guard_rejects_another_seed() -> None:
@@ -200,79 +191,94 @@ def test_significance_tests_require_the_same_news_and_two_models() -> None:
         model_significance_tests(_scores_frame({"solo": [0.1, 0.2]}), n_boot=10)
 
 
-def test_average_over_seeds_keeps_one_score_per_news_and_model() -> None:
-    first = _scores_frame({"a": [0.2, 0.4], "b": [0.1, 0.1]})
-    second = _scores_frame({"a": [0.4, 0.6], "b": [0.3, 0.1]})
-    averaged = average_over_seeds({1: first, 2: second}, metrics=("meteor",))
-    assert len(averaged) == 4
-    assert averaged["n_semillas"].eq(2).all()
-    value = averaged.loc[averaged["model_id"].eq("a") & averaged["record_id"].eq("0"), "meteor"].iloc[0]
-    assert value == pytest.approx(0.3)
-
-
-def test_seed_analyses_reject_seeds_with_different_news() -> None:
-    complete = _scores_frame({"a": [0.2, 0.4]})
-    with pytest.raises(ValueError, match="mismos modelos"):
-        average_over_seeds({1: complete, 2: complete.iloc[:-1]}, metrics=("meteor",))
-    with pytest.raises(ValueError, match="duplicadas"):
-        seed_stability({1: pd.concat([complete, complete])})
-
-
-def test_seed_stability_counts_how_often_each_model_comes_first() -> None:
-    frames = {
-        1: _scores_frame({"a": [0.6, 0.6], "b": [0.4, 0.4]}),
-        2: _scores_frame({"a": [0.5, 0.5], "b": [0.4, 0.4]}),
-        3: _scores_frame({"a": [0.3, 0.3], "b": [0.4, 0.4]}),
-    }
-    per_seed, summary = seed_stability(frames)
-    assert len(per_seed) == 6
-    top = summary.iloc[0]
-    assert top["model_id"] == "a"
-    assert top["n_semillas"] == 3
-    assert top["veces_primero"] == 2
-    assert top["media"] == pytest.approx(1.4 / 3)
-    assert top["desviacion"] == pytest.approx(np.std([0.6, 0.5, 0.3], ddof=1))
-
-
-def _write_evaluated_run(runs_dir: Path, name: str, model_id: str, manifest: dict[str, object]) -> None:
-    model_dir = runs_dir / name / "evaluation" / model_id
-    model_dir.mkdir(parents=True, exist_ok=True)
+def _write_evaluated_run(runs_dir: Path, name: str, model_ids: list[str], manifest: dict[str, object]) -> None:
+    evaluation_dir = runs_dir / name / "evaluation"
+    evaluation_dir.mkdir(parents=True, exist_ok=True)
     (runs_dir / name / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     pd.DataFrame(
-        [{"record_id": "001", "model_id": model_id, "model_display_name": model_id, "claim": "", "reference_claim": "r", "meteor": 0.5}]
-    ).to_csv(model_dir / "per_prediction.csv", index=False)
+        [{"model_id": model_id, "model_display_name": model_id.upper(), "meteor": 0.5} for model_id in model_ids]
+    ).to_csv(evaluation_dir / "summary.csv", index=False)
+    pd.DataFrame(
+        [
+            {"record_id": "001", "model_id": model_id, "model_display_name": model_id.upper(), "claim": "", "reference_claim": "r", "meteor": 0.5}
+            for model_id in model_ids
+        ]
+    ).to_csv(evaluation_dir / "per_prediction.csv", index=False)
 
 
-def test_seed_loader_combines_the_variant_selected_for_each_model(tmp_path: Path) -> None:
+def _manifest(variant: str, fingerprints: dict[str, str], seed: int = BASE_SEED) -> dict[str, object]:
+    return {"dataset_name": "claims_1500", "variant": variant, "split_fingerprints": fingerprints, "seed": seed}
+
+
+def test_final_loader_takes_each_model_from_its_selected_variant(tmp_path: Path) -> None:
     fingerprints = {"train": "a"}
-    for seed in (BASE_SEED, 20261104):
-        for model_id, variant in (("m1", "lora"), ("m2", "epocas_10")):
-            manifest = {"dataset_name": "claims_1500", "variant": variant, "split_fingerprints": fingerprints, "seed": seed}
-            _write_evaluated_run(tmp_path, run_name_for("claims_1500", variant, seed), model_id, manifest)
+    # Las dos corridas evaluaron a ambos modelos; solo debe entrar la variante elegida de cada uno.
+    for variant in ("lora", "epocas_10"):
+        _write_evaluated_run(tmp_path, run_name_for("claims_1500", variant), ["m1", "m2"], _manifest(variant, fingerprints))
 
-    loaded = load_per_prediction_by_seed(
+    summary, per_prediction = load_selected_evaluations(
         tmp_path,
         dataset_name="claims_1500",
         selected_variants={"m1": "lora", "m2": "epocas_10"},
-        seeds=(BASE_SEED, 20261104),
         fingerprints=fingerprints,
     )
-    assert set(loaded) == {BASE_SEED, 20261104}
-    assert set(loaded[BASE_SEED]["model_id"]) == {"m1", "m2"}
-    assert loaded[BASE_SEED]["record_id"].iloc[0] == "001"
-    assert loaded[BASE_SEED]["claim"].iloc[0] == ""
+    assert summary[["model_id", "variante"]].values.tolist() == [["m1", "lora"], ["m2", "epocas_10"]]
+    assert len(per_prediction) == 2
+    assert set(per_prediction["model_id"]) == {"m1", "m2"}
+    assert per_prediction["record_id"].iloc[0] == "001"
+    assert per_prediction["claim"].iloc[0] == ""
 
 
-def test_seed_loader_lists_every_missing_run_and_rejects_wrong_seed(tmp_path: Path) -> None:
+def test_final_loader_lists_every_missing_run_and_rejects_other_data(tmp_path: Path) -> None:
     fingerprints = {"train": "a"}
-    arguments = {"dataset_name": "claims_1500", "selected_variants": {"m1": "lora"}, "fingerprints": fingerprints}
-    with pytest.raises(FileNotFoundError, match="claims_1500_lora/m1.*claims_1500_lora_seed20261104/m1"):
-        load_per_prediction_by_seed(tmp_path, seeds=(BASE_SEED, 20261104), **arguments)
+    arguments = {"dataset_name": "claims_1500", "selected_variants": {"m1": "lora", "m2": "epocas_5"}, "fingerprints": fingerprints}
+    with pytest.raises(FileNotFoundError, match="claims_1500_lora/m1.*claims_1500_epocas_5/m2"):
+        load_selected_evaluations(tmp_path, **arguments)
 
-    wrong = {"dataset_name": "claims_1500", "variant": "lora", "split_fingerprints": fingerprints, "seed": 999}
-    _write_evaluated_run(tmp_path, "claims_1500_lora", "m1", wrong)
+    # Una corrida que no evaluó al modelo pedido también cuenta como faltante.
+    _write_evaluated_run(tmp_path, "claims_1500_lora", ["otro"], _manifest("lora", fingerprints))
+    _write_evaluated_run(tmp_path, "claims_1500_epocas_5", ["m2"], _manifest("epocas_5", fingerprints))
+    with pytest.raises(FileNotFoundError, match="claims_1500_lora/m1"):
+        load_selected_evaluations(tmp_path, **arguments)
+
+    _write_evaluated_run(tmp_path, "claims_1500_lora", ["m1"], _manifest("lora", {"train": "otro"}))
+    with pytest.raises(ValueError, match="split_fingerprints"):
+        load_selected_evaluations(tmp_path, **arguments)
+    _write_evaluated_run(tmp_path, "claims_1500_lora", ["m1"], _manifest("lora", fingerprints, seed=999))
     with pytest.raises(ValueError, match="seed"):
-        load_per_prediction_by_seed(tmp_path, seeds=(BASE_SEED,), **arguments)
+        load_selected_evaluations(tmp_path, **arguments)
+
+
+def _trainer_state(epochs: int) -> dict[str, object]:
+    return {"log_history": [{"epoch": float(epoch), "eval_loss": 1.0 / epoch} for epoch in range(1, epochs + 1)]}
+
+
+def test_training_history_prefers_the_saved_copy_and_falls_back_to_the_last_checkpoint(tmp_path: Path) -> None:
+    for step, epochs in ((50, 1), (250, 5), (100, 2)):
+        checkpoint = tmp_path / f"checkpoint-{step}"
+        checkpoint.mkdir()
+        (checkpoint / "trainer_state.json").write_text(json.dumps(_trainer_state(epochs)), encoding="utf-8")
+    # Corridas anteriores: el historial completo está en el checkpoint de mayor paso, no en el último por orden alfabético.
+    assert len(training_history(tmp_path)["log_history"]) == 5
+
+    (tmp_path / "trainer_state.json").write_text(json.dumps(_trainer_state(7)), encoding="utf-8")
+    assert len(training_history(tmp_path)["log_history"]) == 7
+    with pytest.raises(FileNotFoundError):
+        training_history(tmp_path / "vacio")
+
+
+def test_intermediate_checkpoints_are_removed_only_after_best_and_history_exist(tmp_path: Path) -> None:
+    for name in ("checkpoint-100", "checkpoint-200"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "model.safetensors").write_text("x", encoding="utf-8")
+    (tmp_path / "best").mkdir()
+    with pytest.raises(FileNotFoundError, match="no se borra nada"):
+        remove_intermediate_checkpoints(tmp_path)
+    assert (tmp_path / "checkpoint-100").is_dir()
+
+    (tmp_path / "trainer_state.json").write_text(json.dumps(_trainer_state(2)), encoding="utf-8")
+    assert remove_intermediate_checkpoints(tmp_path) == ["checkpoint-100", "checkpoint-200"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["best", "trainer_state.json"]
 
 
 def _topic_frame(prefix: str, per_topic: int) -> pd.DataFrame:
@@ -382,20 +388,41 @@ def test_downstream_notebooks_take_sizes_from_the_dataset_name(name: str) -> Non
     assert set(DATASET_SPLIT_SIZES) >= {"claims_500", "claims_1500"}
 
 
-@pytest.mark.parametrize("name", ["03_entrenar_modelos.ipynb", "04_evaluar_y_visualizar_modelos.ipynb"])
-def test_training_and_evaluation_notebooks_separate_runs_by_seed(name: str) -> None:
+def _code(name: str) -> str:
     notebook = json.loads((ROOT / "notebooks" / name).read_text(encoding="utf-8"))
-    source = "\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
-    assert "run_name_for(DATASET_NAME, VARIANT, SEED)" in source
-    assert "seed=SEED)" in source
-    assert "SEED = EXPERIMENT_SEEDS[0]" in source
+    return "\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
 
 
-def test_evaluation_notebook_runs_the_fixed_statistical_analysis() -> None:
-    notebook = json.loads((ROOT / "notebooks" / "04_evaluar_y_visualizar_modelos.ipynb").read_text(encoding="utf-8"))
-    source = "\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
-    for name in ("load_per_prediction_by_seed", "average_over_seeds", "seed_stability", "model_significance_tests"):
+@pytest.mark.parametrize("name", ["03_entrenar_modelos.ipynb", "04_evaluar_y_visualizar_modelos.ipynb"])
+def test_training_and_evaluation_notebooks_use_one_run_per_variant(name: str) -> None:
+    source = _code(name)
+    assert "run_name_for(DATASET_NAME, VARIANT)" in source
+    assert "BASE_SEED" in source
+    assert "_seed" not in source
+
+
+def test_evaluation_notebook_writes_the_final_results_folder() -> None:
+    source = _code("04_evaluar_y_visualizar_modelos.ipynb")
+    assert "'05_resultados_finales'" in source
+    for name in ("load_selected_evaluations", "model_significance_tests", "training_history"):
         assert name in source
+    # Los gráficos del conjunto salen una sola vez, en la carpeta final.
+    assert "FINAL_FIGURES_DIR / '03_distribucion_longitudes.png'" in source
+    assert "FINAL_FIGURES_DIR / filename" in source
+    assert "'04_tokens_noticias.png'" in source and "'05_tokens_afirmaciones.png'" in source
+    assert " FIGURES_DIR / filename" not in source
+    # Ya no se copian resultados por modelo ni se guardan CSV intermedios.
+    for removed in ("EVALUATION_DIR / model_id", "token_counts_by_model.csv", "article_and_claim_lengths.csv", "training_curves.csv", "checkpoint-*"):
+        assert removed not in source
+
+
+def test_evaluation_tables_have_unique_numbers() -> None:
+    import re
+
+    source = _code("04_evaluar_y_visualizar_modelos.ipynb")
+    for folder in ("TABLES_DIR", "FIGURES_DIR", "FINAL_TABLES_DIR", "FINAL_FIGURES_DIR"):
+        numbers = re.findall(rf"(?<![A-Z_]){folder} / '(\d\d)_", source)
+        assert numbers and len(numbers) == len(set(numbers)), folder
 
 
 def test_topic_notebook_passes_near_duplicate_groups_to_cross_validation() -> None:

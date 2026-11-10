@@ -165,8 +165,7 @@ def model_significance_tests(
 
     Aplica Friedman como prueba global, Wilcoxon a cada par y Holm dentro de la
     métrica. Una comparación solo se lee como diferencia si Friedman la detecta
-    primero. Con varias semillas debe recibir ``average_over_seeds``: la unidad
-    de análisis sigue siendo la noticia.
+    primero. La unidad de análisis es la noticia de test.
     """
     scores = _score_matrix(per_prediction, metric)
     if scores.shape[1] < 2:
@@ -219,79 +218,6 @@ def model_significance_tests(
         "hay_diferencia_global": global_difference,
     }
     return friedman, table
-
-
-def _checked_seed_frames(
-    per_prediction_by_seed: Mapping[int, pd.DataFrame],
-) -> Mapping[int, pd.DataFrame]:
-    """Exige que cada semilla evalúe exactamente los mismos modelos y noticias."""
-    if not per_prediction_by_seed:
-        raise ValueError("Se necesita al menos una semilla.")
-    expected: set[tuple[str, str]] | None = None
-    for frame in per_prediction_by_seed.values():
-        if frame.duplicated(["model_id", "record_id"]).any():
-            raise ValueError("Hay predicciones duplicadas para model_id + record_id.")
-        pairs = set(zip(frame["model_id"].astype(str), frame["record_id"].astype(str), strict=True))
-        if expected is not None and pairs != expected:
-            raise ValueError("Cada semilla debe evaluar los mismos modelos y noticias.")
-        expected = pairs
-    return per_prediction_by_seed
-
-
-def average_over_seeds(
-    per_prediction_by_seed: Mapping[int, pd.DataFrame],
-    *,
-    metrics: Sequence[str] = (PRIMARY_METRIC, "rouge_l_f1", "bertscore_f1"),
-) -> pd.DataFrame:
-    """Promedia entre semillas el puntaje de cada modelo en cada noticia."""
-    frames = _checked_seed_frames(per_prediction_by_seed)
-    keys = ["record_id", "model_id"]
-    if all("model_display_name" in frame for frame in frames.values()):
-        keys.append("model_display_name")
-    combined = pd.concat([frame[[*keys, *metrics]] for frame in frames.values()], ignore_index=True)
-    averaged = combined.groupby(keys, sort=True, as_index=False)[list(metrics)].mean()
-    averaged["n_semillas"] = len(frames)
-    return averaged
-
-
-def seed_stability(
-    per_prediction_by_seed: Mapping[int, pd.DataFrame],
-    *,
-    metric: str = PRIMARY_METRIC,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Resume cuánto cambia cada modelo y su posición al repetir el entrenamiento."""
-    frames = _checked_seed_frames(per_prediction_by_seed)
-    rows = []
-    for seed, frame in frames.items():
-        means = frame.groupby("model_id")[metric].mean()
-        names = _display_names(frame, means.index)
-        positions = means.rank(ascending=False, method="min").astype(int)
-        for model_id, value in means.items():
-            rows.append(
-                {
-                    "seed": seed,
-                    "model_id": model_id,
-                    "model_display_name": names[model_id],
-                    "metric": metric,
-                    "media": float(value),
-                    "posicion": int(positions[model_id]),
-                }
-            )
-    per_seed = pd.DataFrame(rows)
-    summary = (
-        per_seed.groupby(["model_id", "model_display_name", "metric"], as_index=False)
-        .agg(
-            n_semillas=("seed", "nunique"),
-            media=("media", "mean"),
-            desviacion=("media", "std"),
-            minimo=("media", "min"),
-            maximo=("media", "max"),
-            veces_primero=("posicion", lambda positions: int(positions.eq(1).sum())),
-        )
-        .sort_values("media", ascending=False, kind="stable")
-        .reset_index(drop=True)
-    )
-    return per_seed, summary
 
 
 def metrics_by_topic(
