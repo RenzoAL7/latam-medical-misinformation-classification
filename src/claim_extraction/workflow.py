@@ -12,7 +12,7 @@ import inspect
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
@@ -55,17 +55,27 @@ _CLAIMS_500_RUN_NAMES = {
     "epocas_20": "claims_500_v2_epocas_20",
     "lora": "claims_500_v2_lora",
 }
+# La primera semilla es la base. El número de repeticiones se fija en
+# docs/EXPERIMENT_PROTOCOL.md, sección 4.2, antes de generar predicciones de test.
+BASE_SEED = 20261103
+EXPERIMENT_SEEDS = (BASE_SEED, 20261104, 20261105, 20261106, 20261107)
 
 
-def run_name_for(dataset_name: str, variant: str) -> str:
-    """Nombra la corrida por conjunto y variante para que no se mezclen entre sí."""
+def run_name_for(dataset_name: str, variant: str, seed: int = BASE_SEED) -> str:
+    """Nombra la corrida por conjunto, variante y semilla para que no se mezclen.
+
+    La semilla base no añade sufijo, así las corridas ya hechas conservan su carpeta.
+    """
     if dataset_name not in DATASET_SPLIT_SIZES:
         raise ValueError(f"Conjunto desconocido: {dataset_name}.")
     if variant not in EXPERIMENT_VARIANTS:
         raise ValueError(f"Variante desconocida: {variant}.")
-    if dataset_name == "claims_500":
-        return _CLAIMS_500_RUN_NAMES[variant]
-    return f"{dataset_name}_{variant}"
+    name = (
+        _CLAIMS_500_RUN_NAMES[variant]
+        if dataset_name == "claims_500"
+        else f"{dataset_name}_{variant}"
+    )
+    return name if seed == BASE_SEED else f"{name}_seed{seed}"
 
 
 def split_fingerprints(splits: Mapping[str, pd.DataFrame]) -> dict[str, str]:
@@ -82,23 +92,65 @@ def assert_run_matches(
     dataset_name: str,
     variant: str,
     fingerprints: Mapping[str, str],
+    seed: int | None = None,
 ) -> None:
-    """Impide reanudar o evaluar una corrida hecha con otros datos o variante.
+    """Impide reanudar o evaluar una corrida hecha con otros datos, variante o semilla.
 
     Las corridas antiguas no registran variante ni huellas; para ellas solo se
-    puede comprobar el conjunto.
+    puede comprobar el conjunto y la semilla.
     """
-    expected = {
+    expected: dict[str, Any] = {
         "dataset_name": dataset_name,
         "variant": variant,
         "split_fingerprints": dict(fingerprints),
     }
+    if seed is not None:
+        expected["seed"] = seed
     for key, value in expected.items():
         if key in manifest and manifest[key] != value:
             raise ValueError(
                 f"La corrida no corresponde a este experimento: {key} es "
                 f"{manifest[key]!r} y se esperaba {value!r}."
             )
+
+
+def load_per_prediction_by_seed(
+    runs_dir: str | Path,
+    *,
+    dataset_name: str,
+    selected_variants: Mapping[str, str],
+    seeds: Sequence[int],
+    fingerprints: Mapping[str, str],
+) -> dict[int, pd.DataFrame]:
+    """Reúne por semilla las métricas de la variante elegida para cada modelo.
+
+    Cada modelo puede venir de una variante distinta, porque se eligen por
+    validación. Si falta alguna corrida evaluada, las lista todas juntas.
+    """
+    root = Path(runs_dir).expanduser()
+    missing: list[str] = []
+    collected: dict[int, list[pd.DataFrame]] = {seed: [] for seed in seeds}
+    for seed in seeds:
+        for model_id, variant in selected_variants.items():
+            run_dir = root / run_name_for(dataset_name, variant, seed)
+            path = run_dir / "evaluation" / model_id / "per_prediction.csv"
+            manifest_path = run_dir / "run_manifest.json"
+            if not path.is_file() or not manifest_path.is_file():
+                missing.append(f"{run_dir.name}/{model_id}")
+                continue
+            assert_run_matches(
+                json.loads(manifest_path.read_text(encoding="utf-8")),
+                dataset_name=dataset_name,
+                variant=variant,
+                fingerprints=fingerprints,
+                seed=seed,
+            )
+            collected[seed].append(
+                pd.read_csv(path, dtype={"record_id": str}, keep_default_na=False, encoding="utf-8")
+            )
+    if missing:
+        raise FileNotFoundError("Faltan corridas evaluadas: " + ", ".join(missing))
+    return {seed: pd.concat(frames, ignore_index=True) for seed, frames in collected.items()}
 
 
 def available_device() -> str:
@@ -287,7 +339,7 @@ def train_seq2seq_model(
     train: pd.DataFrame,
     validation: pd.DataFrame,
     output_dir: str | Path,
-    seed: int = 20261103,
+    seed: int = BASE_SEED,
     batch_size: int = 1,
     cache_dir: str | Path | None = None,
     base_checkpoint: str | Path | None = None,

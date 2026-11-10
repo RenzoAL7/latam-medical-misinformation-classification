@@ -108,9 +108,10 @@ base y las demás todavía no se han ejecutado sobre el conjunto completo.
   se entrenó sin este mecanismo; como ningún modelo tuvo su mejor punto en la
   época 1, la paciencia de tres épocas no habría cambiado el checkpoint elegido.
   En `claims_1500` todas las variantes se entrenan desde cero con early stopping.
-- **Corridas:** cada corrida se nombra por conjunto y variante. Su manifiesto
-  registra una huella de los `record_id` de cada split, y los notebooks 03 y 04 se
-  detienen si se intenta reanudar o evaluar una corrida hecha con otros datos.
+- **Corridas:** cada corrida se nombra por conjunto, variante y semilla; la semilla
+  base no añade sufijo. Su manifiesto registra una huella de los `record_id` de cada
+  split, y los notebooks 03 y 04 se detienen si se intenta reanudar o evaluar una
+  corrida hecha con otros datos o con otra semilla.
 - **LoRA:** se aplica a las capas de atención query, key, value y output (#75).
   El learning rate de 3e-4 coincide con #97 y se comprobó solo con validación
   en BARTO: tras dos épocas, la pérdida fue 2,26 con 3e-5 y 1,68 con 3e-4.
@@ -158,7 +159,8 @@ Lectura de los resultados:
   del 95 % por bootstrap sobre las noticias. Las diferencias entre modelos se
   calculan de forma pareada contra el de mayor media; si el intervalo incluye el
   cero, esos modelos no se distinguen con este test. En `claims_500`, BARTO supera
-  a mBART-50 en 0,006 de METEOR con intervalo de −0,044 a 0,057.
+  a mBART-50 en 0,006 de METEOR con intervalo de −0,044 a 0,057. Las pruebas entre
+  los cuatro modelos están en la sección 4.2.
 - **Sensibilidad de METEOR:** METEOR se calcula con la configuración por defecto
   de NLTK, cuyo stemmer y WordNet están en inglés, por lo que no reconoce sinónimos
   ni todas las flexiones del español. `meteor_stem_es` repite el cálculo con
@@ -175,9 +177,91 @@ categorías con seis combinaciones: TF-IDF,
 `paraphrase-multilingual-MiniLM-L12-v2` y
 `paraphrase-multilingual-mpnet-base-v2`, cada una con regresión logística y SVM
 lineal, ambas con pesos por clase. La entrada es el título y los primeros 1000
-caracteres del cuerpo. La combinación se elige por F1 macro en validation y test
-se evalúa una sola vez con la combinación elegida. No evalúa la veracidad de la
-noticia ni participa en la extracción de claims.
+caracteres del cuerpo.
+
+La combinación se elige por el F1 macro medio de una validación cruzada de 5 folds
+sobre las 1350 noticias de train y validation. Cada fold conserva la proporción de
+temas y mantiene juntas las noticias casi duplicadas. TF-IDF se ajusta solo con la
+parte de entrenamiento de cada fold. La combinación elegida se reentrena con train
+y validation, y test se evalúa una sola vez con ella. Esta validación cruzada sigue
+a los trabajos de clasificación de noticias #102, #103 y #104. El clasificador no
+evalúa la veracidad de la noticia ni participa en la extracción de claims.
+
+## 4.2 Análisis estadístico (fijado el 10/11/2026)
+
+Estas reglas se fijan antes de crear `claims_1500`, para que no dependan de sus
+resultados. Todo cambio posterior se anota en el registro del final de esta
+sección; si ocurre después de ver test, se reporta como exploratorio.
+
+**Comparación.** Se comparan los cuatro modelos, cada uno con la variante elegida
+por pérdida de validación con la semilla base. La unidad de análisis es la noticia:
+los cuatro se evalúan sobre las mismas 150 noticias de test, así que cada comparación
+es pareada. METEOR es la métrica principal. ROUGE-L, BERTScore y `meteor_stem_es` se
+reportan como complementarias.
+
+**Semillas.** Las repeticiones miden cuánto cambia el resultado al repetir el
+entrenamiento con las mismas noticias, algo que el bootstrap sobre test no captura.
+
+- Se usan tres semillas: 20261103 (base), 20261104 y 20261105.
+- Solo se repite la variante elegida de cada modelo, con los mismos splits. La
+  semilla cambia el orden de las noticias, el dropout y, en LoRA, los valores
+  iniciales de los adaptadores.
+- Antes de generar predicciones de test de `claims_1500` se puede hacer un piloto con
+  `claims_500` y `epocas_5`. Si la desviación entre semillas del METEOR medio de algún
+  modelo supera 0,02, se usan cinco semillas, agregando 20261106 y 20261107. Con tres
+  semillas, esa desviación aportaría a la diferencia entre dos modelos un ruido de
+  0,016, parecido al de muestrear 150 noticias (0,017, estimado con las diferencias
+  por noticia de `claims_500_v1`).
+- Ninguna semilla se elige por su resultado. Todas las previstas se reportan.
+
+Antecedentes en Drive: #66 reporta media y desviación con 10 semillas, #43 y #51
+repiten con varias semillas, y #69 declara la semilla única como limitación.
+
+**Pruebas.** Se aplican con un nivel de significancia de 0,05:
+
+1. El puntaje de cada modelo en cada noticia se promedia entre semillas.
+2. Friedman compara los cuatro modelos a la vez.
+3. Wilcoxon de rangos con signo, bilateral, compara cada uno de los seis pares.
+4. Holm corrige los seis p-valores, por separado en cada métrica.
+5. Cada par reporta su diferencia media, un intervalo del 95 % por bootstrap pareado
+   sobre las noticias (10 000 réplicas), el efecto rango-biserial y cuántas noticias
+   gana cada modelo.
+
+No se usa una prueba t porque no se asume normalidad de las diferencias, ni McNemar
+porque METEOR es continuo. Antecedentes en Drive: #87 usa bootstrap pareado por
+artículo en extracción de claims de noticias, #51 usa Wilcoxon por ítem, Friedman y
+bootstrap de 10 000 réplicas, #66 compara modelos con Wilcoxon y #82 corrige con
+Holm-Bonferroni. Una búsqueda por texto no encontró estas pruebas en los trabajos de
+normalización o extracción generativa de claims #49, #80, #81, #84, #88, #89, #93 y
+#95 a #100, así que no hay un antecedente directo para modelos seq2seq.
+
+**Qué se puede afirmar.** Estos resultados comparan similitud con la referencia; no
+prueban exactitud clínica ni veracidad.
+
+| Resultado | Frase permitida |
+| --- | --- |
+| Friedman con p ≥ 0,05 | «Con este test no se detectan diferencias entre los modelos.» |
+| Friedman con p < 0,05 y par con p de Holm < 0,05 | «A supera a B», con diferencia, intervalo, p ajustado y efecto. |
+| Par con p de Holm ≥ 0,05 | «A y B no se distinguen con este test.» No se escribe que sean iguales o equivalentes. |
+| La media y los rangos apuntan en sentidos opuestos | No se concluye y se explica la discrepancia. |
+| El primer lugar cambia entre semillas | Se reporta cuántas veces quedó primero cada modelo y se escribe que ese lugar no es estable. |
+
+**Reglas.**
+
+- Test no interviene en la elección de variante ni en el número de semillas de
+  `claims_1500`.
+- El nivel de significancia, las semillas y las comparaciones no cambian después de
+  mirar test.
+- Una corrida que falla por un error técnico se repite con la misma semilla. Una
+  corrida no se repite por tener un mal resultado.
+- El test de `claims_500` ya se vio. Sus análisis son un piloto y no se mezclan con
+  los de 400 noticias ni con los de `claims_1500`.
+
+**Registro de cambios.**
+
+| Fecha | Cambio | Motivo | ¿Antes o después de ver test? |
+| --- | --- | --- | --- |
+| 10/11/2026 | Se adoptan esta sección, las semillas y la validación cruzada en temas | Medir la estabilidad del entrenamiento y comparar los modelos con pruebas pareadas | Antes de crear `claims_1500`. El test de `claims_500` ya se había visto |
 
 ## 5. Fuera del alcance de Sem1
 
