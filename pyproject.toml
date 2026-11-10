@@ -19,6 +19,7 @@ analysis = [
     "matplotlib>=3.9",
     "nbclient>=0.10",
     "nbformat>=5.10",
+    "scipy>=1.13",
 ]
 dev = [
     "pytest>=8.0",

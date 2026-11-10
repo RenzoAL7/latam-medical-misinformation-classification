@@ -28,6 +28,7 @@ REPRESENTATIONS = ("tfidf", "minilm", "mpnet")
 CLASSIFIERS = ("logistic_regression", "linear_svm")
 # El protocolo pide «título y comienzo del cuerpo»; aquí se fija ese comienzo.
 TOPIC_BODY_CHARS = 1000
+TOPIC_CV_FOLDS = 5
 _REQUIRED_COLUMNS = {"record_id", "title", "body", "tema"}
 
 Encoder = Callable[[str, list[str]], np.ndarray]
@@ -114,48 +115,92 @@ def _scores(true: Sequence[str], predicted: Sequence[str]) -> dict[str, float]:
     }
 
 
+def _topic_folds(
+    labels: Sequence[str], groups: Sequence[int], n_splits: int, seed: int
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Reparte por tema sin separar noticias del mismo grupo de casi-duplicados."""
+    from sklearn.model_selection import StratifiedGroupKFold
+
+    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    return list(splitter.split(np.zeros(len(labels)), labels, groups))
+
+
 def select_and_evaluate_topic_classifier(
     train: pd.DataFrame,
     validation: pd.DataFrame,
     test: pd.DataFrame,
     *,
+    groups: Sequence[int],
     encoder: Encoder | None = None,
     representations: Sequence[str] = REPRESENTATIONS,
+    n_splits: int = TOPIC_CV_FOLDS,
     seed: int = 20261103,
 ) -> dict[str, Any]:
-    """Elige la mejor combinación por F1 macro en validation y la evalúa en test.
+    """Elige la combinación por validación cruzada sobre train y validation, y la evalúa en test.
 
-    Test solo se transforma y predice después de fijar la combinación elegida.
-    En un empate gana la primera combinación en el orden declarado.
+    ``groups`` trae un grupo de casi-duplicados por fila de train seguido de
+    validation. TF-IDF se ajusta en cada fold solo con su parte de entrenamiento.
+    Test solo se transforma y predice después de fijar la combinación elegida,
+    reentrenada con train y validation. En un empate gana la primera combinación
+    en el orden declarado.
     """
     train, validation, test = (
         _validated(train, "train"),
         _validated(validation, "validation"),
         _validated(test, "test"),
     )
-    train_texts = _texts(train)
-    validation_texts = _texts(validation)
-    train_labels = train["tema"].tolist()
-    validation_labels = validation["tema"].tolist()
+    pool = pd.concat([train, validation], ignore_index=True)
+    if len(groups) != len(pool):
+        raise ValueError("groups debe tener un valor por cada fila de train y validation.")
+    pool_texts = _texts(pool)
+    pool_labels = pool["tema"].tolist()
+    folds = _topic_folds(pool_labels, groups, n_splits, seed)
+    # Los embeddings no dependen del fold: se calculan una sola vez para todo el conjunto.
+    embeddings = {
+        representation: _featurizer(representation, pool_texts, encoder)(pool_texts)
+        for representation in representations
+        if representation != "tfidf"
+    }
 
-    candidates = []
-    fitted: dict[tuple[str, str], tuple[Any, Any]] = {}
+    fold_rows = []
     for representation in representations:
-        featurize = _featurizer(representation, train_texts, encoder)
-        train_features = featurize(train_texts)
-        validation_features = featurize(validation_texts)
-        for classifier_name in CLASSIFIERS:
-            classifier = _classifier(classifier_name, seed).fit(train_features, train_labels)
-            scores = _scores(validation_labels, classifier.predict(validation_features).tolist())
-            candidates.append({"representation": representation, "classifier": classifier_name, **scores})
-            fitted[(representation, classifier_name)] = (featurize, classifier)
+        for fold, (fit_index, held_index) in enumerate(folds):
+            fit_labels = [pool_labels[position] for position in fit_index]
+            held_labels = [pool_labels[position] for position in held_index]
+            if representation == "tfidf":
+                featurize = _featurizer(representation, [pool_texts[position] for position in fit_index], None)
+                fit_features = featurize([pool_texts[position] for position in fit_index])
+                held_features = featurize([pool_texts[position] for position in held_index])
+            else:
+                fit_features = embeddings[representation][fit_index]
+                held_features = embeddings[representation][held_index]
+            for classifier_name in CLASSIFIERS:
+                classifier = _classifier(classifier_name, seed).fit(fit_features, fit_labels)
+                scores = _scores(held_labels, classifier.predict(held_features).tolist())
+                fold_rows.append(
+                    {"representation": representation, "classifier": classifier_name, "fold": fold, **scores}
+                )
 
-    validation_table = pd.DataFrame(candidates)
-    best = int(validation_table["f1_macro"].to_numpy().argmax())
-    validation_table["seleccionada"] = validation_table.index == best
-    selected = (validation_table.at[best, "representation"], validation_table.at[best, "classifier"])
+    fold_scores = pd.DataFrame(fold_rows)
+    cv_table = (
+        fold_scores.groupby(["representation", "classifier"], sort=False, as_index=False)
+        .agg(
+            f1_macro_media=("f1_macro", "mean"),
+            f1_macro_desviacion=("f1_macro", "std"),
+            accuracy_media=("accuracy", "mean"),
+        )
+    )
+    best = int(cv_table["f1_macro_media"].to_numpy().argmax())
+    cv_table["seleccionada"] = cv_table.index == best
+    selected = (cv_table.at[best, "representation"], cv_table.at[best, "classifier"])
 
-    featurize, classifier = fitted[selected]
+    fold_of_row = np.empty(len(pool), dtype=int)
+    for fold, (_, held_index) in enumerate(folds):
+        fold_of_row[held_index] = fold
+
+    featurize = _featurizer(selected[0], pool_texts, encoder)
+    pool_features = embeddings[selected[0]] if selected[0] in embeddings else featurize(pool_texts)
+    classifier = _classifier(selected[1], seed).fit(pool_features, pool_labels)
     test_labels = test["tema"].tolist()
     predicted = classifier.predict(featurize(_texts(test))).tolist()
 
@@ -166,7 +211,9 @@ def select_and_evaluate_topic_classifier(
         test_labels, predicted, labels=labels, zero_division=0
     )
     return {
-        "validation_table": validation_table,
+        "cv_table": cv_table,
+        "fold_scores": fold_scores,
+        "fold_assignments": pd.DataFrame({"record_id": pool["record_id"].tolist(), "fold": fold_of_row}),
         "selected": {"representation": selected[0], "classifier": selected[1]},
         "test_metrics": {"n": len(test_labels), **_scores(test_labels, predicted)},
         "per_class": pd.DataFrame(

@@ -59,7 +59,8 @@ fine-tuning ni evalúa la veracidad de la noticia. Su diseño es:
 - **Clasificadores:** regresión logística y SVM lineal, ambos con pesos por
   clase porque los temas están desbalanceados.
 - **Entrada:** título y comienzo del cuerpo.
-- **Selección:** la mejor de las seis combinaciones por F1 macro en validación.
+- **Selección:** la mejor de las seis combinaciones por F1 macro medio en una
+  validación cruzada de 5 folds sobre train y validation.
 
 ## Preparación local
 
@@ -143,7 +144,7 @@ solo registran manifiestos y estado de una corrida.
 El notebook 03 valida que los splits no compartan `record_id`, `source_hash` o
 `claim_hash`. Entrena cada modelo con `train.csv`, escoge el checkpoint por
 pérdida de `validation.csv` y recién entonces genera predicciones para los
-casos de `test.csv`. Cada corrida se nombra por conjunto y variante, y el notebook
+casos de `test.csv`. Cada corrida se nombra por conjunto, variante y semilla, y el notebook
 se detiene si se intenta reanudar una corrida hecha con otros datos.
 
 El notebook 04 calcula:
@@ -154,7 +155,11 @@ El notebook 04 calcula:
 - diagnósticos de salidas vacías, muy cortas y repetidas,
 - intervalos de confianza y diferencias pareadas entre modelos,
 - METEOR con stemmer español como análisis de sensibilidad,
-- métricas por tema anotado.
+- métricas por tema anotado,
+- estabilidad entre semillas y pruebas de Friedman, Wilcoxon y Holm entre modelos.
+
+Las reglas de esas pruebas y el número de semillas están fijados en la sección 4.2
+de [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md).
 
 Estos puntajes miden similitud entre una predicción y la afirmación de
 referencia. No prueban exactitud clínica ni veracidad de la noticia. Los
