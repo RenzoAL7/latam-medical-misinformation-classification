@@ -10,9 +10,10 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
 import pandas as pd
 
@@ -55,27 +56,38 @@ _CLAIMS_500_RUN_NAMES = {
     "epocas_20": "claims_500_v2_epocas_20",
     "lora": "claims_500_v2_lora",
 }
-# La primera semilla es la base. El número de repeticiones se fija en
-# docs/EXPERIMENT_PROTOCOL.md, sección 4.2, antes de generar predicciones de test.
+# Semilla única del experimento, fijada en docs/EXPERIMENT_PROTOCOL.md, sección 4.2.
 BASE_SEED = 20261103
-EXPERIMENT_SEEDS = (BASE_SEED, 20261104, 20261105, 20261106, 20261107)
 
 
-def run_name_for(dataset_name: str, variant: str, seed: int = BASE_SEED) -> str:
-    """Nombra la corrida por conjunto, variante y semilla para que no se mezclen.
-
-    La semilla base no añade sufijo, así las corridas ya hechas conservan su carpeta.
-    """
+def run_name_for(dataset_name: str, variant: str) -> str:
+    """Nombra la corrida por conjunto y variante para que no se mezclen."""
     if dataset_name not in DATASET_SPLIT_SIZES:
         raise ValueError(f"Conjunto desconocido: {dataset_name}.")
     if variant not in EXPERIMENT_VARIANTS:
         raise ValueError(f"Variante desconocida: {variant}.")
-    name = (
-        _CLAIMS_500_RUN_NAMES[variant]
-        if dataset_name == "claims_500"
-        else f"{dataset_name}_{variant}"
+    if dataset_name == "claims_500":
+        return _CLAIMS_500_RUN_NAMES[variant]
+    return f"{dataset_name}_{variant}"
+
+
+def training_history(model_dir: str | Path) -> dict[str, Any]:
+    """Lee el historial de pérdidas que dejó ``Seq2SeqTrainer`` para un modelo.
+
+    Las corridas nuevas lo guardan junto a ``best/``; las anteriores solo lo
+    tienen dentro de su último ``checkpoint-*``.
+    """
+    root = Path(model_dir).expanduser()
+    saved = root / "trainer_state.json"
+    if saved.is_file():
+        return json.loads(saved.read_text(encoding="utf-8"))
+    states = sorted(
+        root.glob("checkpoint-*/trainer_state.json"),
+        key=lambda path: int(path.parent.name.split("-")[-1]),
     )
-    return name if seed == BASE_SEED else f"{name}_seed{seed}"
+    if not states:
+        raise FileNotFoundError(f"No hay trainer_state.json en {root}.")
+    return json.loads(states[-1].read_text(encoding="utf-8"))
 
 
 def split_fingerprints(splits: Mapping[str, pd.DataFrame]) -> dict[str, str]:
@@ -114,43 +126,49 @@ def assert_run_matches(
             )
 
 
-def load_per_prediction_by_seed(
+def load_selected_evaluations(
     runs_dir: str | Path,
     *,
     dataset_name: str,
     selected_variants: Mapping[str, str],
-    seeds: Sequence[int],
     fingerprints: Mapping[str, str],
-) -> dict[int, pd.DataFrame]:
-    """Reúne por semilla las métricas de la variante elegida para cada modelo.
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Reúne el resumen y los puntajes por noticia de la variante elegida de cada modelo.
 
     Cada modelo puede venir de una variante distinta, porque se eligen por
     validación. Si falta alguna corrida evaluada, las lista todas juntas.
     """
     root = Path(runs_dir).expanduser()
     missing: list[str] = []
-    collected: dict[int, list[pd.DataFrame]] = {seed: [] for seed in seeds}
-    for seed in seeds:
-        for model_id, variant in selected_variants.items():
-            run_dir = root / run_name_for(dataset_name, variant, seed)
-            path = run_dir / "evaluation" / model_id / "per_prediction.csv"
-            manifest_path = run_dir / "run_manifest.json"
-            if not path.is_file() or not manifest_path.is_file():
-                missing.append(f"{run_dir.name}/{model_id}")
-                continue
-            assert_run_matches(
-                json.loads(manifest_path.read_text(encoding="utf-8")),
-                dataset_name=dataset_name,
-                variant=variant,
-                fingerprints=fingerprints,
-                seed=seed,
-            )
-            collected[seed].append(
-                pd.read_csv(path, dtype={"record_id": str}, keep_default_na=False, encoding="utf-8")
-            )
+    summaries: list[pd.DataFrame] = []
+    details: list[pd.DataFrame] = []
+    for model_id, variant in selected_variants.items():
+        run_dir = root / run_name_for(dataset_name, variant)
+        evaluation_dir = run_dir / "evaluation"
+        manifest_path = run_dir / "run_manifest.json"
+        paths = (evaluation_dir / "summary.csv", evaluation_dir / "per_prediction.csv", manifest_path)
+        if not all(path.is_file() for path in paths):
+            missing.append(f"{run_dir.name}/{model_id}")
+            continue
+        assert_run_matches(
+            json.loads(manifest_path.read_text(encoding="utf-8")),
+            dataset_name=dataset_name,
+            variant=variant,
+            fingerprints=fingerprints,
+            seed=BASE_SEED,
+        )
+        summary = pd.read_csv(paths[0], encoding="utf-8")
+        detail = pd.read_csv(paths[1], dtype={"record_id": str}, keep_default_na=False, encoding="utf-8")
+        summary = summary[summary["model_id"].eq(model_id)].assign(variante=variant)
+        detail = detail[detail["model_id"].eq(model_id)]
+        if summary.empty or detail.empty:
+            missing.append(f"{run_dir.name}/{model_id}")
+            continue
+        summaries.append(summary)
+        details.append(detail)
     if missing:
         raise FileNotFoundError("Faltan corridas evaluadas: " + ", ".join(missing))
-    return {seed: pd.concat(frames, ignore_index=True) for seed, frames in collected.items()}
+    return pd.concat(summaries, ignore_index=True), pd.concat(details, ignore_index=True)
 
 
 def available_device() -> str:
@@ -333,6 +351,19 @@ def _apply_lora(model: Any, lora: Mapping[str, Any], gradient_checkpointing: boo
     )
 
 
+def remove_intermediate_checkpoints(model_dir: str | Path) -> list[str]:
+    """Borra los ``checkpoint-*`` de un modelo si ya existen ``best/`` y su historial."""
+    root = Path(model_dir).expanduser()
+    if not (root / "best").is_dir() or not (root / "trainer_state.json").is_file():
+        raise FileNotFoundError(f"Falta best/ o trainer_state.json en {root}; no se borra nada.")
+    removed = []
+    for checkpoint in sorted(root.glob("checkpoint-*")):
+        if checkpoint.is_dir():
+            shutil.rmtree(checkpoint)
+            removed.append(checkpoint.name)
+    return removed
+
+
 def train_seq2seq_model(
     *,
     model_id: str,
@@ -458,6 +489,9 @@ def train_seq2seq_model(
     else:
         trainer.save_model(best_dir)
     tokenizer.save_pretrained(best_dir)
+    # Se conserva solo best/ y el historial de pérdidas; los checkpoint-* ya no se usan.
+    trainer.state.save_to_json(str(model_dir / "trainer_state.json"))
+    remove_intermediate_checkpoints(model_dir)
     evaluations = [row for row in trainer.state.log_history if "eval_loss" in row]
     best_evaluation = min(evaluations, key=lambda row: row["eval_loss"])
     requested_epochs = arguments.num_train_epochs

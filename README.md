@@ -19,7 +19,7 @@ solo necesita los splits del 02.
 | 01 | `01_auditar_export_labelstudio.ipynb` | export CSV más reciente de Label Studio | auditoría y candidatas aptas |
 | 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 1500: 1200 train, 150 validation, 150 test |
 | 03 | `03_entrenar_modelos.ipynb` | los tres CSV cerrados | checkpoints y predicciones locales de test |
-| 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas con intervalos, resultados por tema, tablas y figuras locales |
+| 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas de cada variante y resultados finales con pruebas estadísticas |
 | 05 | `05_clasificar_temas.ipynb` | los tres CSV cerrados | clasificador de temas elegido y su evaluación |
 
 Los notebooks 01–02 son los únicos que se necesitan antes de entrenar. Los
@@ -144,10 +144,13 @@ solo registran manifiestos y estado de una corrida.
 El notebook 03 valida que los splits no compartan `record_id`, `source_hash` o
 `claim_hash`. Entrena cada modelo con `train.csv`, escoge el checkpoint por
 pérdida de `validation.csv` y recién entonces genera predicciones para los
-casos de `test.csv`. Cada corrida se nombra por conjunto, variante y semilla, y el notebook
-se detiene si se intenta reanudar una corrida hecha con otros datos.
+casos de `test.csv`. Cada corrida se nombra por conjunto y variante, todas con la
+misma semilla, y el notebook se detiene si se intenta reanudar una corrida hecha con
+otros datos. De cada modelo se conserva solo el mejor checkpoint y su historial de
+pérdidas.
 
-El notebook 04 calcula:
+El notebook 04 tiene dos partes. La parte A se ejecuta una vez por variante y
+guarda, dentro de su corrida:
 
 - METEOR (métrica principal),
 - ROUGE-L precisión, recall y F1,
@@ -156,10 +159,34 @@ El notebook 04 calcula:
 - intervalos de confianza y diferencias pareadas entre modelos,
 - METEOR con stemmer español como análisis de sensibilidad,
 - métricas por tema anotado,
-- estabilidad entre semillas y pruebas de Friedman, Wilcoxon y Holm entre modelos.
+- curvas de entrenamiento y validación.
 
-Las reglas de esas pruebas y el número de semillas están fijados en la sección 4.2
-de [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md).
+La parte B se ejecuta al final, cuando las cuatro variantes están evaluadas. Toma
+cada modelo con la variante elegida por validación y guarda en
+`artifacts/05_resultados_finales/` las tablas y figuras de la tesis, con las pruebas
+de Friedman, Wilcoxon y Holm entre modelos:
+
+```text
+artifacts/05_resultados_finales/claims_1500/
+├── tablas/
+│   ├── 01_distribucion_particiones.csv
+│   ├── 02_variantes_elegidas.csv
+│   ├── 03_metricas_finales.csv
+│   ├── 04_friedman.csv
+│   ├── 05_comparaciones_pareadas.csv
+│   ├── 06_metricas_por_tema.csv
+│   ├── 07_diagnosticos_generacion.csv
+│   └── 08_resumen_tokens.csv
+└── figuras/
+    ├── 01_comparacion_metricas.png
+    ├── 02_curvas_entrenamiento_validacion.png
+    ├── 03_distribucion_longitudes.png
+    ├── 04_tokens_noticias.png
+    └── 05_tokens_afirmaciones.png
+```
+
+Las reglas de esas pruebas y la semilla están fijadas en la sección 4.2 de
+[`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md).
 
 Estos puntajes miden similitud entre una predicción y la afirmación de
 referencia. No prueban exactitud clínica ni veracidad de la noticia. Los
@@ -235,8 +262,9 @@ tests/                   Pruebas sin corpus ni pesos locales
 artifacts/               Datos, anotaciones, modelos y resultados locales (ignorado)
   01_labelstudio/        Exports CSV de Label Studio y auditoría del notebook 01
   02_conjuntos/          Conjuntos cerrados: claims_400, claims_500 y claims_1500
-  03_corridas/           Modelos, predicciones y evaluación de cada corrida
+  03_corridas/           Modelos, predicciones y evaluación de cada variante
   04_temas/              Comparación y evaluación del clasificador de temas
+  05_resultados_finales/ Tablas y figuras de la tesis con la variante elegida
   archivo/               Material antiguo que el flujo ya no usa
 ```
 
