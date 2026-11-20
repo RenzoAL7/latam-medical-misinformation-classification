@@ -29,6 +29,7 @@ TASK_COLUMNS = [
 ]
 UNUSED_REASON_COLUMN = "motivo_no_usada"
 SURPLUS_REASON = "EXCEDENTE_OK"
+BINARY_REASON = "CUERPO_BINARIO"
 FINGERPRINTS_FILE = "_proyecto9_huellas.jsonl"
 
 
@@ -49,6 +50,17 @@ def title_fingerprint(title: str) -> str:
 
 def body_fingerprint(body: str) -> str:
     return fingerprint(title_key(body)[:600]) if len((body or "").strip()) > 200 else ""
+
+
+def is_binary_text(text: str, max_ratio: float = 0.01) -> bool:
+    """Detecta texto que en realidad son bytes mal decodificados (p. ej. HTML comprimido).
+
+    Un byte NUL, o más de un 1 % de caracteres de reemplazo, delatan contenido
+    binario: no es una noticia legible y además rompe el lector CSV del importador.
+    """
+    if not text:
+        return False
+    return "\x00" in text or text.count("�") > max_ratio * len(text)
 
 
 def empty_history() -> dict[str, set[str]]:
@@ -110,6 +122,8 @@ def select_rows(
             reason = status
         elif not record_id or not title_fp or not (row.get("body") or "").strip():
             reason = "CAMPOS_INCOMPLETOS"
+        elif is_binary_text(row.get("body", "")) or is_binary_text(row.get("title", "")):
+            reason = BINARY_REASON
         elif record_id in history["ids"] or title_fp in history["titles"] or body_fp in history["bodies"]:
             reason = "DUPLICADO_HISTORICO"
         elif record_id in seen_ids:
