@@ -64,6 +64,25 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def is_binary_text(text: str, max_ratio: float = 0.01) -> bool:
+    """Igual que en la función: NUL o >1 % de caracteres de reemplazo = bytes, no texto."""
+    if not text:
+        return False
+    return "\x00" in text or text.count("�") > max_ratio * len(text)
+
+
+def parse_tasks(raw: str) -> tuple[list[dict[str, str]], int]:
+    """Lee un labelstudio_tasks.csv y devuelve (filas legibles, filas binarias descartadas).
+
+    Los lotes anteriores a CUERPO_BINARIO pueden traer bytes NUL, que el lector CSV
+    rechaza. Se marcan con un carácter de reemplazo antes de leer para que la fila
+    cuente como binaria y se descarte, sin tumbar el lote entero.
+    """
+    rows = list(csv.DictReader(io.StringIO(raw.replace("\x00", "�"), newline="")))
+    readable = [r for r in rows if not (is_binary_text(r.get("body", "")) or is_binary_text(r.get("title", "")))]
+    return readable, len(rows) - len(readable)
+
+
 def main() -> int:
     namespace = os.environ["OBJECT_STORAGE_NAMESPACE"]
     bucket = os.getenv("OBJECT_STORAGE_BUCKET", "mednews-data")
@@ -90,18 +109,31 @@ def main() -> int:
     token = api(base, "/api/token/refresh/", None, {"refresh": refresh})["access"]
     known = existing_record_ids(base, token, project)
 
+    failed: list[str] = []
     for run in pending:
-        name = f"silver/labelstudio/{run}/labelstudio_tasks.csv"
-        raw = client.get_object(namespace, bucket, name).data.content.decode("utf-8")
-        rows = list(csv.DictReader(io.StringIO(raw, newline="")))
-        new = [r for r in rows if r["record_id"] not in known]
-        if new:
-            api(base, f"/api/projects/{project}/import", token, [{"data": r} for r in new])
-            known.update(r["record_id"] for r in new)
-        state[run] = {"filas_lote": len(rows), "importadas": len(new), "duplicadas": len(rows) - len(new)}
+        # Un lote dañado no debe frenar a los siguientes: se registra el error, el lote
+        # queda fuera del estado para reintentarse y el servicio termina en fallo.
+        try:
+            name = f"silver/labelstudio/{run}/labelstudio_tasks.csv"
+            raw = client.get_object(namespace, bucket, name).data.content.decode("utf-8", errors="replace")
+            rows, binary = parse_tasks(raw)
+            new = [r for r in rows if r["record_id"] not in known]
+            if new:
+                api(base, f"/api/projects/{project}/import", token, [{"data": r} for r in new])
+                known.update(r["record_id"] for r in new)
+        except Exception as exc:  # noqa: BLE001 - se informa y se sigue con el resto
+            failed.append(run)
+            print(json.dumps({"status": "error", "run": run, "error": repr(exc)[:500]}), file=sys.stderr)
+            continue
+        state[run] = {
+            "filas_lote": len(rows) + binary,
+            "importadas": len(new),
+            "duplicadas": len(rows) - len(new),
+            "binarias_descartadas": binary,
+        }
         save_state(state_path, state)
         print(json.dumps({"status": "importado", "run": run, **state[run]}))
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
