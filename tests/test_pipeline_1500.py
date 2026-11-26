@@ -7,12 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from claim_extraction.analysis import (
-    bootstrap_uncertainty,
-    holm_adjust,
-    metrics_by_topic,
-    model_significance_tests,
-)
+from claim_extraction.analysis import metrics_by_topic
 from claim_extraction.data import near_duplicate_groups
 from claim_extraction.workflow import (
     BASE_SEED,
@@ -93,102 +88,16 @@ def _per_prediction() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_bootstrap_differences_are_paired_against_the_top_model() -> None:
-    summary, differences = bootstrap_uncertainty(_per_prediction(), n_boot=200)
-    assert summary.iloc[0]["model_id"] == "alto"
-    assert summary.iloc[0]["ci95_low"] == pytest.approx(0.6)
-    assert len(differences) == 1
-    assert differences.iloc[0]["diferencia_media"] == pytest.approx(0.4)
-    assert bool(differences.iloc[0]["ic_excluye_cero"]) is True
-
-
-def test_bootstrap_rejects_models_evaluated_on_different_news() -> None:
-    incomplete = _per_prediction().iloc[:-1]
-    with pytest.raises(ValueError, match="mismas noticias"):
-        bootstrap_uncertainty(incomplete, n_boot=10)
-
-
 def test_metrics_by_topic_uses_the_annotated_topic() -> None:
     frame = _per_prediction()
     references = frame.drop_duplicates("record_id")[["record_id", "tema_real"]].rename(columns={"tema_real": "tema"})
-    table = metrics_by_topic(frame.drop(columns="tema_real"), references, n_boot=50)
+    table = metrics_by_topic(frame.drop(columns="tema_real"), references)
     assert set(table["tema"]) == {"Cáncer", "Otra"}
     assert set(table["n"]) == {20}
+    alto = table[table["model_id"].eq("alto")]
+    assert alto["meteor"].tolist() == pytest.approx([0.6, 0.6])
     with pytest.raises(ValueError, match="tema"):
-        metrics_by_topic(frame, references.rename(columns={"tema": "x"}), n_boot=10)
-
-
-def _scores_frame(scores: dict[str, list[float]]) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {"record_id": str(index), "model_id": model, "model_display_name": model.upper(), "meteor": value}
-            for model, values in scores.items()
-            for index, value in enumerate(values)
-        ]
-    )
-
-
-def test_holm_adjusts_in_the_received_order_and_never_exceeds_one() -> None:
-    assert holm_adjust([0.01, 0.04, 0.03]).tolist() == pytest.approx([0.03, 0.06, 0.06])
-    assert holm_adjust([0.5, 0.9]).tolist() == pytest.approx([1.0, 1.0])
-
-
-def test_pairwise_tests_match_scipy_and_read_a_clear_winner() -> None:
-    stats = pytest.importorskip("scipy.stats")
-    offsets = np.linspace(0.01, 0.3, 30)
-    base = np.linspace(0.1, 0.5, 30)
-    frame = _scores_frame({"alto": (base + offsets).tolist(), "medio": (base + offsets / 2).tolist(), "bajo": base.tolist()})
-
-    friedman, pairs = model_significance_tests(frame, n_boot=200)
-
-    assert friedman["hay_diferencia_global"] is True
-    assert friedman["modelos"] == 3
-    assert len(pairs) == 3
-    first = pairs.iloc[0]
-    assert (first["modelo_mayor_media"], first["modelo_comparado"]) == ("ALTO", "MEDIO")
-    assert first["p_wilcoxon"] == pytest.approx(stats.wilcoxon(offsets / 2).pvalue)
-    assert first["efecto_rango_biserial"] == pytest.approx(1.0)
-    assert first["noticias_gana_mayor_media"] == 30
-    assert first["lectura"] == "ALTO supera a MEDIO"
-    assert pairs["p_holm"].ge(pairs["p_wilcoxon"]).all()
-
-
-def test_pairwise_tests_never_call_identical_models_different() -> None:
-    pytest.importorskip("scipy.stats")
-    values = np.linspace(0.1, 0.5, 20).tolist()
-    friedman, pairs = model_significance_tests(_scores_frame({"a": values, "b": values, "c": values}), n_boot=50)
-    assert friedman["hay_diferencia_global"] is False
-    assert pairs["p_wilcoxon"].eq(1.0).all()
-    assert pairs["empates"].eq(20).all()
-    assert pairs["lectura"].str.contains("no se distinguen").all()
-
-
-def test_a_pair_is_not_read_as_a_difference_when_friedman_finds_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    pytest.importorskip("scipy.stats")
-    import claim_extraction.analysis as analysis
-
-    monkeypatch.setattr(analysis, "_friedman", lambda scores: (0.1, 0.9))
-    base = np.linspace(0.1, 0.5, 30)
-    frame = _scores_frame({"a": (base + 0.2).tolist(), "b": base.tolist(), "c": (base + 0.1).tolist()})
-    _, pairs = analysis.model_significance_tests(frame, n_boot=50)
-    assert pairs["p_holm"].lt(0.05).all()
-    assert pairs["lectura"].str.contains("no se distinguen").all()
-
-
-def test_two_models_skip_friedman_but_keep_the_paired_test() -> None:
-    pytest.importorskip("scipy.stats")
-    base = np.linspace(0.1, 0.5, 30)
-    friedman, pairs = model_significance_tests(_scores_frame({"a": (base + 0.2).tolist(), "b": base.tolist()}), n_boot=50)
-    assert friedman["p"] is None
-    assert pairs.iloc[0]["lectura"] == "A supera a B"
-
-
-def test_significance_tests_require_the_same_news_and_two_models() -> None:
-    pytest.importorskip("scipy.stats")
-    with pytest.raises(ValueError, match="mismas noticias"):
-        model_significance_tests(_per_prediction().iloc[:-1], n_boot=10)
-    with pytest.raises(ValueError, match="dos modelos"):
-        model_significance_tests(_scores_frame({"solo": [0.1, 0.2]}), n_boot=10)
+        metrics_by_topic(frame, references.rename(columns={"tema": "x"}))
 
 
 def _write_evaluated_run(runs_dir: Path, name: str, model_ids: list[str], manifest: dict[str, object]) -> None:
@@ -404,8 +313,11 @@ def test_training_and_evaluation_notebooks_use_one_run_per_variant(name: str) ->
 def test_evaluation_notebook_writes_the_final_results_folder() -> None:
     source = _code("04_evaluar_y_visualizar_modelos.ipynb")
     assert "'05_resultados_finales'" in source
-    for name in ("load_selected_evaluations", "model_significance_tests", "training_history"):
+    for name in ("load_selected_evaluations", "metrics_by_topic", "training_history"):
         assert name in source
+    # Sem1 termina en las métricas de los cuatro modelos: sin pruebas de hipótesis.
+    for removed in ("model_significance_tests", "bootstrap_uncertainty", "with_spanish_meteor", "friedman", "wilcoxon"):
+        assert removed not in source.lower()
     # Los gráficos del conjunto salen una sola vez, en la carpeta final.
     assert "FINAL_FIGURES_DIR / '03_distribucion_longitudes.png'" in source
     assert "FINAL_FIGURES_DIR / filename" in source
