@@ -4,6 +4,11 @@ Este repositorio contiene el flujo local de Seminario 1 para transformar una
 noticia médica en español de Latinoamérica en una única **afirmación médica
 central**, declarativa, verificable y autocontenida.
 
+La tesis hasta Seminario 1 termina en dos resultados: las métricas de los
+cuatro modelos de deep learning que extraen la afirmación y la clasificación de
+las noticias por tema. No incluye hipótesis ni pruebas estadísticas entre
+modelos.
+
 No clasifica noticias como verdaderas o falsas. Tampoco recupera evidencia,
 genera consultas, hace ranking ni extrae múltiples afirmaciones. La
 `reference_claim` es una afirmación de referencia anotada para entrenar y
@@ -19,7 +24,7 @@ solo necesita los splits del 02.
 | 01 | `01_auditar_export_labelstudio.ipynb` | export CSV más reciente de Label Studio | auditoría y candidatas aptas |
 | 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 1500: 1200 train, 150 validation, 150 test |
 | 03 | `03_entrenar_modelos.ipynb` | los tres CSV cerrados | checkpoints y predicciones locales de test |
-| 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas de cada variante y resultados finales con pruebas estadísticas |
+| 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas de cada variante y resultados finales de los cuatro modelos |
 | 05 | `05_clasificar_temas.ipynb` | los tres CSV cerrados | clasificador de temas elegido y su evaluación |
 
 Los notebooks 01–02 son los únicos que se necesitan antes de entrenar. Los
@@ -156,15 +161,12 @@ guarda, dentro de su corrida:
 - ROUGE-L precisión, recall y F1,
 - BERTScore precisión, recall y F1,
 - diagnósticos de salidas vacías, muy cortas y repetidas,
-- intervalos de confianza y diferencias pareadas entre modelos,
-- METEOR con stemmer español como análisis de sensibilidad,
 - métricas por tema anotado,
 - curvas de entrenamiento y validación.
 
 La parte B se ejecuta al final, cuando las cuatro variantes están evaluadas. Toma
 cada modelo con la variante elegida por validación y guarda en
-`artifacts/05_resultados_finales/` las tablas y figuras de la tesis, con las pruebas
-de Friedman, Wilcoxon y Holm entre modelos:
+`artifacts/05_resultados_finales/` las tablas y figuras de la tesis:
 
 ```text
 artifacts/05_resultados_finales/claims_1500/
@@ -172,11 +174,9 @@ artifacts/05_resultados_finales/claims_1500/
 │   ├── 01_distribucion_particiones.csv
 │   ├── 02_variantes_elegidas.csv
 │   ├── 03_metricas_finales.csv
-│   ├── 04_friedman.csv
-│   ├── 05_comparaciones_pareadas.csv
-│   ├── 06_metricas_por_tema.csv
-│   ├── 07_diagnosticos_generacion.csv
-│   └── 08_resumen_tokens.csv
+│   ├── 04_metricas_por_tema.csv
+│   ├── 05_diagnosticos_generacion.csv
+│   └── 06_resumen_tokens.csv
 └── figuras/
     ├── 01_comparacion_metricas.png
     ├── 02_curvas_entrenamiento_validacion.png
@@ -185,8 +185,10 @@ artifacts/05_resultados_finales/claims_1500/
     └── 05_tokens_afirmaciones.png
 ```
 
-Las reglas de esas pruebas y la semilla están fijadas en la sección 4.2 de
-[`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md).
+La elección de variantes y la semilla están fijadas en la sección 4.2 de
+[`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md). Las diferencias
+entre modelos se describen con las medias; no se someten a pruebas de
+significancia.
 
 Estos puntajes miden similitud entre una predicción y la afirmación de
 referencia. No prueban exactitud clínica ni veracidad de la noticia. Los

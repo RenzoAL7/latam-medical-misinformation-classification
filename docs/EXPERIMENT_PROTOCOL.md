@@ -6,6 +6,17 @@ Esta rama evalúa únicamente extracción y normalización de un claim central
 desde una noticia médica en español. Traducción, generación de consultas,
 recuperación PubMed y ranking se mantienen como fases posteriores.
 
+Desde el 25/11/2026, la tesis hasta Seminario 1 cubre dos resultados y termina
+en ellos:
+
+1. Las métricas de los cuatro modelos de deep learning (sección 3) sobre el
+   test: METEOR, ROUGE-L F1 y BERTScore F1, con sus diagnósticos y su desglose
+   por tema (sección 4).
+2. La clasificación de las noticias por tema (sección 4.1).
+
+No se plantean hipótesis ni se aplican pruebas estadísticas entre modelos
+(sección 5).
+
 La unidad de análisis es una noticia. Cada salida debe ser declarativa,
 verificable y autocontenida. No es un veredicto de verdad, una traducción ni
 una consulta de búsqueda.
@@ -40,7 +51,11 @@ split. En `claims_500`, que no aplicó esta regla, 2 de 50 noticias de test y 2 
 50 de validation superaban ese umbral en su texto frente a train.
 
 La anotación produce un claim central fiel a la fuente, no una opinión del
-anotador, un veredicto, una consulta PubMed ni varios claims. Una noticia sin
+anotador, un veredicto, una consulta PubMed ni varios claims. Los criterios para
+decidir si una noticia es médica, marcar la oración central y sus oraciones de
+contexto, asignar el tema y medir el acuerdo entre anotadores están en
+`docs/GUIA_ANOTACION.md` (desde el 24/11/2026); la interfaz de Label Studio, en
+`configs/labelstudio_proyecto9.xml`. Una noticia sin
 claim médico se clasifica como no apta y se reemplaza antes de cerrar el conjunto de referencia.
 El manifiesto excluye claims de menos de cinco o más de 80 palabras y evita
 record_id, fuentes o targets duplicados entre los splits.
@@ -157,20 +172,15 @@ generados por otro modelo.
 
 Lectura de los resultados:
 
-- **Incertidumbre:** cada media de test se acompaña de un intervalo de confianza
-  del 95 % por bootstrap sobre las noticias. Las diferencias entre modelos se
-  calculan de forma pareada contra el de mayor media; si el intervalo incluye el
-  cero, esos modelos no se distinguen con este test. En `claims_500`, BARTO supera
-  a mBART-50 en 0,006 de METEOR con intervalo de −0,044 a 0,057. Las pruebas entre
-  los cuatro modelos están en la sección 4.2.
-- **Sensibilidad de METEOR:** METEOR se calcula con la configuración por defecto
-  de NLTK, cuyo stemmer y WordNet están en inglés, por lo que no reconoce sinónimos
-  ni todas las flexiones del español. `meteor_stem_es` repite el cálculo con
-  stemmer español como análisis de sensibilidad y no reemplaza a la métrica
-  principal.
+- **Medias:** cada métrica se reporta como la media de cada modelo sobre las
+  noticias de test. Las diferencias entre modelos se describen; no se someten a
+  pruebas de significancia.
+- **METEOR:** se calcula con la configuración por defecto de NLTK, cuyo stemmer y
+  WordNet están en inglés, por lo que no reconoce sinónimos ni todas las
+  flexiones del español. Se declara como limitación.
 - **Por tema:** METEOR, ROUGE-L y BERTScore se desglosan por el `tema` anotado, con
-  el número de noticias de cada grupo. Con grupos pequeños los intervalos son
-  amplios.
+  el número de noticias de cada grupo. Con grupos pequeños la media es poco
+  estable.
 
 ## 4.1 Clasificación de temas
 
@@ -189,68 +199,31 @@ y validation, y test se evalúa una sola vez con ella. Esta validación cruzada 
 a los trabajos de clasificación de noticias #102, #103 y #104. El clasificador no
 evalúa la veracidad de la noticia ni participa en la extracción de claims.
 
-## 4.2 Análisis estadístico (fijado el 10/11/2026)
+## 4.2 Comparación final de los modelos (fijada el 10/11/2026)
 
 Estas reglas se fijan antes de crear `claims_1500`, para que no dependan de sus
 resultados. Todo cambio posterior se anota en el registro del final de esta
 sección; si ocurre después de ver test, se reporta como exploratorio.
 
-**Comparación.** Se comparan los cuatro modelos, cada uno con la variante elegida
-por pérdida de validación. La unidad de análisis es la noticia: los cuatro se
-evalúan sobre las mismas 150 noticias de test, así que cada comparación es pareada.
-METEOR es la métrica principal. ROUGE-L, BERTScore y `meteor_stem_es` se reportan
-como complementarias. Las tablas y figuras de esta comparación se guardan en
-`artifacts/05_resultados_finales/<conjunto>/`.
+**Comparación.** Se reportan los cuatro modelos, cada uno con la variante elegida
+por pérdida de validación, evaluados sobre las mismas 150 noticias de test.
+METEOR es la métrica principal; ROUGE-L y BERTScore se reportan como
+complementarias. Las tablas y figuras se guardan en
+`artifacts/05_resultados_finales/<conjunto>/`. Estos resultados comparan similitud
+con la referencia; no prueban exactitud clínica ni veracidad.
 
 **Semilla.** Todas las variantes y modelos usan una sola semilla, 20261103.
-
-- Repetir el entrenamiento con otras semillas mediría cuánto cambia el resultado al
-  reentrenar, algo que el bootstrap sobre test no captura. Se descarta por costo:
-  dos semillas más sumarían 8 entrenamientos a los 16 de las variantes, unas 32
-  horas estimadas en el equipo local.
-- Ese costo no cambiaría la lectura. En `claims_500` las diferencias grandes entre
-  modelos llegan a 0,17 de METEOR, y una semilla no las invertiría. La diferencia
-  entre BARTO y mBART-50 (0,006) está muy por debajo de la mínima que se puede
-  detectar con 150 noticias, cerca de 0,05, así que seguiría sin distinguirse.
-- La semilla única se declara como limitación. Si al final queda tiempo, se puede
-  repetir la configuración final de los cuatro modelos con 20261104 y 20261105 como
-  análisis de robustez, reportado aparte y sin cambiar las conclusiones principales.
-
-Antecedentes en Drive: #66 reporta media y desviación con 10 semillas, #43 y #51
-repiten con varias semillas, y #69 usa una sola semilla y lo declara como limitación.
-
-**Pruebas.** Se aplican con un nivel de significancia de 0,05:
-
-1. Friedman compara los cuatro modelos a la vez.
-2. Wilcoxon de rangos con signo, bilateral, compara cada uno de los seis pares.
-3. Holm corrige los seis p-valores, por separado en cada métrica.
-4. Cada par reporta su diferencia media, un intervalo del 95 % por bootstrap pareado
-   sobre las noticias (10 000 réplicas), el efecto rango-biserial y cuántas noticias
-   gana cada modelo.
-
-No se usa una prueba t porque no se asume normalidad de las diferencias, ni McNemar
-porque METEOR es continuo. Antecedentes en Drive: #87 usa bootstrap pareado por
-artículo en extracción de claims de noticias, #51 usa Wilcoxon por ítem, Friedman y
-bootstrap de 10 000 réplicas, #66 compara modelos con Wilcoxon y #82 corrige con
-Holm-Bonferroni. Una búsqueda por texto no encontró estas pruebas en los trabajos de
-normalización o extracción generativa de claims #49, #80, #81, #84, #88, #89, #93 y
-#95 a #100, así que no hay un antecedente directo para modelos seq2seq.
-
-**Qué se puede afirmar.** Estos resultados comparan similitud con la referencia; no
-prueban exactitud clínica ni veracidad.
-
-| Resultado | Frase permitida |
-| --- | --- |
-| Friedman con p ≥ 0,05 | «Con este test no se detectan diferencias entre los modelos.» |
-| Friedman con p < 0,05 y par con p de Holm < 0,05 | «A supera a B», con diferencia, intervalo, p ajustado y efecto. |
-| Par con p de Holm ≥ 0,05 | «A y B no se distinguen con este test.» No se escribe que sean iguales o equivalentes. |
-| La media y los rangos apuntan en sentidos opuestos | No se concluye y se explica la discrepancia. |
+Repetir el entrenamiento con otras semillas mediría cuánto cambia el resultado al
+reentrenar, pero dos semillas más sumarían 8 entrenamientos a los 16 de las
+variantes, unas 32 horas estimadas en el equipo local. La semilla única se declara
+como limitación. Antecedentes en Drive: #66 reporta media y desviación con 10
+semillas, #43 y #51 repiten con varias semillas, y #69 usa una sola semilla y lo
+declara como limitación.
 
 **Reglas.**
 
 - Test no interviene en la elección de variante de `claims_1500`.
-- El nivel de significancia, la semilla y las comparaciones no cambian después de
-  mirar test.
+- La semilla y la regla de elección de variantes no cambian después de mirar test.
 - Una corrida que falla por un error técnico se repite con la misma semilla. Una
   corrida no se repite por tener un mal resultado.
 - El test de `claims_500` ya se vio. Sus análisis son un piloto y no se mezclan con
@@ -262,13 +235,18 @@ prueban exactitud clínica ni veracidad.
 | --- | --- | --- | --- |
 | 10/11/2026 | Se adoptan esta sección, las semillas y la validación cruzada en temas | Medir la estabilidad del entrenamiento y comparar los modelos con pruebas pareadas | Antes de crear `claims_1500`. El test de `claims_500` ya se había visto |
 | 10/11/2026 | Se usa una sola semilla en lugar de tres, y los resultados finales se guardan en `artifacts/05_resultados_finales/` | Las repeticiones costarían unas 32 horas y no cambiarían la lectura de las comparaciones | Antes de crear `claims_1500` |
+| 25/11/2026 | Se retiran las hipótesis y pruebas estadísticas (Friedman, Wilcoxon, Holm), los intervalos bootstrap, las diferencias pareadas y METEOR con stemmer español | La tesis hasta Seminario 1 termina en las métricas de los cuatro modelos y en la clasificación de temas | Antes de los resultados finales de `claims_1500` |
 
 ## 5. Fuera del alcance de Sem1
 
-La revisión humana ciega, los baselines de título/primera oración, las
+La tesis hasta Seminario 1 termina en las métricas de los cuatro modelos y en la
+clasificación de temas. Quedan fuera las hipótesis y pruebas estadísticas entre
+modelos (Friedman, Wilcoxon, Holm), los intervalos de confianza por bootstrap,
+los análisis de sensibilidad de métricas y de robustez con otras semillas.
+También la revisión humana ciega, los baselines de título/primera oración, las
 ablations de entrada, la extracción multi-claim, la traducción, generación de
-consultas, recuperación PubMed y ranking se reservan para una fase posterior.
-No se reportan como resultados de esta entrega.
+consultas, recuperación PubMed y ranking. No se reportan como resultados de esta
+entrega.
 
 ## 6. Regla de reproducibilidad
 
