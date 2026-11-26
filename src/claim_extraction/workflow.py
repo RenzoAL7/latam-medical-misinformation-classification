@@ -184,6 +184,25 @@ def available_device() -> str:
     return "cpu"
 
 
+def release_accelerator_memory() -> None:
+    """Libera la memoria del acelerador entre modelos entrenados en una misma sesión.
+
+    El notebook 03 entrena dieciséis modelos seguidos en un solo kernel; sin esto,
+    la caché de MPS o CUDA de un modelo grande puede dejar sin memoria al siguiente.
+    """
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
 def validate_sem1_splits(
     paths: Mapping[str, str | Path],
     *,

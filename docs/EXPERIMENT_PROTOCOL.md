@@ -54,14 +54,15 @@ La anotación produce un claim central fiel a la fuente, no una opinión del
 anotador, un veredicto, una consulta PubMed ni varios claims. Los criterios para
 decidir si una noticia es médica, marcar la oración central y sus oraciones de
 contexto, asignar el tema y medir el acuerdo entre anotadores están en
-`docs/GUIA_ANOTACION.md` (desde el 24/11/2026); la interfaz de Label Studio, en
+`docs/GUIA_ANOTACION.md` (v1 desde el 24/11/2026; v1.1, que quita las reglas sin
+respaldo en los papers, desde el 26/11/2026); la interfaz de Label Studio, en
 `configs/labelstudio_proyecto9.xml`. Una noticia sin
 claim médico se clasifica como no apta y se reemplaza antes de cerrar el conjunto de referencia.
 El manifiesto excluye claims de menos de cinco o más de 80 palabras y evita
 record_id, fuentes o targets duplicados entre los splits.
 Los cuatro modelos reciben el mismo `source_text`, construido con título y
-cuerpo; la bajada se conserva como contexto de anotación, no como entrada del
-modelo. Por ello el claim anotado debe quedar respaldado por ese texto de
+cuerpo; la bajada no es entrada del modelo y, desde la guía v1.1, tampoco se muestra
+al anotar. Por ello el claim anotado debe quedar respaldado por ese texto de
 entrada.
 
 Sem1 no incluye revisión humana adicional, baselines extractivos ni ablations

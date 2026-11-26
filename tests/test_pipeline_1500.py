@@ -305,9 +305,24 @@ def _code(name: str) -> str:
 @pytest.mark.parametrize("name", ["03_entrenar_modelos.ipynb", "04_evaluar_y_visualizar_modelos.ipynb"])
 def test_training_and_evaluation_notebooks_use_one_run_per_variant(name: str) -> None:
     source = _code(name)
-    assert "run_name_for(DATASET_NAME, VARIANT)" in source
+    assert "run_name_for(DATASET_NAME, variant)" in source
     assert "BASE_SEED" in source
     assert "_seed" not in source
+    # Run All recorre las cuatro variantes; ya no hay que cambiar VARIANT a mano.
+    assert "VARIANT =" not in source
+
+
+def test_training_notebook_runs_every_variant_and_survives_a_failed_model() -> None:
+    source = _code("03_entrenar_modelos.ipynb")
+    assert "VARIANTS_TO_RUN = list(EXPERIMENT_VARIANTS)" in source
+    assert "release_accelerator_memory()" in source
+    assert "except Exception as exc:" in source and "failures.append(" in source
+
+
+def test_evaluation_notebook_evaluates_every_ready_variant() -> None:
+    source = _code("04_evaluar_y_visualizar_modelos.ipynb")
+    assert "map(load_run, EXPERIMENT_VARIANTS)" in source
+    assert "for run in READY_RUNS:" in source
 
 
 def test_evaluation_notebook_writes_the_final_results_folder() -> None:
@@ -343,3 +358,25 @@ def test_topic_notebook_passes_near_duplicate_groups_to_cross_validation() -> No
     assert "near_duplicate_groups(" in source
     assert "groups=groups" in source
     assert "validation_table" not in source
+
+
+def test_labelstudio_interface_matches_what_notebook_01_reads() -> None:
+    import xml.etree.ElementTree as ET
+
+    from claim_extraction.topics import TOPIC_LABELS
+
+    view = ET.parse(ROOT / "configs" / "labelstudio_proyecto9.xml").getroot()
+    controls = {element.get("name"): element for element in view.iter() if element.get("name")}
+    # El notebook 01 exige estas columnas en el export; las crean estos campos.
+    for name in ("news_eligibility", "tema", "reference_claim"):
+        assert name in controls
+    assert [choice.get("value") for choice in controls["news_eligibility"]] == [
+        "APTA_CON_CLAIM", "SIN_CLAIM_MEDICO", "NO_UTILIZABLE_POR_RUIDO",
+    ]
+    assert tuple(choice.get("value") for choice in controls["tema"]) == TOPIC_LABELS
+    # El cuerpo debe seguir leyendo la columna body de las tareas.
+    texts = {element.get("value") for element in view.iter("Text")}
+    assert {"$title", "$body"} <= texts
+    # v1.1: sin el motivo SOLO_ADMINISTRATIVA ni la bajada.
+    assert "SOLO_ADMINISTRATIVA" not in {choice.get("value") for choice in controls["motivo_sin_claim"]}
+    assert "$subtitle_or_bajada" not in texts
