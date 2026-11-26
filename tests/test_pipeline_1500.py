@@ -305,9 +305,24 @@ def _code(name: str) -> str:
 @pytest.mark.parametrize("name", ["03_entrenar_modelos.ipynb", "04_evaluar_y_visualizar_modelos.ipynb"])
 def test_training_and_evaluation_notebooks_use_one_run_per_variant(name: str) -> None:
     source = _code(name)
-    assert "run_name_for(DATASET_NAME, VARIANT)" in source
+    assert "run_name_for(DATASET_NAME, variant)" in source
     assert "BASE_SEED" in source
     assert "_seed" not in source
+    # Run All recorre las cuatro variantes; ya no hay que cambiar VARIANT a mano.
+    assert "VARIANT =" not in source
+
+
+def test_training_notebook_runs_every_variant_and_survives_a_failed_model() -> None:
+    source = _code("03_entrenar_modelos.ipynb")
+    assert "VARIANTS_TO_RUN = list(EXPERIMENT_VARIANTS)" in source
+    assert "release_accelerator_memory()" in source
+    assert "except Exception as exc:" in source and "failures.append(" in source
+
+
+def test_evaluation_notebook_evaluates_every_ready_variant() -> None:
+    source = _code("04_evaluar_y_visualizar_modelos.ipynb")
+    assert "map(load_run, EXPERIMENT_VARIANTS)" in source
+    assert "for run in READY_RUNS:" in source
 
 
 def test_evaluation_notebook_writes_the_final_results_folder() -> None:
@@ -343,3 +358,4 @@ def test_topic_notebook_passes_near_duplicate_groups_to_cross_validation() -> No
     assert "near_duplicate_groups(" in source
     assert "groups=groups" in source
     assert "validation_table" not in source
+

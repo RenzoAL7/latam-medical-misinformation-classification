@@ -154,8 +154,17 @@ misma semilla, y el notebook se detiene si se intenta reanudar una corrida hecha
 otros datos. De cada modelo se conserva solo el mejor checkpoint y su historial de
 pérdidas.
 
-El notebook 04 tiene dos partes. La parte A se ejecuta una vez por variante y
-guarda, dentro de su corrida:
+Con *Run All*, el notebook 03 entrena las cuatro variantes de los cuatro modelos
+en un solo kernel y libera la memoria del acelerador entre un modelo y otro. Si
+un modelo falla, por ejemplo por falta de memoria, el error queda en el
+`run_status.json` de su variante, el notebook sigue con los demás y la última
+celda lista los fallos. Al volver a ejecutarlo con `RESUME = True` se reutiliza
+lo terminado y solo se reintenta lo que falta. `VARIANTS_TO_RUN` y
+`MODELS_TO_RUN` permiten limitar la ejecución.
+
+El notebook 04 también se ejecuta completo con *Run All* y tiene dos partes. La
+parte A recorre las variantes que ya tienen predicciones completas y guarda,
+dentro de la corrida de cada una:
 
 - METEOR (métrica principal),
 - ROUGE-L precisión, recall y F1,
@@ -164,8 +173,8 @@ guarda, dentro de su corrida:
 - métricas por tema anotado,
 - curvas de entrenamiento y validación.
 
-La parte B se ejecuta al final, cuando las cuatro variantes están evaluadas. Toma
-cada modelo con la variante elegida por validación y guarda en
+La parte B corre sola cuando las cuatro variantes están evaluadas; si falta alguna,
+se detiene e indica cuál. Toma cada modelo con la variante elegida por validación y guarda en
 `artifacts/05_resultados_finales/` las tablas y figuras de la tesis:
 
 ```text
