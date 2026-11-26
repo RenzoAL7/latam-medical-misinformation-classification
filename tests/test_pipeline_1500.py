@@ -359,3 +359,24 @@ def test_topic_notebook_passes_near_duplicate_groups_to_cross_validation() -> No
     assert "groups=groups" in source
     assert "validation_table" not in source
 
+
+def test_labelstudio_interface_matches_what_notebook_01_reads() -> None:
+    import xml.etree.ElementTree as ET
+
+    from claim_extraction.topics import TOPIC_LABELS
+
+    view = ET.parse(ROOT / "configs" / "labelstudio_proyecto9.xml").getroot()
+    controls = {element.get("name"): element for element in view.iter() if element.get("name")}
+    # El notebook 01 exige estas columnas en el export; las crean estos campos.
+    for name in ("news_eligibility", "tema", "reference_claim"):
+        assert name in controls
+    assert [choice.get("value") for choice in controls["news_eligibility"]] == [
+        "APTA_CON_CLAIM", "SIN_CLAIM_MEDICO", "NO_UTILIZABLE_POR_RUIDO",
+    ]
+    assert tuple(choice.get("value") for choice in controls["tema"]) == TOPIC_LABELS
+    # El cuerpo debe seguir leyendo la columna body de las tareas.
+    texts = {element.get("value") for element in view.iter("Text")}
+    assert {"$title", "$body"} <= texts
+    # v1.1: sin el motivo SOLO_ADMINISTRATIVA ni la bajada.
+    assert "SOLO_ADMINISTRATIVA" not in {choice.get("value") for choice in controls["motivo_sin_claim"]}
+    assert "$subtitle_or_bajada" not in texts

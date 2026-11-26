@@ -1,24 +1,54 @@
 <!--
-  Interfaz de anotación del proyecto 9 de Label Studio (guía v1, 24/11/2026).
+  Interfaz de anotación del proyecto 9 de Label Studio (guía v1.1, 26/11/2026).
+  Cambio frente a v1 (24/11/2026): se quitaron las reglas sin sustento en los papers
+  de Drive. Se eliminó SOLO_ADMINISTRATIVA (se fusiona con NO_ES_SALUD), la bajada
+  con su regla y la regla "tema según el resultado de salud". El campo tema se
+  conserva porque lo exige el notebook 01 y lo pidió la asesora (Acta N.° 1).
+  Título y cuerpo usan granularity="sentence": CENTRAL y CONTEXTO se marcan como
+  spans de oraciones completas (#84). Aplicada en el proyecto 9 el 26/11/2026.
   Reglas: docs/GUIA_ANOTACION.md.
 
   Los nombres news_eligibility, tema y reference_claim son las columnas que lee el
   notebook 01; no los cambies. news_eligibility conserva los tres valores que el
   proyecto ya usaba el 24/11/2026. Antes de reemplazar la configuración, copia la
   actual (Settings > Labeling Interface > Code) como respaldo.
-  Las variables $title, $subtitle_or_bajada y $body son columnas de las tareas que
-  importa oci_pipeline/labelstudio_batch_importer.
+  Las variables $record_id, $source_name, $country, $published_at, $title y $body
+  son columnas de las tareas que importa oci_pipeline/labelstudio_batch_importer.
+  El cuerpo se llama article_body y claim_evidence y news_utility quedan ocultos
+  porque, al aplicar esta versión, Label Studio no la aceptaba mientras existieran
+  anotaciones que los usaban. Esas anotaciones se borraron el 26/11/2026, así que ya
+  se podrían simplificar; el export sigue trayendo la columna body.
+
+  Sustento de cada parte (número = paper de la carpeta "Articulos de escopus"):
+  - Pregunta 1 y RELACION: #90 (health claim = lo manipulado, lo medido y su relación)
+  - Pregunta 2, CIFRA_O_HECHO: #66 (oración factual y relevante)
+  - Pregunta 3: #82 (hecho verificable con evidencia), #92 (claim frente a experiencia y pregunta)
+  - CENTRAL: #84 (los claims salen de oraciones centrales)
+  - CONTEXTO y claim autocontenido: #84 y #82 (descontextualización)
+  - Claim respaldado por la noticia: #82 (entailment)
+  - Un solo claim central: #95 (claim normalizado)
+  - NO_UTILIZABLE_POR_RUIDO: #87 (excluyó artículos sin claims identificables), #66 (Not Applicable)
+  - DUDOSA: #82 ("Cannot be disambiguated") y #82/#87 (desacuerdos resueltos conversando)
+  - Tema con taxonomía fija: #101. Las 7 categorías son una adaptación propia; declararla.
 -->
 <View>
   <Style>
+    .meta { font-size: 12px; color: #555; }
     .guia { font-size: 13px; background: #f5f5f5; padding: 8px 12px; border-radius: 4px; }
   </Style>
 
   <View className="guia">
     <Header value="¿Es médica? Las tres deben cumplirse" size="5"/>
-    <Header value="1. Habla de un resultado de salud (enfermedad, síntoma, riesgo, muerte, salud mental, nutrición, acceso a atención)." size="6"/>
-    <Header value="2. Afirma una RELACION (algo se asocia con ese resultado) o una CIFRA_O_HECHO comprobable." size="6"/>
-    <Header value="3. Se puede comprobar: no es opinión, consejo general, pregunta ni testimonio." size="6"/>
+    <Header value="1. Habla de un resultado de salud, es decir, de lo que se mide: enfermedad, síntoma, riesgo o muerte." size="6"/>
+    <Header value="2. Afirma una RELACION (algo se asocia con ese resultado) o una CIFRA_O_HECHO: una oración factual y relevante sobre él." size="6"/>
+    <Header value="3. Se puede comprobar con evidencia: no es opinión, consejo, pregunta ni experiencia personal." size="6"/>
+  </View>
+
+  <View className="meta">
+    <Text name="record_id" value="ID: $record_id"/>
+    <Text name="source_name" value="Fuente: $source_name"/>
+    <Text name="country" value="País: $country"/>
+    <Text name="published_at" value="Publicado: $published_at"/>
   </View>
 
   <Header value="Marca exactamente una oración CENTRAL (título o cuerpo) y las de CONTEXTO que uses"/>
@@ -27,22 +57,19 @@
     <Label value="CONTEXTO" background="#F9A825"/>
   </Labels>
   <Header value="Título" size="6"/>
-  <Text name="title" value="$title" granularity="word"/>
+  <Text name="title" value="$title" granularity="sentence"/>
 
-  <Header value="Bajada (solo para entender; no es fuente de la claim)" size="6"/>
-  <Text name="bajada" value="$subtitle_or_bajada"/>
-
-  <Labels name="evidencia_cuerpo" toName="body">
+  <Labels name="evidencia_cuerpo" toName="article_body">
     <Label value="CENTRAL" background="#2E7D32"/>
     <Label value="CONTEXTO" background="#F9A825"/>
   </Labels>
   <Header value="Cuerpo" size="6"/>
-  <Text name="body" value="$body" granularity="word"/>
+  <Text name="article_body" value="$body" granularity="sentence"/>
 
   <Header value="Elegibilidad"/>
   <!-- Los tres valores ya existen en el proyecto 9; no se renombran para no dejar
        huérfanas las anotaciones previas. -->
-  <Choices name="news_eligibility" toName="body" choice="single-radio" required="true">
+  <Choices name="news_eligibility" toName="article_body" choice="single-radio" required="true">
     <Choice value="APTA_CON_CLAIM"/>
     <Choice value="SIN_CLAIM_MEDICO"/>
     <Choice value="NO_UTILIZABLE_POR_RUIDO"/>
@@ -50,22 +77,21 @@
 
   <View visibleWhen="choice-selected" whenTagName="news_eligibility" whenChoiceValue="SIN_CLAIM_MEDICO">
     <Header value="¿Qué pregunta de la prueba falló?" size="6"/>
-    <Choices name="motivo_sin_claim" toName="body" choice="single-radio" required="true">
+    <Choices name="motivo_sin_claim" toName="article_body" choice="single-radio" required="true">
       <Choice value="NO_ES_SALUD"/>
       <Choice value="SIN_AFIRMACION_VERIFICABLE"/>
-      <Choice value="SOLO_ADMINISTRATIVA"/>
     </Choices>
   </View>
 
   <View visibleWhen="choice-selected" whenTagName="news_eligibility" whenChoiceValue="APTA_CON_CLAIM">
     <Header value="Tipo de claim" size="6"/>
-    <Choices name="tipo_claim" toName="body" choice="single-radio" required="true" showInline="true">
+    <Choices name="tipo_claim" toName="article_body" choice="single-radio" required="true" showInline="true">
       <Choice value="RELACION"/>
       <Choice value="CIFRA_O_HECHO"/>
     </Choices>
 
-    <Header value="Tema (según el resultado de salud del claim central)" size="6"/>
-    <Choices name="tema" toName="body" choice="single-radio" required="true">
+    <Header value="Tema" size="6"/>
+    <Choices name="tema" toName="article_body" choice="single-radio" required="true">
       <Choice value="Cáncer"/>
       <Choice value="Cardiometabólicas"/>
       <Choice value="Nutrición y suplementos"/>
@@ -75,13 +101,25 @@
       <Choice value="Otra"/>
     </Choices>
 
-    <Header value="Afirmación central: una oración, autocontenida, fiel al título y cuerpo" size="6"/>
-    <TextArea name="reference_claim" toName="body" maxSubmissions="1"
+    <Header value="Afirmación central: una oración autocontenida y respaldada por el título y el cuerpo" size="6"/>
+    <TextArea name="reference_claim" toName="article_body" maxSubmissions="1"
               editable="true" required="true"
-              placeholder="Conserva cifras, población, negaciones y la fuerza original (asocia ≠ causa)."/>
+              placeholder="Todo lo que escribas debe estar en la noticia; no agregues ni cambies datos."/>
   </View>
 
-  <Choices name="revisar_en_pareja" toName="body" choice="multiple">
+  <!-- Compatibilidad con anotaciones heredadas; no se muestran. -->
+  <View style="display:none">
+    <Labels name="claim_evidence" toName="article_body" choice="single" showInline="true" maxUsages="1">
+      <Label value="SPAN_CLAIM_CENTRAL" background="#3578c6"/>
+    </Labels>
+    <Choices name="news_utility" toName="article_body" choice="single-radio">
+      <Choice value="APTA"/>
+      <Choice value="REVISAR"/>
+      <Choice value="NO_UTILIZABLE"/>
+    </Choices>
+  </View>
+
+  <Choices name="revisar_en_pareja" toName="article_body" choice="multiple">
     <Choice value="DUDOSA"/>
   </Choices>
 </View>
