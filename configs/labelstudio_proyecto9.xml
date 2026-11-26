@@ -1,0 +1,87 @@
+<!--
+  Interfaz de anotación del proyecto 9 de Label Studio (guía v1, 24/11/2026).
+  Reglas: docs/GUIA_ANOTACION.md.
+
+  Los nombres news_eligibility, tema y reference_claim son las columnas que lee el
+  notebook 01; no los cambies. news_eligibility conserva los tres valores que el
+  proyecto ya usaba el 24/11/2026. Antes de reemplazar la configuración, copia la
+  actual (Settings > Labeling Interface > Code) como respaldo.
+  Las variables $title, $subtitle_or_bajada y $body son columnas de las tareas que
+  importa oci_pipeline/labelstudio_batch_importer.
+-->
+<View>
+  <Style>
+    .guia { font-size: 13px; background: #f5f5f5; padding: 8px 12px; border-radius: 4px; }
+  </Style>
+
+  <View className="guia">
+    <Header value="¿Es médica? Las tres deben cumplirse" size="5"/>
+    <Header value="1. Habla de un resultado de salud (enfermedad, síntoma, riesgo, muerte, salud mental, nutrición, acceso a atención)." size="6"/>
+    <Header value="2. Afirma una RELACION (algo se asocia con ese resultado) o una CIFRA_O_HECHO comprobable." size="6"/>
+    <Header value="3. Se puede comprobar: no es opinión, consejo general, pregunta ni testimonio." size="6"/>
+  </View>
+
+  <Header value="Marca exactamente una oración CENTRAL (título o cuerpo) y las de CONTEXTO que uses"/>
+  <Labels name="evidencia_titulo" toName="title">
+    <Label value="CENTRAL" background="#2E7D32"/>
+    <Label value="CONTEXTO" background="#F9A825"/>
+  </Labels>
+  <Header value="Título" size="6"/>
+  <Text name="title" value="$title" granularity="word"/>
+
+  <Header value="Bajada (solo para entender; no es fuente de la claim)" size="6"/>
+  <Text name="bajada" value="$subtitle_or_bajada"/>
+
+  <Labels name="evidencia_cuerpo" toName="body">
+    <Label value="CENTRAL" background="#2E7D32"/>
+    <Label value="CONTEXTO" background="#F9A825"/>
+  </Labels>
+  <Header value="Cuerpo" size="6"/>
+  <Text name="body" value="$body" granularity="word"/>
+
+  <Header value="Elegibilidad"/>
+  <!-- Los tres valores ya existen en el proyecto 9; no se renombran para no dejar
+       huérfanas las anotaciones previas. -->
+  <Choices name="news_eligibility" toName="body" choice="single-radio" required="true">
+    <Choice value="APTA_CON_CLAIM"/>
+    <Choice value="SIN_CLAIM_MEDICO"/>
+    <Choice value="NO_UTILIZABLE_POR_RUIDO"/>
+  </Choices>
+
+  <View visibleWhen="choice-selected" whenTagName="news_eligibility" whenChoiceValue="SIN_CLAIM_MEDICO">
+    <Header value="¿Qué pregunta de la prueba falló?" size="6"/>
+    <Choices name="motivo_sin_claim" toName="body" choice="single-radio" required="true">
+      <Choice value="NO_ES_SALUD"/>
+      <Choice value="SIN_AFIRMACION_VERIFICABLE"/>
+      <Choice value="SOLO_ADMINISTRATIVA"/>
+    </Choices>
+  </View>
+
+  <View visibleWhen="choice-selected" whenTagName="news_eligibility" whenChoiceValue="APTA_CON_CLAIM">
+    <Header value="Tipo de claim" size="6"/>
+    <Choices name="tipo_claim" toName="body" choice="single-radio" required="true" showInline="true">
+      <Choice value="RELACION"/>
+      <Choice value="CIFRA_O_HECHO"/>
+    </Choices>
+
+    <Header value="Tema (según el resultado de salud del claim central)" size="6"/>
+    <Choices name="tema" toName="body" choice="single-radio" required="true">
+      <Choice value="Cáncer"/>
+      <Choice value="Cardiometabólicas"/>
+      <Choice value="Nutrición y suplementos"/>
+      <Choice value="Salud mental y neurología"/>
+      <Choice value="Infecciosas e inmunidad"/>
+      <Choice value="Sistema de salud y políticas"/>
+      <Choice value="Otra"/>
+    </Choices>
+
+    <Header value="Afirmación central: una oración, autocontenida, fiel al título y cuerpo" size="6"/>
+    <TextArea name="reference_claim" toName="body" maxSubmissions="1"
+              editable="true" required="true"
+              placeholder="Conserva cifras, población, negaciones y la fuerza original (asocia ≠ causa)."/>
+  </View>
+
+  <Choices name="revisar_en_pareja" toName="body" choice="multiple">
+    <Choice value="DUDOSA"/>
+  </Choices>
+</View>

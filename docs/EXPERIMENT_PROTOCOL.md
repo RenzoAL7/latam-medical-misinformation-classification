@@ -40,7 +40,11 @@ split. En `claims_500`, que no aplicó esta regla, 2 de 50 noticias de test y 2 
 50 de validation superaban ese umbral en su texto frente a train.
 
 La anotación produce un claim central fiel a la fuente, no una opinión del
-anotador, un veredicto, una consulta PubMed ni varios claims. Una noticia sin
+anotador, un veredicto, una consulta PubMed ni varios claims. Los criterios para
+decidir si una noticia es médica, marcar la oración central y sus oraciones de
+contexto, asignar el tema y medir el acuerdo entre anotadores están en
+`docs/GUIA_ANOTACION.md` (desde el 24/11/2026); la interfaz de Label Studio, en
+`configs/labelstudio_proyecto9.xml`. Una noticia sin
 claim médico se clasifica como no apta y se reemplaza antes de cerrar el conjunto de referencia.
 El manifiesto excluye claims de menos de cinco o más de 80 palabras y evita
 record_id, fuentes o targets duplicados entre los splits.
