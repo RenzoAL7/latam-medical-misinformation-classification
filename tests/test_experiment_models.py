@@ -11,7 +11,7 @@ from claim_extraction.metrics import operational_diagnostics, reference_metrics
 from claim_extraction.models import configure_model, configure_tokenizer
 from claim_extraction.registry import load_registry
 from claim_extraction.text import input_for_model
-from claim_extraction.workflow import _make_training_progress_callback
+from claim_extraction.workflow import _make_training_progress_callback, _training_arguments
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,3 +133,20 @@ def test_sem1_uses_a_common_optimization_and_generation_budget() -> None:
     for spec in registry.values():
         assert {key: spec.training[key] for key in training_keys} == expected_training
         assert {key: spec.generation[key] for key in generation_keys} == expected_generation
+
+
+def test_bf16_and_microbatch_keep_the_effective_batch() -> None:
+    """bf16 solo se pide cuando se activa; el microbatch no cambia el batch efectivo."""
+    spec = load_registry()["t5s_spanish"]
+
+    def capture(**values):
+        return SimpleNamespace(**values)
+
+    common = dict(spec=spec, output_dir=Path("salida"), seed=1, epochs=None, learning_rate=None, use_cpu=False)
+    plain = _training_arguments(capture, batch_size=1, **common)
+    fast = _training_arguments(capture, batch_size=4, bf16=True, **common)
+    effective = int(spec.training["effective_batch_size"])
+    assert not hasattr(plain, "bf16")
+    assert fast.bf16 is True
+    assert plain.per_device_train_batch_size * plain.gradient_accumulation_steps == effective
+    assert fast.per_device_train_batch_size * fast.gradient_accumulation_steps == effective

@@ -293,8 +293,8 @@ def test_downstream_notebooks_take_sizes_from_the_dataset_name(name: str) -> Non
     source = "\n".join("".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code")
     assert "DATASET_SPLIT_SIZES[DATASET_NAME]" in source
     assert "validate_sem1_splits(SPLIT_PATHS)" not in source
-    assert "DATASET_NAME = 'claims_1500'" in source
-    assert set(DATASET_SPLIT_SIZES) >= {"claims_500", "claims_1500"}
+    assert "DATASET_NAME = 'claims_1271'" in source
+    assert set(DATASET_SPLIT_SIZES) >= {"claims_500", "claims_1500", "claims_1271"}
 
 
 def _code(name: str) -> str:
