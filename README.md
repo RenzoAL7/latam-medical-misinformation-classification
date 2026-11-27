@@ -6,8 +6,10 @@ central**, declarativa, verificable y autocontenida.
 
 La tesis hasta Seminario 1 termina en dos resultados: las métricas de los
 cuatro modelos de deep learning que extraen la afirmación y la clasificación de
-las noticias por tema. No incluye hipótesis ni pruebas estadísticas entre
-modelos.
+las noticias por tema. No plantea hipótesis de investigación. Desde el
+27/11/2026 incluye, como análisis exploratorio, dos líneas base sin
+entrenamiento y una prueba de Wilcoxon con corrección de Holm sobre METEOR
+(sección 4.2 del protocolo).
 
 No clasifica noticias como verdaderas o falsas. Tampoco recupera evidencia,
 genera consultas, hace ranking ni extrae múltiples afirmaciones. La
@@ -22,7 +24,7 @@ solo necesita los splits del 02.
 | Paso | Notebook | Entrada | Salida local |
 | --- | --- | --- | --- |
 | 01 | `01_auditar_export_labelstudio.ipynb` | export CSV más reciente de Label Studio | auditoría y candidatas aptas |
-| 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 1500: 1200 train, 150 validation, 150 test |
+| 02 | `02_construir_splits_train_val_test.ipynb` | candidatas auditadas | conjunto cerrado de 1271: 1017 train, 127 validation, 127 test |
 | 03 | `03_entrenar_modelos.ipynb` | los tres CSV cerrados | checkpoints y predicciones locales de test |
 | 04 | `04_evaluar_y_visualizar_modelos.ipynb` | predicciones y `test.csv` | métricas de cada variante y resultados finales de los cuatro modelos |
 | 05 | `05_clasificar_temas.ipynb` | los tres CSV cerrados | clasificador de temas elegido y su evaluación |
@@ -32,26 +34,29 @@ notebooks 03–04 reutilizan funciones comprobables de `src/claim_extraction/`,
 pero la secuencia de trabajo y sus parámetros se ven directamente en cada
 notebook.
 
-## Próxima etapa: 1500 claims y clasificación de temas
+## Conjunto vigente: claims_1271 y clasificación de temas
 
-**Estado:** planificado el 08/11/2026 a partir de las recomendaciones de
-asesoría. Desde el 09/11/2026 los notebooks admiten `claims_1500` y contienen el
-clasificador de temas y la evaluación por tema. El conjunto todavía no existe:
-depende de terminar la anotación.
+**Estado (26/11/2026):** las 3500 tareas del proyecto 9 están anotadas en una
+hoja de cálculo (`src/claim_extraction/anotacion_csv.py` la valida y la convierte
+al formato del export que lee el notebook 01). Resultaron 1295 aptas con claim y
+tema; tras quitar 24 claims repetidos quedan 1271 pares únicos. Como no se
+llegó a las 1500 previstas, el conjunto se cerró con las 1271 en la misma
+proporción 80/10/10 del diseño original. Las 16 combinaciones de modelo y
+variante se entrenaron con este conjunto el 26 y el 27/11/2026 (ver «Variantes de
+entrenamiento»).
 
-El flujo objetivo amplía el conjunto a 1500 noticias aptas y agrega un paso
-secundario para identificar el tema de cada noticia:
+El flujo agrega un paso secundario para identificar el tema de cada noticia:
 
 ```text
 1. Recolección
 2. Anotación: aptitud, tema y claim
-3. Conjunto final: 1200 train / 150 validation / 150 test
+3. Conjunto final: 1017 train / 127 validation / 127 test
    ├── 4A. Clasificación de temas
    └── 4B. Entrenamiento de claims
 5. Evaluación: METEOR global y por tema
 ```
 
-El conjunto nuevo se guardará como `claims_1500`, sin modificar `claims_500`.
+El conjunto se guarda como `claims_1271`. `claims_1500` sigue definido en el código, pero no existe.
 La extracción de claims sigue siendo el aporte principal.
 
 La clasificación de temas asigna una de siete categorías: Cáncer,
@@ -119,12 +124,12 @@ envía a train las noticias casi duplicadas y crea, sin fechas en el nombre, est
 rutas fijas:
 
 ```text
-artifacts/02_conjuntos/claims_1500/
+artifacts/02_conjuntos/claims_1271/
 ├── reference_claims.csv
 ├── train.csv
 ├── validation.csv
 ├── test.csv
-├── manifest_final_1500.csv
+├── manifest_final_1271.csv
 ├── reserve_candidates.csv
 └── split_summary.json
 ```
@@ -178,7 +183,7 @@ se detiene e indica cuál. Toma cada modelo con la variante elegida por validaci
 `artifacts/05_resultados_finales/` las tablas y figuras de la tesis:
 
 ```text
-artifacts/05_resultados_finales/claims_1500/
+artifacts/05_resultados_finales/claims_1271/
 ├── tablas/
 │   ├── 01_distribucion_particiones.csv
 │   ├── 02_variantes_elegidas.csv
@@ -196,8 +201,8 @@ artifacts/05_resultados_finales/claims_1500/
 
 La elección de variantes y la semilla están fijadas en la sección 4.2 de
 [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md). Las diferencias
-entre modelos se describen con las medias; no se someten a pruebas de
-significancia.
+entre modelos se describen con las medias. Solo las siete comparaciones
+exploratorias de esa sección se someten a una prueba de Wilcoxon con Holm.
 
 Estos puntajes miden similitud entre una predicción y la afirmación de
 referencia. No prueban exactitud clínica ni veracidad de la noticia. Los
@@ -219,9 +224,12 @@ en cuatro variantes, definidas en `src/claim_extraction/workflow.py`:
 
 Early Stopping detiene el entrenamiento tras tres épocas sin mejora en la
 pérdida de validación. Para cada modelo se conserva la variante con menor
-pérdida de validación; `test.csv` no interviene en esa elección. Al 09/11/2026
-solo `epocas_5` de `claims_500` (corrida `claims_500_v1`) se ha ejecutado sobre un
-conjunto completo. El detalle está en la sección 3.1 de
+pérdida de validación; `test.csv` no interviene en esa elección. Con
+`claims_1271` se entrenaron las 16 combinaciones: las 12 de ajuste completo el
+26/11/2026 y las 4 de LoRA el 27/11/2026. La validación eligió 20 épocas para T5S
+y uMT5-Base, 5 épocas para BARTO y LoRA para mBART-50. Esas corridas se hicieron
+en otra PC y sus artefactos no se copiaron a `artifacts/03_corridas/` de esta
+copia. El detalle está en la sección 3.1 de
 [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md).
 
 ## Modelos y configuración controlada
@@ -259,7 +267,7 @@ miden similitud entre la predicción y la afirmación de referencia: no prueban
 veracidad médica ni exactitud clínica. Consulta los
 [resultados agregados y sus figuras](docs/results/sem1_20261102_400_claims_controlled_5ep_v2/README.md)
 para el detalle. Esta corrida de 400 no se combina ni se compara directamente
-con la corrida local `claims_500_v1` de 500 claims.
+con el piloto `claims_500_v1` de 500 claims.
 
 ## Estructura del repositorio
 
@@ -272,16 +280,15 @@ src/claim_extraction/    Lógica reusable y comprobable
 tests/                   Pruebas sin corpus ni pesos locales
 artifacts/               Datos, anotaciones, modelos y resultados locales (ignorado)
   01_labelstudio/        Exports CSV de Label Studio y auditoría del notebook 01
-  02_conjuntos/          Conjuntos cerrados: claims_400, claims_500 y claims_1500
+  02_conjuntos/          Conjunto cerrado vigente: claims_1271
   03_corridas/           Modelos, predicciones y evaluación de cada variante
   04_temas/              Comparación y evaluación del clasificador de temas
   05_resultados_finales/ Tablas y figuras de la tesis con la variante elegida
-  archivo/               Material antiguo que el flujo ya no usa
 ```
 
 Los resultados existentes en `docs/results/` son evidencia agregada de
 corridas históricas. La comparación controlada
 `sem1_20261102_400_claims_controlled_5ep_v2` corresponde al conjunto previo de
-400 claims; no se debe mezclar con la corrida local `claims_500_v1` de 500
-claims ni con la futura de 1500, ni usar la corrida preliminar no controlada
+400 claims; no se debe mezclar con el piloto `claims_500_v1` de 500 claims ni
+con la de `claims_1271`, ni usar la corrida preliminar no controlada
 para comparar arquitecturas.

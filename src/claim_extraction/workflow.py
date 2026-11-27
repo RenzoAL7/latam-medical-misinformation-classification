@@ -28,6 +28,8 @@ from .text import input_for_model
 DATASET_SPLIT_SIZES: dict[str, dict[str, int]] = {
     "claims_500": {"train": 400, "validation": 50, "test": 50},
     "claims_1500": {"train": 1200, "validation": 150, "test": 150},
+    # 1271 pares únicos de la hoja anotada del 26/11/2026, en 80/10/10.
+    "claims_1271": {"train": 1017, "validation": 127, "test": 127},
 }
 _UNIQUE_COLUMNS = ("record_id", "source_hash", "claim_hash")
 
@@ -48,6 +50,7 @@ EXPERIMENT_VARIANTS: dict[str, dict[str, Any]] = {
 }
 # Capas de atención con nombres T5/uMT5 (q, k, v, o) y BART/mBART (*_proj).
 LORA_TARGET_MODULES = ["q", "k", "v", "o", "q_proj", "k_proj", "v_proj", "out_proj"]
+GRADIENT_CHECKPOINTING_KWARGS = {"use_reentrant": False}
 # Carpetas ya usadas con claims_500; epocas_5 reutiliza claims_500_v1 porque con
 # paciencia 3 su mejor checkpoint no cambia. Los conjuntos nuevos no reutilizan nada.
 _CLAIMS_500_RUN_NAMES = {
@@ -171,6 +174,15 @@ def load_selected_evaluations(
     return pd.concat(summaries, ignore_index=True), pd.concat(details, ignore_index=True)
 
 
+def bf16_supported() -> bool:
+    """Indica si hay una GPU CUDA con soporte bfloat16 (Ampere o posterior)."""
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+
+
 def available_device() -> str:
     """Devuelve el dispositivo preferido sin requerir Torch al importar el módulo."""
     try:
@@ -262,6 +274,7 @@ def _training_arguments(
     learning_rate: float | None,
     use_cpu: bool,
     gradient_checkpointing: bool = False,
+    bf16: bool = False,
 ) -> Any:
     training = spec.training
     effective_batch = int(training["effective_batch_size"])
@@ -301,6 +314,10 @@ def _training_arguments(
         values["no_cuda"] = True
     if gradient_checkpointing and "gradient_checkpointing" in signature.parameters:
         values["gradient_checkpointing"] = True
+        if "gradient_checkpointing_kwargs" in signature.parameters:
+            values["gradient_checkpointing_kwargs"] = GRADIENT_CHECKPOINTING_KWARGS
+    if bf16:
+        values["bf16"] = True
     return training_arguments_class(**values)
 
 
@@ -400,8 +417,12 @@ def train_seq2seq_model(
     gradient_checkpointing: bool = False,
     early_stopping_patience: int | None = None,
     lora: Mapping[str, Any] | None = None,
+    bf16: bool = False,
 ) -> dict[str, Any]:
-    """Ajusta un modelo y guarda su mejor checkpoint bajo ``output_dir``."""
+    """Ajusta un modelo y guarda su mejor checkpoint bajo ``output_dir``.
+
+    ``bf16`` activa precisión mixta bfloat16; solo se acepta en GPU CUDA que la soporte.
+    """
     if batch_size < 1:
         raise ValueError("batch_size debe ser positivo.")
     if not 1 <= progress_every_percent <= 100:
@@ -430,6 +451,8 @@ def train_seq2seq_model(
             "Faltan dependencias de modelos. Instala: pip install -e '.[analysis,models,dev]'"
         ) from exc
 
+    if bf16 and not bf16_supported():
+        raise RuntimeError("bf16 requiere una GPU CUDA compatible (RTX 30xx o posterior).")
     set_seed(seed)
     cache_kwargs = {"cache_dir": str(cache_dir)} if cache_dir else {}
     checkpoint = str(base_checkpoint or spec.base_checkpoint)
@@ -439,7 +462,7 @@ def train_seq2seq_model(
     if gradient_checkpointing:
         if not hasattr(model, "gradient_checkpointing_enable"):
             raise RuntimeError("El checkpoint no admite gradient checkpointing.")
-        model.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs=GRADIENT_CHECKPOINTING_KWARGS)
         if hasattr(model.config, "use_cache"):
             model.config.use_cache = False
     if lora:
@@ -477,6 +500,7 @@ def train_seq2seq_model(
         learning_rate=learning_rate,
         use_cpu=not has_accelerator,
         gradient_checkpointing=gradient_checkpointing,
+        bf16=bf16,
     )
     trainer_kwargs: dict[str, Any] = {
         "model": model,
@@ -527,6 +551,8 @@ def train_seq2seq_model(
         "seed": seed,
         "device": available_device(),
         "gradient_checkpointing": gradient_checkpointing,
+        "precision": "bf16" if bf16 else "fp32",
+        "per_device_batch_size": batch_size,
         "learning_rate": arguments.learning_rate,
         "epochs_requested": requested_epochs,
         "epochs_run": epochs_run,
