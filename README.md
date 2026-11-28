@@ -11,6 +11,9 @@ las noticias por tema. No plantea hipótesis de investigación. Desde el
 entrenamiento y una prueba de Wilcoxon con corrección de Holm sobre METEOR
 (sección 4.2 del protocolo).
 
+Los resultados agregados están en
+[Resultados de Seminario 1: `claims_1271`](#resultados-de-seminario-1-claims_1271).
+
 No clasifica noticias como verdaderas o falsas. Tampoco recupera evidencia,
 genera consultas, hace ranking ni extrae múltiples afirmaciones. La
 `reference_claim` es una afirmación de referencia anotada para entrenar y
@@ -247,7 +250,105 @@ El diseño controlado fija hasta cinco épocas, batch efectivo 8, learning rate
 [`docs/EXPERIMENT_PROTOCOL.md`](docs/EXPERIMENT_PROTOCOL.md) para el alcance y
 las reglas metodológicas completas.
 
-## Resultados publicados: corrida controlada de 400
+## Resultados de Seminario 1: `claims_1271`
+
+Resultados agregados del conjunto final (1017 train / 127 validation / 127
+test). Las 16 combinaciones de modelo y variante se entrenaron el 26 y el
+27/11/2026, con la semilla 20261103, en una PC con una GPU NVIDIA RTX 5070 de
+12 GB, precisión mixta bfloat16 y batch efectivo 8. Las noticias, anotaciones,
+predicciones y pesos no se publican; esta sección solo reporta agregados.
+
+### Pérdida de validación por variante
+
+La variante de cada modelo se elige por la menor pérdida de validación (en
+negrita); el test no interviene en esa elección. Entre paréntesis, la época con
+menor pérdida.
+
+| Modelo | 5 épocas | 10 épocas | 20 épocas | LoRA |
+| --- | ---: | ---: | ---: | ---: |
+| T5S | 0.934 (5) | 0.810 (10) | **0.795 (9)** | 0.827 (9) |
+| BARTO | **0.710 (2)** | 0.720 (2) | 0.723 (2) | 0.741 (7) |
+| mBART-50 | 0.722 (3) | 0.731 (2) | 0.716 (2) | **0.658 (5)** |
+| uMT5-Base | 1.438 (5) | 0.971 (10) | **0.841 (18)** | 0.910 (8) |
+
+El early stopping (paciencia 3) detuvo BARTO y mBART-50 en la quinta época en
+las variantes de 10 y 20 épocas. Las 12 combinaciones de ajuste completo
+sumaron 169 minutos de entrenamiento y las 4 de LoRA, 43. LoRA entrenó entre el
+0.30 % (uMT5-Base) y el 0.71 % (T5S) de los parámetros.
+
+### Métricas en test
+
+Medias sobre las 127 noticias de test, con la variante elegida de cada modelo.
+Las dos líneas base no se entrenan: copian el título o la primera oración del
+cuerpo.
+
+| Sistema | Variante | METEOR | ROUGE-L F1 | BERTScore F1 |
+| --- | --- | ---: | ---: | ---: |
+| mBART-50 | LoRA | **0.528** | **0.517** | **0.926** |
+| BARTO | 5 épocas | 0.511 | 0.501 | 0.924 |
+| T5S | 20 épocas | 0.466 | 0.467 | 0.918 |
+| uMT5-Base | 20 épocas | 0.427 | 0.415 | 0.910 |
+| Primera oración | — | 0.280 | 0.220 | 0.856 |
+| Título | — | 0.241 | 0.276 | 0.869 |
+
+La desviación estándar de METEOR entre noticias va de 0.27 a 0.29 en los cuatro
+modelos, así que la variación entre noticias es mayor que la diferencia entre
+modelos.
+
+### Prueba de Wilcoxon (exploratoria)
+
+Wilcoxon de rangos con signo, bilateral, sobre el METEOR por noticia, con
+corrección de Holm sobre siete comparaciones. Se decidió después de ver test,
+así que se reporta como análisis exploratorio (sección 4.2 del protocolo).
+«Gana / pierde / empata» cuenta noticias desde el primer sistema; r es la
+correlación biserial de rangos.
+
+| Comparación | Diferencia media | Gana / pierde / empata | r | p ajustado (Holm) |
+| --- | ---: | :---: | ---: | ---: |
+| mBART-50 vs. primera oración | +0.248 | 94 / 32 / 1 | 0.72 | < 0.001 |
+| BARTO vs. primera oración | +0.232 | 95 / 30 / 2 | 0.69 | < 0.001 |
+| T5S vs. primera oración | +0.187 | 89 / 38 / 0 | 0.56 | < 0.001 |
+| uMT5-Base vs. primera oración | +0.147 | 83 / 44 / 0 | 0.45 | < 0.001 |
+| mBART-50 vs. uMT5-Base | +0.101 | 65 / 42 / 20 | 0.36 | 0.004 |
+| mBART-50 vs. T5S | +0.062 | 63 / 43 / 21 | 0.28 | 0.022 |
+| mBART-50 vs. BARTO | +0.016 | 52 / 50 / 25 | 0.10 | 0.379 |
+
+Los cuatro modelos superan a la primera oración. mBART-50 supera a uMT5-Base y
+a T5S, y no difiere significativamente de BARTO.
+
+### Clasificación de temas
+
+Validación cruzada de 5 folds sobre las 1144 noticias de train y validation:
+
+| Representación | Clasificador | F1 macro (media ± DE) | Exactitud media |
+| --- | --- | ---: | ---: |
+| mpnet multilingüe | SVM lineal | **0.777 ± 0.028** | 0.809 |
+| TF-IDF | SVM lineal | 0.771 ± 0.046 | 0.813 |
+| mpnet multilingüe | Regresión logística | 0.754 ± 0.020 | 0.799 |
+| TF-IDF | Regresión logística | 0.746 ± 0.034 | 0.786 |
+| MiniLM multilingüe | SVM lineal | 0.724 ± 0.034 | 0.781 |
+| MiniLM multilingüe | Regresión logística | 0.711 ± 0.018 | 0.760 |
+
+La combinación elegida, mpnet con SVM lineal, se evaluó una sola vez en test:
+F1 macro de 0.644 y exactitud de 0.756.
+
+| Tema | n en test | F1 |
+| --- | ---: | ---: |
+| Cáncer | 21 | 0.905 |
+| Infecciosas e inmunidad | 30 | 0.885 |
+| Nutrición y suplementos | 11 | 0.741 |
+| Cardiometabólicas | 20 | 0.727 |
+| Salud mental y neurología | 16 | 0.688 |
+| Otra | 27 | 0.565 |
+| Sistema de salud y políticas | 2 | 0.000 |
+
+Sistema de salud y políticas tiene solo 2 noticias en test, así que su F1 no es
+estable.
+
+Estos puntajes miden similitud con la afirmación de referencia y acuerdo con el
+tema anotado. No prueban exactitud clínica ni veracidad de las noticias.
+
+## Resultados anteriores: corrida controlada de 400
 
 La corrida histórica `sem1_20261102_400_claims_controlled_5ep_v2` evaluó los
 cuatro modelos sobre 40 noticias de prueba, a partir de un conjunto cerrado de
